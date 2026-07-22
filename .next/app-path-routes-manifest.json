@@ -1,7 +1,0 @@
-{
-  "/_not-found/page": "/_not-found",
-  "/api/export/route": "/api/export",
-  "/api/parse/route": "/api/parse",
-  "/api/lookup/route": "/api/lookup",
-  "/page": "/"
-}

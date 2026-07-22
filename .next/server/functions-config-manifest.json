@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "functions": {
-    "/api/lookup": {},
-    "/api/export": {},
-    "/api/parse": {}
-  }
-}
