@@ -1,0 +1,5 @@
+# Datasheets permitted in test-data/. One public part number per line (the .pdf basename).
+# A datasheet not on this list is a CI failure, so a controlled or customer-proprietary PDF
+# cannot be committed by accident. Adding a part here must be a deliberate edit and the part
+# must be publicly available. Blank lines and lines starting with # are ignored.
+LMP7704-SP
