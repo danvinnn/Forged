@@ -18,8 +18,10 @@ const IDENTITY_URL = "https://identity.nexar.com/connect/token";
 const GRAPHQL_URL = "https://api.nexar.com/graphql/";
 
 // supSearchMpn does MPN matching and exposes bestDatasheet.url, the field we want. Isolated as a
-// constant so a schema/field rename after we confirm access in the Nitro IDE is a one-line change.
-const SEARCH_QUERY = `
+// constant, and exported so the test asserts the resolver sends exactly this query: the committed
+// fixture is the response to THIS query, and nothing copies the query string. A schema/field
+// rename after we confirm access in the Nitro IDE stays a one-line change here.
+export const SEARCH_QUERY = `
   query ResolveDatasheet($q: String!, $limit: Int!, $country: String!) {
     supSearchMpn(q: $q, limit: $limit, country: $country) {
       results {

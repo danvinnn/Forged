@@ -1,7 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ExportFormat, PartRecord, PinRecord } from "../lib/types";
+// Type-only import: erased at compile time, so no retrieval-layer runtime code (node:crypto,
+// the resolvers, etc.) is pulled into the client bundle.
+import type { DeploymentMode } from "../lib/retrieval";
+
+interface AppConfig {
+  mode: DeploymentMode;
+  lookupEnabled: boolean;
+}
 
 const formatOptions: Array<{ value: ExportFormat; label: string; note: string }> = [
   { value: "kicad", label: "KiCad source", note: "Native .kicad_sym + .kicad_mod" },
@@ -70,8 +78,39 @@ export default function HomePage() {
   const [manufacturerHint, setManufacturerHint] = useState("");
   const [part, setPart] = useState<PartRecord>(defaultPart);
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("kicad");
-  const [status, setStatus] = useState("Type a part number to begin.");
+  const [status, setStatus] = useState("Loading workspace...");
   const [busy, setBusy] = useState(false);
+
+  // Deployment mode surfaced by GET /api/config. Stays null while loading so the lookup box
+  // never flashes on screen before we know whether it is allowed. The server 403 on
+  // /api/lookup remains the real gate; this only decides which UI to render.
+  const [config, setConfig] = useState<AppConfig | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/config")
+      .then((res) => res.json())
+      .then((data: AppConfig) => {
+        if (cancelled) return;
+        setConfig(data);
+        setStatus(
+          data.lookupEnabled
+            ? "Enter a part number, or upload a datasheet PDF."
+            : "Air-gapped mode: upload a datasheet PDF to begin."
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Config is UX only and the server gate still holds, but fail closed here to match the
+        // server's production default: if the mode cannot be confirmed, assume no network and
+        // show upload only rather than offering a lookup that would just 403.
+        setConfig({ mode: "air-gapped", lookupEnabled: false });
+        setStatus("Could not confirm deployment mode. Upload a datasheet PDF to begin.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const dimensionsRows = useMemo(
     () => [
@@ -95,7 +134,7 @@ export default function HomePage() {
     }
 
     setBusy(true);
-    setStatus(`Searching the web for ${trimmedPart} datasheets...`);
+    setStatus(`Resolving the datasheet for ${trimmedPart}...`);
 
     try {
       const response = await fetch("/api/lookup", {
@@ -197,6 +236,26 @@ export default function HomePage() {
 
   const jsonPreview = JSON.stringify(part, null, 2);
 
+  // Upload is the enterprise/air-gapped path and is available in every mode, so it is shared
+  // between the commercial layout (as the fallback) and the air-gapped layout (as the only path).
+  const uploadCard = (
+    <label className="upload-card" htmlFor="datasheet-upload">
+      <div className="upload-title">{config?.lookupEnabled ? "Fallback: upload a PDF" : "Upload a datasheet PDF"}</div>
+      <div className="upload-body">
+        {config?.lookupEnabled
+          ? "Drop a local datasheet here if you already have the file."
+          : "Datasheets are read locally and never leave your network."}
+      </div>
+      <input
+        id="datasheet-upload"
+        type="file"
+        accept="application/pdf"
+        onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
+      />
+      <div className="file-name">{selectedFile ? selectedFile.name : "No file selected"}</div>
+    </label>
+  );
+
   return (
     <main className="workspace-shell">
       <header className="topbar">
@@ -204,63 +263,79 @@ export default function HomePage() {
           <div className="eyebrow">Forge</div>
           <h1>Vertical datasheet AI for CAD teams</h1>
           <p className="hero-copy">
-            Tell Forge the exact part number. It will look up the datasheet, parse the PDF, and generate a download-ready CAD bundle.
+            {config === null
+              ? "Forge turns rad-hard datasheets into download-ready CAD bundles."
+              : config.lookupEnabled
+                ? "Give Forge a part number. It resolves the datasheet, parses the PDF, and generates a download-ready CAD bundle."
+                : "Upload a rad-hard datasheet PDF. Forge parses it locally and generates a download-ready CAD bundle, with no data leaving your network."}
           </p>
         </div>
         <div className="status-box">{status}</div>
       </header>
 
       <section className="tool-row">
-        <article className="prompt-card panel">
-          <div className="card-kicker">AI intake</div>
-          <h2>What part are you working on?</h2>
-          <p>Type a manufacturer part number. Forge will search for the datasheet, ingest it, and prefill the normalized part record.</p>
+        {config === null ? (
+          <div className="panel config-loading" aria-busy="true">
+            Loading workspace...
+          </div>
+        ) : config.lookupEnabled ? (
+          <>
+            <article className="prompt-card panel">
+              <div className="card-kicker">AI intake</div>
+              <h2>What part are you working on?</h2>
+              <p>Enter a manufacturer part number. Forge resolves the datasheet, ingests it, and prefills the normalized part record.</p>
 
-          <form className="chat-shell" onSubmit={handlePromptSubmit}>
-            <div className="chat-thread">
-              <div className="chat-bubble assistant">
-                Start with a part number. You can add a manufacturer hint if the name is ambiguous.
-              </div>
-            </div>
+              <form className="chat-shell" onSubmit={handlePromptSubmit}>
+                <div className="chat-thread">
+                  <div className="chat-bubble assistant">
+                    Start with a part number. You can add a manufacturer hint if the name is ambiguous.
+                  </div>
+                </div>
 
-            <div className="chat-input-row">
-              <label>
-                <span>Part number</span>
-                <input value={partPrompt} onChange={(event) => setPartPrompt(event.target.value)} placeholder="Type a part number" />
-              </label>
-              <label>
-                <span>Manufacturer hint</span>
-                <input value={manufacturerHint} onChange={(event) => setManufacturerHint(event.target.value)} placeholder="Optional" />
-              </label>
-              <button className="primary-button" type="submit" disabled={busy}>
-                Find datasheet & parse
-              </button>
-            </div>
-          </form>
+                <div className="chat-input-row">
+                  <label>
+                    <span>Part number</span>
+                    <input value={partPrompt} onChange={(event) => setPartPrompt(event.target.value)} placeholder="Type a part number" />
+                  </label>
+                  <label>
+                    <span>Manufacturer hint</span>
+                    <input value={manufacturerHint} onChange={(event) => setManufacturerHint(event.target.value)} placeholder="Optional" />
+                  </label>
+                  <button className="primary-button" type="submit" disabled={busy}>
+                    Find datasheet & parse
+                  </button>
+                </div>
+              </form>
 
-          <div className="prompt-footnote">Searches the web first, PDF upload remains the fallback.</div>
+              <div className="prompt-footnote">Resolves through the component API first. PDF upload remains the fallback.</div>
 
-          {sourceUrl ? (
-            <div className="source-banner">
-              <span>Source</span>
-              <a href={sourceUrl.href} target="_blank" rel="noreferrer">
-                {sourceUrl.href}
-              </a>
-            </div>
-          ) : null}
-        </article>
+              {sourceUrl ? (
+                <div className="source-banner">
+                  <span>Source</span>
+                  <a href={sourceUrl.href} target="_blank" rel="noreferrer">
+                    {sourceUrl.href}
+                  </a>
+                </div>
+              ) : null}
+            </article>
 
-        <label className="upload-card" htmlFor="datasheet-upload">
-          <div className="upload-title">Fallback: upload a PDF</div>
-          <div className="upload-body">Drop a local datasheet here if you already have the file.</div>
-          <input
-            id="datasheet-upload"
-            type="file"
-            accept="application/pdf"
-            onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
-          />
-          <div className="file-name">{selectedFile ? selectedFile.name : "No file selected"}</div>
-        </label>
+            {uploadCard}
+          </>
+        ) : (
+          <>
+            <article className="prompt-card panel airgap-notice">
+              <div className="card-kicker">Air-gapped mode</div>
+              <h2>Part-number lookup is disabled</h2>
+              <p>
+                This deployment runs with zero network egress, so Forge never reaches an external
+                component API. Upload the datasheet PDF directly and it is processed entirely on
+                your own infrastructure.
+              </p>
+            </article>
+
+            {uploadCard}
+          </>
+        )}
       </section>
 
       <section className="tool-row export-row">

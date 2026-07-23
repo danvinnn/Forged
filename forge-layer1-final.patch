@@ -1,0 +1,878 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..69b8e98
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,34 @@
++name: CI
++
++# Runs on every PR and on pushes to main. The retrieval suite (npm test) includes the two
++# merge-blocking gates from LAYER1.md: the air-gap source scan (air-gap-safe modules contain no
++# fetch/external URL and the resolver subtree stays dynamic-import only) and the corpus allowlist
++# (test-data/ holds only public, allowlisted part numbers). To make these actually block a merge,
++# enable branch protection on main and mark the "verify" job below as a required status check.
++on:
++  pull_request:
++  push:
++    branches: [main]
++
++jobs:
++  verify:
++    name: verify
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++
++      - uses: actions/setup-node@v4
++        with:
++          # Pinned via .nvmrc so CI and local dev agree. Local dev is on 21 (non-LTS); CI pins to
++          # an LTS so a Node-version quirk cannot pass locally and fail here, or the reverse.
++          node-version-file: .nvmrc
++          cache: npm
++
++      - name: Install dependencies
++        run: npm ci
++
++      - name: Typecheck
++        run: npx tsc --noEmit
++
++      - name: Tests (retrieval suite, incl. air-gap scan + corpus allowlist gates)
++        run: npm test
+diff --git a/.gitignore b/.gitignore
+index a7fae53..e09e18f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,6 +7,7 @@ node_modules
+ dist
+ build
+ out
++*.tsbuildinfo
+ 
+ # Dependencies
+ *.pnp
+diff --git a/.nvmrc b/.nvmrc
+new file mode 100644
+index 0000000..2bd5a0a
+--- /dev/null
++++ b/.nvmrc
+@@ -0,0 +1 @@
++22
+diff --git a/CHANGES.md b/CHANGES.md
+index 3c5d9a4..07e499a 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -4,7 +4,7 @@ This set is reconciled with the Gemini work already on main. It adds the retriev
+ gates the existing Gemini calls behind commercial mode, and preserves datasheet-gemini.ts.
+ 
+     npm install        # picks up tsx (added) alongside @google/generative-ai (already present)
+-    npm test           # 46 retrieval tests via tsx + node:test
++    npm test           # 57 retrieval tests via tsx + node:test
+     npx tsc --noEmit   # typechecks the whole repo, Gemini included
+ 
+ ## Added (clean, no conflicts)
+@@ -38,3 +38,30 @@ core air-gap defect. This merge gates it. Also removed lookupAndParseDatasheetWi
+ route path: using a model to FIND the datasheet URL is the hallucination pattern ARCHITECTURE.md
+ forbids. Proper Gemini extraction belongs in Layer 2 behind ExtractionModel, commercial-only, with
+ a local open-weight model for air-gapped.
++
++## Follow-up pass (2026-07-22): Layer 1 finalized
++
++Config surfacing, Nexar fixture, CI, and the coverage gaps that were left open.
++
++### Added
++- src/app/... page.tsx now consumes GET /api/config (mode-gated lookup box, loading state,
++  fail-closed on config error)
++- src/lib/retrieval/resolvers/__fixtures__/nexar-lmp7704.json + README.md  (GraphQL response
++  fixture; SEARCH_QUERY exported and asserted so a live capture swaps in with no test edit)
++- src/lib/retrieval/__tests__/scrape.test.ts   (first coverage for the demoted scrape resolver)
++- .github/workflows/ci.yml                      (tsc + npm test on PRs; air-gap scan + corpus
++  allowlist gates run here)
++- .nvmrc                                        (Node pinned to 22; local dev is on 21)
++
++### Modified
++- src/lib/retrieval/resolvers/nexar.ts          (export SEARCH_QUERY only; no behavior change)
++- src/lib/retrieval/__tests__/nexar.test.ts     (load the fixture; add the error-taxonomy suite)
++- src/app/globals.css                           (loading placeholder + air-gap notice styles)
++- .gitignore                                    (ignore *.tsbuildinfo)
++
++### Removed from tracking
++- tsconfig.tsbuildinfo                          (git rm --cached; build artifact, now gitignored)
++
++### Not code, needs a human
++- Branch protection on main requiring the `verify` job (otherwise the gates do not block merges).
++- Nexar live validation with the free Welcome 1K credentials, then swap the fixture.
+diff --git a/src/app/globals.css b/src/app/globals.css
+index 7b608f2..ee86eeb 100644
+--- a/src/app/globals.css
++++ b/src/app/globals.css
+@@ -446,4 +446,17 @@ tbody td {
+     max-width: none;
+     min-width: 0;
+   }
+-}
+\ No newline at end of file
++}
++/* Layer 1 mode surfacing: loading placeholder and air-gapped notice for the tool row. */
++.config-loading {
++  grid-column: 1 / -1;
++  display: grid;
++  place-items: center;
++  min-height: 120px;
++  color: var(--muted);
++  font-size: 14px;
++}
++
++.airgap-notice {
++  border-left: 3px solid var(--navy);
++}
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index 2327f41..fae513c 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -1,7 +1,15 @@
+ "use client";
+ 
+-import { useMemo, useState } from "react";
++import { useEffect, useMemo, useState } from "react";
+ import type { ExportFormat, PartRecord, PinRecord } from "../lib/types";
++// Type-only import: erased at compile time, so no retrieval-layer runtime code (node:crypto,
++// the resolvers, etc.) is pulled into the client bundle.
++import type { DeploymentMode } from "../lib/retrieval";
++
++interface AppConfig {
++  mode: DeploymentMode;
++  lookupEnabled: boolean;
++}
+ 
+ const formatOptions: Array<{ value: ExportFormat; label: string; note: string }> = [
+   { value: "kicad", label: "KiCad source", note: "Native .kicad_sym + .kicad_mod" },
+@@ -70,9 +78,40 @@ export default function HomePage() {
+   const [manufacturerHint, setManufacturerHint] = useState("");
+   const [part, setPart] = useState<PartRecord>(defaultPart);
+   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("kicad");
+-  const [status, setStatus] = useState("Type a part number to begin.");
++  const [status, setStatus] = useState("Loading workspace...");
+   const [busy, setBusy] = useState(false);
+ 
++  // Deployment mode surfaced by GET /api/config. Stays null while loading so the lookup box
++  // never flashes on screen before we know whether it is allowed. The server 403 on
++  // /api/lookup remains the real gate; this only decides which UI to render.
++  const [config, setConfig] = useState<AppConfig | null>(null);
++
++  useEffect(() => {
++    let cancelled = false;
++    fetch("/api/config")
++      .then((res) => res.json())
++      .then((data: AppConfig) => {
++        if (cancelled) return;
++        setConfig(data);
++        setStatus(
++          data.lookupEnabled
++            ? "Enter a part number, or upload a datasheet PDF."
++            : "Air-gapped mode: upload a datasheet PDF to begin."
++        );
++      })
++      .catch(() => {
++        if (cancelled) return;
++        // Config is UX only and the server gate still holds, but fail closed here to match the
++        // server's production default: if the mode cannot be confirmed, assume no network and
++        // show upload only rather than offering a lookup that would just 403.
++        setConfig({ mode: "air-gapped", lookupEnabled: false });
++        setStatus("Could not confirm deployment mode. Upload a datasheet PDF to begin.");
++      });
++    return () => {
++      cancelled = true;
++    };
++  }, []);
++
+   const dimensionsRows = useMemo(
+     () => [
+       ["Body length", part.dimensions.bodyLengthMm],
+@@ -95,7 +134,7 @@ export default function HomePage() {
+     }
+ 
+     setBusy(true);
+-    setStatus(`Searching the web for ${trimmedPart} datasheets...`);
++    setStatus(`Resolving the datasheet for ${trimmedPart}...`);
+ 
+     try {
+       const response = await fetch("/api/lookup", {
+@@ -197,6 +236,26 @@ export default function HomePage() {
+ 
+   const jsonPreview = JSON.stringify(part, null, 2);
+ 
++  // Upload is the enterprise/air-gapped path and is available in every mode, so it is shared
++  // between the commercial layout (as the fallback) and the air-gapped layout (as the only path).
++  const uploadCard = (
++    <label className="upload-card" htmlFor="datasheet-upload">
++      <div className="upload-title">{config?.lookupEnabled ? "Fallback: upload a PDF" : "Upload a datasheet PDF"}</div>
++      <div className="upload-body">
++        {config?.lookupEnabled
++          ? "Drop a local datasheet here if you already have the file."
++          : "Datasheets are read locally and never leave your network."}
++      </div>
++      <input
++        id="datasheet-upload"
++        type="file"
++        accept="application/pdf"
++        onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
++      />
++      <div className="file-name">{selectedFile ? selectedFile.name : "No file selected"}</div>
++    </label>
++  );
++
+   return (
+     <main className="workspace-shell">
+       <header className="topbar">
+@@ -204,63 +263,79 @@ export default function HomePage() {
+           <div className="eyebrow">Forge</div>
+           <h1>Vertical datasheet AI for CAD teams</h1>
+           <p className="hero-copy">
+-            Tell Forge the exact part number. It will look up the datasheet, parse the PDF, and generate a download-ready CAD bundle.
++            {config === null
++              ? "Forge turns rad-hard datasheets into download-ready CAD bundles."
++              : config.lookupEnabled
++                ? "Give Forge a part number. It resolves the datasheet, parses the PDF, and generates a download-ready CAD bundle."
++                : "Upload a rad-hard datasheet PDF. Forge parses it locally and generates a download-ready CAD bundle, with no data leaving your network."}
+           </p>
+         </div>
+         <div className="status-box">{status}</div>
+       </header>
+ 
+       <section className="tool-row">
+-        <article className="prompt-card panel">
+-          <div className="card-kicker">AI intake</div>
+-          <h2>What part are you working on?</h2>
+-          <p>Type a manufacturer part number. Forge will search for the datasheet, ingest it, and prefill the normalized part record.</p>
+-
+-          <form className="chat-shell" onSubmit={handlePromptSubmit}>
+-            <div className="chat-thread">
+-              <div className="chat-bubble assistant">
+-                Start with a part number. You can add a manufacturer hint if the name is ambiguous.
+-              </div>
+-            </div>
+-
+-            <div className="chat-input-row">
+-              <label>
+-                <span>Part number</span>
+-                <input value={partPrompt} onChange={(event) => setPartPrompt(event.target.value)} placeholder="Type a part number" />
+-              </label>
+-              <label>
+-                <span>Manufacturer hint</span>
+-                <input value={manufacturerHint} onChange={(event) => setManufacturerHint(event.target.value)} placeholder="Optional" />
+-              </label>
+-              <button className="primary-button" type="submit" disabled={busy}>
+-                Find datasheet & parse
+-              </button>
+-            </div>
+-          </form>
+-
+-          <div className="prompt-footnote">Searches the web first, PDF upload remains the fallback.</div>
+-
+-          {sourceUrl ? (
+-            <div className="source-banner">
+-              <span>Source</span>
+-              <a href={sourceUrl.href} target="_blank" rel="noreferrer">
+-                {sourceUrl.href}
+-              </a>
+-            </div>
+-          ) : null}
+-        </article>
+-
+-        <label className="upload-card" htmlFor="datasheet-upload">
+-          <div className="upload-title">Fallback: upload a PDF</div>
+-          <div className="upload-body">Drop a local datasheet here if you already have the file.</div>
+-          <input
+-            id="datasheet-upload"
+-            type="file"
+-            accept="application/pdf"
+-            onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
+-          />
+-          <div className="file-name">{selectedFile ? selectedFile.name : "No file selected"}</div>
+-        </label>
++        {config === null ? (
++          <div className="panel config-loading" aria-busy="true">
++            Loading workspace...
++          </div>
++        ) : config.lookupEnabled ? (
++          <>
++            <article className="prompt-card panel">
++              <div className="card-kicker">AI intake</div>
++              <h2>What part are you working on?</h2>
++              <p>Enter a manufacturer part number. Forge resolves the datasheet, ingests it, and prefills the normalized part record.</p>
++
++              <form className="chat-shell" onSubmit={handlePromptSubmit}>
++                <div className="chat-thread">
++                  <div className="chat-bubble assistant">
++                    Start with a part number. You can add a manufacturer hint if the name is ambiguous.
++                  </div>
++                </div>
++
++                <div className="chat-input-row">
++                  <label>
++                    <span>Part number</span>
++                    <input value={partPrompt} onChange={(event) => setPartPrompt(event.target.value)} placeholder="Type a part number" />
++                  </label>
++                  <label>
++                    <span>Manufacturer hint</span>
++                    <input value={manufacturerHint} onChange={(event) => setManufacturerHint(event.target.value)} placeholder="Optional" />
++                  </label>
++                  <button className="primary-button" type="submit" disabled={busy}>
++                    Find datasheet & parse
++                  </button>
++                </div>
++              </form>
++
++              <div className="prompt-footnote">Resolves through the component API first. PDF upload remains the fallback.</div>
++
++              {sourceUrl ? (
++                <div className="source-banner">
++                  <span>Source</span>
++                  <a href={sourceUrl.href} target="_blank" rel="noreferrer">
++                    {sourceUrl.href}
++                  </a>
++                </div>
++              ) : null}
++            </article>
++
++            {uploadCard}
++          </>
++        ) : (
++          <>
++            <article className="prompt-card panel airgap-notice">
++              <div className="card-kicker">Air-gapped mode</div>
++              <h2>Part-number lookup is disabled</h2>
++              <p>
++                This deployment runs with zero network egress, so Forge never reaches an external
++                component API. Upload the datasheet PDF directly and it is processed entirely on
++                your own infrastructure.
++              </p>
++            </article>
++
++            {uploadCard}
++          </>
++        )}
+       </section>
+ 
+       <section className="tool-row export-row">
+diff --git a/src/lib/retrieval/LAYER1.md b/src/lib/retrieval/LAYER1.md
+index 54cebe0..c134361 100644
+--- a/src/lib/retrieval/LAYER1.md
++++ b/src/lib/retrieval/LAYER1.md
+@@ -128,15 +128,50 @@ Nitro IDE checklist:
+ - Unit: deployment defaults, upload validation, filename sanitize, pdf assert, hash stability,
+   finalizeRef, composite semantics (skip / null / soft / hard), Nexar isConfigured + resolve via
+   stubbed fetch, factory air-gap null, air-gap source scan.
++- Nexar error taxonomy (done): token 401 -> hard auth, graphql 429 -> soft rate_limit, graphql
++  errors array and non-JSON body -> hard bad_response, graphql timeout -> soft transport, empty
++  results -> null, datasheet URL serving HTML (anti-bot) -> null. Driven through resolve() against
++  the committed fixture, so the mapping the composite depends on is verified before creds land.
++- Scrape resolver (done): direct TI symlink hit (the TI-demo-not-regressing guarantee), clean null
++  on a non-TI miss, and a search-engine error mapping to a soft transport failure (never hard).
+ - Integration: real LMP7704-SP bytes through finalizeRef into the parser.
+ - Route-level: POST handlers with mocked mode and fetch, including a rad-hard part Nexar misses
+   degrading cleanly to `DATASHEET_NOT_FOUND`.
+ - Timeouts: abort fires and maps to a soft failure.
+ - CI gates (merge-blocking): the air-gap source scan, and a corpus allowlist check that
+   `test-data/` holds only known-public part numbers, so no customer datasheet is ever committed.
++  Both run inside `npm test` in `.github/workflows/ci.yml` on every PR. Making them actually block
++  a merge is a one-time GitHub setting: enable branch protection on `main` and mark the `verify`
++  job a required status check.
+ 
+ ## Sequence
+ Contracts and helpers first (this pass), then wire them through upload, resolvers, and routes,
+ then Nexar hardening as far as creds allow, then `/api/config` and the client surfacing, then the
+ route-level and CI test expansion. Build-time exclusion and DigiKey/Mouser are explicit
+ fast-follows after the layer is solid.
++
++## Status (2026-07-22)
++
++Layer 1 is code-complete. Everything in Decided above is implemented and tested (57 tests,
++`tsc --noEmit` clean). This pass finished:
++
++- `/api/config` client surfacing in `page.tsx`: fetches `{ mode, lookupEnabled }` on load, gates
++  the part-number box, upload-only in air-gapped, with a loading state so nothing flashes. Fails
++  closed on a config fetch error (assume air-gapped) to match the server default; the server 403
++  stays the real gate.
++- Nexar GraphQL fixture at `resolvers/__fixtures__/nexar-lmp7704.json`, loaded by `nexar.test.ts`.
++  `SEARCH_QUERY` is exported and asserted, so the query is single-sourced and a live capture drops
++  in without a test edit (see the fixture README).
++- Nexar error taxonomy and scrape resolver now covered (see Test and CI plan).
++- `.github/workflows/ci.yml` runs `tsc --noEmit` and `npm test` on PRs; Node pinned via `.nvmrc`.
++- `tsconfig.tsbuildinfo` untracked and gitignored.
++
++Remaining before this is fully closed, none of which is code:
++
++- Enable branch protection on `main`, require the `verify` job. Until then the gates run but do
++  not block.
++- Live-validate Nexar with the free Welcome 1K credentials against the Nitro IDE checklist above,
++  then swap the fixture.
++
++Still deferred, unchanged: build-time exclusion of the resolver subtree, and DigiKey/Mouser
++resolvers. Consumer path first.
+diff --git a/src/lib/retrieval/__tests__/nexar.test.ts b/src/lib/retrieval/__tests__/nexar.test.ts
+index 3336558..514aa88 100644
+--- a/src/lib/retrieval/__tests__/nexar.test.ts
++++ b/src/lib/retrieval/__tests__/nexar.test.ts
+@@ -1,6 +1,46 @@
+ import { test } from "node:test";
+ import assert from "node:assert/strict";
+-import { NexarResolver } from "../resolvers/nexar";
++import { readFileSync } from "node:fs";
++import { join } from "node:path";
++import { NexarResolver, SEARCH_QUERY } from "../resolvers/nexar";
++import { ResolverError } from "../resolvers/errors";
++
++// The Nexar GraphQL response lives in a committed fixture, not inline here, so the day live
++// credentials land the captured response drops into that file (see resolvers/__fixtures__/README.md)
++// with no test edit. SEARCH_QUERY is imported from the resolver, never copied, so the query stays
++// single-sourced: the fixture is the response to THIS query, and the resolve test proves the
++// resolver actually sent it.
++const FIXTURE_PATH = join(
++  process.cwd(),
++  "src",
++  "lib",
++  "retrieval",
++  "resolvers",
++  "__fixtures__",
++  "nexar-lmp7704.json"
++);
++
++interface FixturePart {
++  mpn: string;
++  manufacturer: { name: string } | null;
++  octopartUrl: string | null;
++  bestDatasheet: { url: string } | null;
++}
++
++interface NexarResponse {
++  data?: { supSearchMpn?: { results?: { part: FixturePart }[] } };
++}
++
++const NEXAR_RESPONSE = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as NexarResponse;
++
++// The first result carrying a datasheet is what the resolver picks for a single-hit fixture.
++// Reading expected values from here (not hardcoding them) is what keeps a live swap edit-free.
++function fixturePart(): FixturePart {
++  const results = NEXAR_RESPONSE.data?.supSearchMpn?.results ?? [];
++  const hit = results.find((r) => r.part?.bestDatasheet?.url);
++  if (!hit) throw new Error("nexar fixture has no result with a bestDatasheet.url");
++  return hit.part;
++}
+ 
+ // A minimal but valid-enough PDF: "%PDF-1.7" header padded past the 64-byte floor that
+ // finalizeRef enforces, so the resolver produces a real ref rather than rejecting it.
+@@ -29,41 +69,40 @@ function setCreds(on: boolean): () => void {
+   };
+ }
+ 
+-// Minimal stub of global fetch that routes by URL: identity -> token, graphql -> a canned
+-// LMP7704-SP result, datasheet url -> PDF bytes.
+-function stubFetch(datasheetUrl: string): () => void {
++interface GraphqlBody {
++  query?: string;
++  variables?: { q?: string; limit?: number; country?: string };
++}
++
++// Stub of global fetch that routes by URL: identity -> token, graphql -> the committed fixture,
++// datasheet url (read from the fixture) -> PDF bytes. Captures the GraphQL request body so the
++// test can assert, at the test level (not inside the stub, where a throw would be swallowed by the
++// resolver's transport handling), that the resolver sent exactly SEARCH_QUERY.
++function stubFetch() {
+   const original = globalThis.fetch;
+-  globalThis.fetch = (async (input: RequestInfo | URL) => {
++  const datasheetUrl = fixturePart().bestDatasheet!.url;
++  let graphqlBody: GraphqlBody | null = null;
++
++  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+     const url = typeof input === "string" ? input : input.toString();
+     if (url.includes("identity.nexar.com")) {
+       return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+     }
+     if (url.includes("api.nexar.com/graphql")) {
+-      const body = {
+-        data: {
+-          supSearchMpn: {
+-            results: [
+-              {
+-                part: {
+-                  mpn: "LMP7704-SP",
+-                  manufacturer: { name: "Texas Instruments" },
+-                  octopartUrl: "https://octopart.com/lmp7704-sp",
+-                  bestDatasheet: { url: datasheetUrl }
+-                }
+-              }
+-            ]
+-          }
+-        }
+-      };
+-      return new Response(JSON.stringify(body), { status: 200 });
++      graphqlBody = JSON.parse(String(init?.body ?? "{}")) as GraphqlBody;
++      return new Response(JSON.stringify(NEXAR_RESPONSE), { status: 200 });
+     }
+     if (url === datasheetUrl) {
+       return new Response(PDF_BYTES, { status: 200, headers: { "content-type": "application/pdf" } });
+     }
+     return new Response("not found", { status: 404 });
+   }) as typeof fetch;
+-  return () => {
+-    globalThis.fetch = original;
++
++  return {
++    restore: () => {
++      globalThis.fetch = original;
++    },
++    graphqlRequest: (): GraphqlBody | null => graphqlBody
+   };
+ }
+ 
+@@ -87,18 +126,29 @@ test("isConfigured is true with credentials", () => {
+ 
+ test("resolves LMP7704-SP to a downloaded datasheet ref (commercial path)", async () => {
+   const restoreCreds = setCreds(true);
+-  const datasheetUrl = "https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf";
+-  const restoreFetch = stubFetch(datasheetUrl);
++  const stub = stubFetch();
+   try {
++    const part = fixturePart();
+     const ref = await new NexarResolver().resolve("LMP7704-SP", { manufacturer: "Texas Instruments" });
+     assert.ok(ref);
+-    assert.equal(ref!.fileName, "LMP7704-SP.pdf");
+-    assert.equal(ref!.pdfUrl, datasheetUrl);
+-    assert.equal(ref!.sourcePageUrl, "https://octopart.com/lmp7704-sp");
++
++    // Provenance is taken from the fixture, so a same-shape live capture needs no edit here.
++    assert.equal(ref!.pdfUrl, part.bestDatasheet!.url);
++    assert.equal(ref!.sourcePageUrl, part.octopartUrl ?? undefined);
++    // fileName derives from the MPN; assert loosely so casing/suffix in a live capture is tolerated.
++    assert.match(ref!.fileName, /\.pdf$/);
++    assert.ok(ref!.fileName.toUpperCase().includes("LMP7704"));
+     const head = new Uint8Array(ref!.bytes, 0, 5);
+     assert.deepEqual([...head], [0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
++
++    // Single source of truth: the resolver sent exactly the SEARCH_QUERY it exports, so the
++    // committed fixture is known to be the response to this query.
++    const sent = stub.graphqlRequest();
++    assert.equal(sent?.query, SEARCH_QUERY);
++    assert.equal(sent?.variables?.q, "LMP7704-SP");
++    assert.equal(sent?.variables?.country, "US");
+   } finally {
+-    restoreFetch();
++    stub.restore();
+     restoreCreds();
+   }
+ });
+@@ -111,3 +161,145 @@ test("resolve throws a clean error when credentials are missing", async () => {
+     restore();
+   }
+ });
++
++// --- Error taxonomy ---------------------------------------------------------------------------
++// These pin down the hard/soft mapping the CompositeResolver relies on. They matter most for the
++// day live credentials land: a 429, an anti-bot HTML interstitial, or an auth failure must each
++// be classified correctly, or a transient blip turns into a hard operator error (or worse, a real
++// misconfig gets silently swallowed as "not found"). Driven through resolve() so we test the
++// resolver's actual behavior, not a restated table.
++
++// Lets each test override just the identity and/or graphql response; other URLs 404.
++function stubResponses(opts: {
++  identity?: () => Response;
++  graphql?: () => Response;
++  datasheet?: { url: string; response: () => Response };
++}): () => void {
++  const original = globalThis.fetch;
++  globalThis.fetch = (async (input: RequestInfo | URL) => {
++    const url = typeof input === "string" ? input : input.toString();
++    if (url.includes("identity.nexar.com")) {
++      return opts.identity
++        ? opts.identity()
++        : new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
++    }
++    if (url.includes("api.nexar.com/graphql")) {
++      return opts.graphql ? opts.graphql() : new Response(JSON.stringify(NEXAR_RESPONSE), { status: 200 });
++    }
++    if (opts.datasheet && url === opts.datasheet.url) {
++      return opts.datasheet.response();
++    }
++    return new Response("not found", { status: 404 });
++  }) as typeof fetch;
++  return () => {
++    globalThis.fetch = original;
++  };
++}
++
++function isResolverError(kind: ResolverError["kind"], hard: boolean) {
++  return (err: unknown): boolean => err instanceof ResolverError && err.kind === kind && err.hard === hard;
++}
++
++test("token 401 surfaces as a HARD auth error", async () => {
++  const restoreCreds = setCreds(true);
++  const restore = stubResponses({ identity: () => new Response("nope", { status: 401 }) });
++  try {
++    await assert.rejects(() => new NexarResolver().resolve("LMP7704-SP"), isResolverError("auth", true));
++  } finally {
++    restore();
++    restoreCreds();
++  }
++});
++
++test("graphql 429 surfaces as a SOFT rate_limit error", async () => {
++  const restoreCreds = setCreds(true);
++  const restore = stubResponses({ graphql: () => new Response("slow down", { status: 429 }) });
++  try {
++    await assert.rejects(() => new NexarResolver().resolve("LMP7704-SP"), isResolverError("rate_limit", false));
++  } finally {
++    restore();
++    restoreCreds();
++  }
++});
++
++test("a graphql errors array surfaces as a HARD bad_response error", async () => {
++  const restoreCreds = setCreds(true);
++  const restore = stubResponses({
++    graphql: () => new Response(JSON.stringify({ errors: [{ message: "unknown field" }] }), { status: 200 })
++  });
++  try {
++    await assert.rejects(() => new NexarResolver().resolve("LMP7704-SP"), isResolverError("bad_response", true));
++  } finally {
++    restore();
++    restoreCreds();
++  }
++});
++
++test("a non-JSON graphql body surfaces as a HARD bad_response error", async () => {
++  const restoreCreds = setCreds(true);
++  const restore = stubResponses({
++    graphql: () => new Response("<html>maintenance</html>", { status: 200, headers: { "content-type": "text/html" } })
++  });
++  try {
++    await assert.rejects(() => new NexarResolver().resolve("LMP7704-SP"), isResolverError("bad_response", true));
++  } finally {
++    restore();
++    restoreCreds();
++  }
++});
++
++test("a graphql timeout surfaces as a SOFT transport error", async () => {
++  const restoreCreds = setCreds(true);
++  const original = globalThis.fetch;
++  globalThis.fetch = (async (input: RequestInfo | URL) => {
++    const url = typeof input === "string" ? input : input.toString();
++    if (url.includes("identity.nexar.com")) {
++      return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
++    }
++    // Simulate the AbortController firing without waiting the real 8s: fetchWithTimeout converts an
++    // AbortError into a TimeoutError, which the resolver maps to a soft transport failure.
++    const err = new Error("aborted");
++    err.name = "AbortError";
++    throw err;
++  }) as typeof fetch;
++  try {
++    await assert.rejects(() => new NexarResolver().resolve("LMP7704-SP"), isResolverError("transport", false));
++  } finally {
++    globalThis.fetch = original;
++    restoreCreds();
++  }
++});
++
++test("empty results resolve to null so the caller can fall back to upload", async () => {
++  const restoreCreds = setCreds(true);
++  const restore = stubResponses({
++    graphql: () => new Response(JSON.stringify({ data: { supSearchMpn: { results: [] } } }), { status: 200 })
++  });
++  try {
++    assert.equal(await new NexarResolver().resolve("LMP7704-SP"), null);
++  } finally {
++    restore();
++    restoreCreds();
++  }
++});
++
++test("a datasheet URL that serves HTML (anti-bot interstitial) resolves to null, not a hard error", async () => {
++  const restoreCreds = setCreds(true);
++  const dsUrl = fixturePart().bestDatasheet!.url;
++  // Padded past the 64-byte floor so it fails the %PDF magic check specifically, not the size check:
++  // this is the "URL resolved but served a captcha/HTML page" case, which must degrade to upload.
++  const html = `<html><body>${"verify you are human ".repeat(8)}</body></html>`;
++  const restore = stubResponses({
++    datasheet: {
++      url: dsUrl,
++      response: () => new Response(html, { status: 200, headers: { "content-type": "text/html" } })
++    }
++  });
++  try {
++    const ref = await new NexarResolver().resolve("LMP7704-SP", { manufacturer: "Texas Instruments" });
++    assert.equal(ref, null);
++  } finally {
++    restore();
++    restoreCreds();
++  }
++});
+diff --git a/src/lib/retrieval/__tests__/scrape.test.ts b/src/lib/retrieval/__tests__/scrape.test.ts
+new file mode 100644
+index 0000000..9db0a7c
+--- /dev/null
++++ b/src/lib/retrieval/__tests__/scrape.test.ts
+@@ -0,0 +1,95 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { ScrapeResolver } from "../resolvers/scrape";
++import { ResolverError } from "../resolvers/errors";
++
++// The scrape resolver is the demoted MVP fallback: brittle by design, last in the composite. Its
++// one remaining job is to not regress the TI demo, and it has had no coverage. These lock in the
++// three outcomes the composite depends on: a direct TI hit, a clean "nothing found" null, and a
++// soft transport failure when the search itself errors (never a hard error, so upload stays open).
++
++const PDF_BYTES = (() => {
++  const header = new TextEncoder().encode("%PDF-1.7\n");
++  const body = new Uint8Array(128);
++  body.set(header, 0);
++  return body;
++})();
++
++// Serves PDF bytes at exactly one URL (the direct TI symlink candidate), 404 for everything else.
++function stubDirectHit(pdfUrl: string): () => void {
++  const original = globalThis.fetch;
++  globalThis.fetch = (async (input: RequestInfo | URL) => {
++    const url = typeof input === "string" ? input : input.toString();
++    if (url === pdfUrl) {
++      return new Response(PDF_BYTES, { status: 200, headers: { "content-type": "application/pdf" } });
++    }
++    return new Response("not found", { status: 404 });
++  }) as typeof fetch;
++  return () => {
++    globalThis.fetch = original;
++  };
++}
++
++// Search returns a valid but empty page (no links), so nothing resolves and locatePdf yields null.
++function stubEmptySearch(): () => void {
++  const original = globalThis.fetch;
++  globalThis.fetch = (async (input: RequestInfo | URL) => {
++    const url = typeof input === "string" ? input : input.toString();
++    if (url.includes("duckduckgo")) {
++      return new Response("<html><body>no results here</body></html>", {
++        status: 200,
++        headers: { "content-type": "text/html" }
++      });
++    }
++    return new Response("not found", { status: 404 });
++  }) as typeof fetch;
++  return () => {
++    globalThis.fetch = original;
++  };
++}
++
++test("isConfigured is always true (no credentials, which is also why it is last resort)", () => {
++  assert.equal(new ScrapeResolver().isConfigured(), true);
++});
++
++test("resolves a TI part via the direct symlink candidate (keeps the TI demo alive)", async () => {
++  const pdfUrl = "https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf";
++  const restore = stubDirectHit(pdfUrl);
++  try {
++    const ref = await new ScrapeResolver().resolve("LMP7704-SP", { manufacturer: "Texas Instruments" });
++    assert.ok(ref);
++    assert.equal(ref!.fileName, "LMP7704-SP.pdf");
++    assert.equal(ref!.pdfUrl, pdfUrl);
++    const head = new Uint8Array(ref!.bytes, 0, 5);
++    assert.deepEqual([...head], [0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
++  } finally {
++    restore();
++  }
++});
++
++test("a rad-hard part with no direct candidate and no search hit resolves to null", async () => {
++  // VORAGO VA10820 is not a TI part, so there is no direct URL candidate; the empty search then
++  // yields nothing. This is the expected miss the composite turns into the upload prompt.
++  const restore = stubEmptySearch();
++  try {
++    const ref = await new ScrapeResolver().resolve("VA10820", { manufacturer: "VORAGO" });
++    assert.equal(ref, null);
++  } finally {
++    restore();
++  }
++});
++
++test("a search-engine error surfaces as a SOFT transport error, never a hard one", async () => {
++  // Every request fails. The direct candidates 404 (returned as not-found), then the first search
++  // fetch throws, which scrape wraps as a soft transport ResolverError so the user can still upload.
++  const original = globalThis.fetch;
++  globalThis.fetch = (async () => new Response("blocked", { status: 503 })) as typeof fetch;
++  try {
++    await assert.rejects(
++      () => new ScrapeResolver().resolve("VA10820", { manufacturer: "VORAGO" }),
++      (err: unknown) => err instanceof ResolverError && err.kind === "transport" && err.hard === false
++    );
++  } finally {
++    globalThis.fetch = original;
++  }
++});
+diff --git a/src/lib/retrieval/resolvers/__fixtures__/README.md b/src/lib/retrieval/resolvers/__fixtures__/README.md
+new file mode 100644
+index 0000000..001112e
+--- /dev/null
++++ b/src/lib/retrieval/resolvers/__fixtures__/README.md
+@@ -0,0 +1,22 @@
++# Nexar fixtures
++
++`nexar-lmp7704.json` is the GraphQL response body for a `supSearchMpn` query on LMP7704-SP,
++selecting exactly the fields in `SEARCH_QUERY` (`resolvers/nexar.ts`): `mpn`,
++`manufacturer.name`, `octopartUrl`, `bestDatasheet.url`.
++
++Status: hand-authored, pending live validation. We are blocked on the free Nexar Welcome 1K
++credentials (see `../../LAYER1.md`). This shape is our best read of the schema, not a captured
++response.
++
++## Swapping in the live response when credentials land
++
++1. Run `SEARCH_QUERY` for LMP7704-SP in the Nexar Nitro IDE (the query is the single source of
++   truth; do not retype it, copy it from `resolvers/nexar.ts`).
++2. Replace the contents of `nexar-lmp7704.json` with the captured `{ "data": { ... } }` body.
++3. Run `npm test`. `nexar.test.ts` loads this file and derives the datasheet URL, source page
++   URL, and MPN from it, so a same-shape capture needs no test edit. The test also asserts the
++   resolver sent exactly `SEARCH_QUERY`, so if the capture was taken against a different query
++   that mismatch surfaces immediately.
++
++Keep the fixture to publicly available parts only, same rule as `test-data/` (LMP7704-SP is
++public). No controlled or customer part numbers here.
+diff --git a/src/lib/retrieval/resolvers/__fixtures__/nexar-lmp7704.json b/src/lib/retrieval/resolvers/__fixtures__/nexar-lmp7704.json
+new file mode 100644
+index 0000000..a4fb13b
+--- /dev/null
++++ b/src/lib/retrieval/resolvers/__fixtures__/nexar-lmp7704.json
+@@ -0,0 +1,16 @@
++{
++  "data": {
++    "supSearchMpn": {
++      "results": [
++        {
++          "part": {
++            "mpn": "LMP7704-SP",
++            "manufacturer": { "name": "Texas Instruments" },
++            "octopartUrl": "https://octopart.com/lmp7704-sp",
++            "bestDatasheet": { "url": "https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf" }
++          }
++        }
++      ]
++    }
++  }
++}
+diff --git a/src/lib/retrieval/resolvers/nexar.ts b/src/lib/retrieval/resolvers/nexar.ts
+index c7bde43..0fcab24 100644
+--- a/src/lib/retrieval/resolvers/nexar.ts
++++ b/src/lib/retrieval/resolvers/nexar.ts
+@@ -18,8 +18,10 @@ const IDENTITY_URL = "https://identity.nexar.com/connect/token";
+ const GRAPHQL_URL = "https://api.nexar.com/graphql/";
+ 
+ // supSearchMpn does MPN matching and exposes bestDatasheet.url, the field we want. Isolated as a
+-// constant so a schema/field rename after we confirm access in the Nitro IDE is a one-line change.
+-const SEARCH_QUERY = `
++// constant, and exported so the test asserts the resolver sends exactly this query: the committed
++// fixture is the response to THIS query, and nothing copies the query string. A schema/field
++// rename after we confirm access in the Nitro IDE stays a one-line change here.
++export const SEARCH_QUERY = `
+   query ResolveDatasheet($q: String!, $limit: Int!, $country: String!) {
+     supSearchMpn(q: $q, limit: $limit, country: $country) {
+       results {

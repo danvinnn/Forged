@@ -1,0 +1,16 @@
+{
+  "data": {
+    "supSearchMpn": {
+      "results": [
+        {
+          "part": {
+            "mpn": "LMP7704-SP",
+            "manufacturer": { "name": "Texas Instruments" },
+            "octopartUrl": "https://octopart.com/lmp7704-sp",
+            "bestDatasheet": { "url": "https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf" }
+          }
+        }
+      ]
+    }
+  }
+}

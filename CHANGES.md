@@ -4,7 +4,7 @@ This set is reconciled with the Gemini work already on main. It adds the retriev
 gates the existing Gemini calls behind commercial mode, and preserves datasheet-gemini.ts.
 
     npm install        # picks up tsx (added) alongside @google/generative-ai (already present)
-    npm test           # 46 retrieval tests via tsx + node:test
+    npm test           # 57 retrieval tests via tsx + node:test
     npx tsc --noEmit   # typechecks the whole repo, Gemini included
 
 ## Added (clean, no conflicts)
@@ -38,3 +38,30 @@ core air-gap defect. This merge gates it. Also removed lookupAndParseDatasheetWi
 route path: using a model to FIND the datasheet URL is the hallucination pattern ARCHITECTURE.md
 forbids. Proper Gemini extraction belongs in Layer 2 behind ExtractionModel, commercial-only, with
 a local open-weight model for air-gapped.
+
+## Follow-up pass (2026-07-22): Layer 1 finalized
+
+Config surfacing, Nexar fixture, CI, and the coverage gaps that were left open.
+
+### Added
+- src/app/... page.tsx now consumes GET /api/config (mode-gated lookup box, loading state,
+  fail-closed on config error)
+- src/lib/retrieval/resolvers/__fixtures__/nexar-lmp7704.json + README.md  (GraphQL response
+  fixture; SEARCH_QUERY exported and asserted so a live capture swaps in with no test edit)
+- src/lib/retrieval/__tests__/scrape.test.ts   (first coverage for the demoted scrape resolver)
+- .github/workflows/ci.yml                      (tsc + npm test on PRs; air-gap scan + corpus
+  allowlist gates run here)
+- .nvmrc                                        (Node pinned to 22; local dev is on 21)
+
+### Modified
+- src/lib/retrieval/resolvers/nexar.ts          (export SEARCH_QUERY only; no behavior change)
+- src/lib/retrieval/__tests__/nexar.test.ts     (load the fixture; add the error-taxonomy suite)
+- src/app/globals.css                           (loading placeholder + air-gap notice styles)
+- .gitignore                                    (ignore *.tsbuildinfo)
+
+### Removed from tracking
+- tsconfig.tsbuildinfo                          (git rm --cached; build artifact, now gitignored)
+
+### Not code, needs a human
+- Branch protection on main requiring the `verify` job (otherwise the gates do not block merges).
+- Nexar live validation with the free Welcome 1K credentials, then swap the fixture.

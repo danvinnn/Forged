@@ -447,3 +447,16 @@ tbody td {
     min-width: 0;
   }
 }
+/* Layer 1 mode surfacing: loading placeholder and air-gapped notice for the tool row. */
+.config-loading {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  min-height: 120px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.airgap-notice {
+  border-left: 3px solid var(--navy);
+}

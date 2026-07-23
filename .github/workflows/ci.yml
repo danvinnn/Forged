@@ -1,0 +1,34 @@
+name: CI
+
+# Runs on every PR and on pushes to main. The retrieval suite (npm test) includes the two
+# merge-blocking gates from LAYER1.md: the air-gap source scan (air-gap-safe modules contain no
+# fetch/external URL and the resolver subtree stays dynamic-import only) and the corpus allowlist
+# (test-data/ holds only public, allowlisted part numbers). To make these actually block a merge,
+# enable branch protection on main and mark the "verify" job below as a required status check.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Pinned via .nvmrc so CI and local dev agree. Local dev is on 21 (non-LTS); CI pins to
+          # an LTS so a Node-version quirk cannot pass locally and fail here, or the reverse.
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Tests (retrieval suite, incl. air-gap scan + corpus allowlist gates)
+        run: npm test

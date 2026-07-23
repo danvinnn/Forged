@@ -128,15 +128,50 @@ Nitro IDE checklist:
 - Unit: deployment defaults, upload validation, filename sanitize, pdf assert, hash stability,
   finalizeRef, composite semantics (skip / null / soft / hard), Nexar isConfigured + resolve via
   stubbed fetch, factory air-gap null, air-gap source scan.
+- Nexar error taxonomy (done): token 401 -> hard auth, graphql 429 -> soft rate_limit, graphql
+  errors array and non-JSON body -> hard bad_response, graphql timeout -> soft transport, empty
+  results -> null, datasheet URL serving HTML (anti-bot) -> null. Driven through resolve() against
+  the committed fixture, so the mapping the composite depends on is verified before creds land.
+- Scrape resolver (done): direct TI symlink hit (the TI-demo-not-regressing guarantee), clean null
+  on a non-TI miss, and a search-engine error mapping to a soft transport failure (never hard).
 - Integration: real LMP7704-SP bytes through finalizeRef into the parser.
 - Route-level: POST handlers with mocked mode and fetch, including a rad-hard part Nexar misses
   degrading cleanly to `DATASHEET_NOT_FOUND`.
 - Timeouts: abort fires and maps to a soft failure.
 - CI gates (merge-blocking): the air-gap source scan, and a corpus allowlist check that
   `test-data/` holds only known-public part numbers, so no customer datasheet is ever committed.
+  Both run inside `npm test` in `.github/workflows/ci.yml` on every PR. Making them actually block
+  a merge is a one-time GitHub setting: enable branch protection on `main` and mark the `verify`
+  job a required status check.
 
 ## Sequence
 Contracts and helpers first (this pass), then wire them through upload, resolvers, and routes,
 then Nexar hardening as far as creds allow, then `/api/config` and the client surfacing, then the
 route-level and CI test expansion. Build-time exclusion and DigiKey/Mouser are explicit
 fast-follows after the layer is solid.
+
+## Status (2026-07-22)
+
+Layer 1 is code-complete. Everything in Decided above is implemented and tested (57 tests,
+`tsc --noEmit` clean). This pass finished:
+
+- `/api/config` client surfacing in `page.tsx`: fetches `{ mode, lookupEnabled }` on load, gates
+  the part-number box, upload-only in air-gapped, with a loading state so nothing flashes. Fails
+  closed on a config fetch error (assume air-gapped) to match the server default; the server 403
+  stays the real gate.
+- Nexar GraphQL fixture at `resolvers/__fixtures__/nexar-lmp7704.json`, loaded by `nexar.test.ts`.
+  `SEARCH_QUERY` is exported and asserted, so the query is single-sourced and a live capture drops
+  in without a test edit (see the fixture README).
+- Nexar error taxonomy and scrape resolver now covered (see Test and CI plan).
+- `.github/workflows/ci.yml` runs `tsc --noEmit` and `npm test` on PRs; Node pinned via `.nvmrc`.
+- `tsconfig.tsbuildinfo` untracked and gitignored.
+
+Remaining before this is fully closed, none of which is code:
+
+- Enable branch protection on `main`, require the `verify` job. Until then the gates run but do
+  not block.
+- Live-validate Nexar with the free Welcome 1K credentials against the Nitro IDE checklist above,
+  then swap the fixture.
+
+Still deferred, unchanged: build-time exclusion of the resolver subtree, and DigiKey/Mouser
+resolvers. Consumer path first.
