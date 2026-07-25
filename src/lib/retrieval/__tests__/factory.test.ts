@@ -9,6 +9,7 @@ test("air-gapped mode never constructs a resolver", async () => {
 test("commercial mode returns a resolver", async () => {
   const resolver = await makeResolver("commercial");
   assert.ok(resolver);
-  // Nexar primary, scrape fallback, both present behind the composite.
-  assert.match(resolver!.name, /^composite\(nexar,scrape\)$/);
+  // Order is priority: manufacturer (free, deterministic, one GET) runs before scrape (a
+  // DuckDuckGo crawl), so the common case never touches a search engine.
+  assert.match(resolver!.name, /^composite\(manufacturer,scrape\)$/);
 });

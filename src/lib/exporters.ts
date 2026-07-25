@@ -1,6 +1,24 @@
 import JSZip from "jszip";
 import { type ExportFormat, type PartRecord, type PinRecord } from "./types";
 
+// Escapers for values interpolated into generated CAD files. Extracted fields (part number,
+// package type, manufacturer) are attacker-influenceable: they can arrive from a crafted datasheet
+// resolved through a Layer 1 lookup. Both formats below use quoted string literals, so an
+// unescaped quote or newline breaks out of the literal and injects structure into the file. This
+// is the CADGEN_INPUT_SANITIZATION obligation, fixed at the sink.
+
+// STEP Part 21 strings are single-quoted; a literal single quote is escaped by doubling it, and
+// control characters (which have no valid place in these identifiers) are stripped.
+function stepString(value: string): string {
+  return value.replace(/[\r\n\t]+/g, " ").replace(/'/g, "''");
+}
+
+// KiCad s-expression strings are double-quoted with backslash escaping. Escape backslash and quote,
+// and strip raw newlines so a value cannot open a new token on its own line.
+function kicadString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
+}
+
 function slugify(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "part";
 }
@@ -37,15 +55,15 @@ function buildStepModel(part: PartRecord): { content: string; note: string; supp
   const lines = [
     "ISO-10303-21;",
     "HEADER;",
-    `FILE_DESCRIPTION(('Forge generated STEP package body for ${part.partNumber}'),'2;1');`,
-    `FILE_NAME('${part.partNumber}.step','${now}',('Forge'),('Forge'),'Forge MVP','Forge','');`,
+    `FILE_DESCRIPTION(('Forge generated STEP package body for ${stepString(part.partNumber)}'),'2;1');`,
+    `FILE_NAME('${stepString(part.partNumber)}.step','${now}',('Forge'),('Forge'),'Forge MVP','Forge','');`,
     "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));",
     "ENDSEC;",
     "DATA;",
     "#1=APPLICATION_CONTEXT('mechanical design');",
     "#2=APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2001,#1);",
     "#3=PRODUCT_CONTEXT('',#1,'mechanical');",
-    `#4=PRODUCT('${part.partNumber}','${part.partNumber} package body','',(#3));`,
+    `#4=PRODUCT('${stepString(part.partNumber)}','${stepString(part.partNumber)} package body','',(#3));`,
     "#5=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE('1',$,#4,.MADE.);",
     "#6=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');",
     "#7=PRODUCT_DEFINITION('design',$,#5,#6);",
@@ -148,7 +166,7 @@ function kicadPinType(pinType: PinRecord["electricalType"]): string {
 }
 
 function buildSymbol(part: PartRecord): string {
-  const symbolName = part.partNumber;
+  const symbolName = kicadString(part.partNumber);
   const pinCount = Math.max(part.pins.length, part.pinCount);
   const leftPins = part.pins.filter((pin) => ["input", "power", "passive", "unspecified"].includes(pin.electricalType));
   const rightPins = part.pins.filter((pin) => pin.electricalType === "output");
@@ -204,14 +222,14 @@ function buildFootprint(part: PartRecord): string {
     `  (version 20240108)`,
     `  (generator Forge)`,
     `  (layer \"F.Cu\")`,
-    `  (descr \"Generated footprint for ${part.partNumber}\")`,
+    `  (descr \"Generated footprint for ${kicadString(part.partNumber)}\")`,
     `  (property \"Reference\" \"U\" (at 0 ${-(bodyHalfY + 1.8).toFixed(2)} 0) (layer \"F.SilkS\") (effects (font (size 1 1))))`,
-    `  (property \"Value\" \"${part.partNumber}\" (at 0 ${(bodyHalfY + 1.8).toFixed(2)} 0) (layer \"F.Fab\") (effects (font (size 1 1))))`,
+    `  (property \"Value\" \"${kicadString(part.partNumber)}\" (at 0 ${(bodyHalfY + 1.8).toFixed(2)} 0) (layer \"F.Fab\") (effects (font (size 1 1))))`,
     `  (fp_line (start ${(-bodyHalfX).toFixed(2)} ${(-bodyHalfY).toFixed(2)}) (end ${bodyHalfX.toFixed(2)} ${(-bodyHalfY).toFixed(2)}) (layer \"F.Fab\") (width 0.1))`,
     `  (fp_line (start ${bodyHalfX.toFixed(2)} ${(-bodyHalfY).toFixed(2)}) (end ${bodyHalfX.toFixed(2)} ${bodyHalfY.toFixed(2)}) (layer \"F.Fab\") (width 0.1))`,
     `  (fp_line (start ${bodyHalfX.toFixed(2)} ${bodyHalfY.toFixed(2)}) (end ${(-bodyHalfX).toFixed(2)} ${bodyHalfY.toFixed(2)}) (layer \"F.Fab\") (width 0.1))`,
     `  (fp_line (start ${(-bodyHalfX).toFixed(2)} ${bodyHalfY.toFixed(2)}) (end ${(-bodyHalfX).toFixed(2)} ${(-bodyHalfY).toFixed(2)}) (layer \"F.Fab\") (width 0.1))`,
-    `  (fp_text user \"${part.packageType}\" (at 0 0 0) (layer \"F.Fab\") (effects (font (size 0.8 0.8))))`
+    `  (fp_text user \"${kicadString(part.packageType)}\" (at 0 0 0) (layer \"F.Fab\") (effects (font (size 0.8 0.8))))`
   ];
 
   if (isPerimeterPackage) {

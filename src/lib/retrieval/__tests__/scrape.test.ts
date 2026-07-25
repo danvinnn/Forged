@@ -79,17 +79,105 @@ test("a rad-hard part with no direct candidate and no search hit resolves to nul
   }
 });
 
-test("a search-engine error surfaces as a SOFT transport error, never a hard one", async () => {
-  // Every request fails. The direct candidates 404 (returned as not-found), then the first search
-  // fetch throws, which scrape wraps as a soft transport ResolverError so the user can still upload.
+test("a search-engine error surfaces as a SOFT error, never a hard one", async () => {
+  // Every request fails. Direct candidates 404 (not-found), then every search backend returns 503,
+  // which the SearchClient classifies as a refusal. The resulting error is SOFT either way, so the
+  // user degrades to upload rather than seeing a hard operator error. The kind is now the more
+  // precise rate_limit rather than a generic transport failure, because "the engine refused us" is
+  // a different fact from "the network broke".
   const original = globalThis.fetch;
   globalThis.fetch = (async () => new Response("blocked", { status: 503 })) as typeof fetch;
   try {
     await assert.rejects(
       () => new ScrapeResolver().resolve("VA10820", { manufacturer: "VORAGO" }),
-      (err: unknown) => err instanceof ResolverError && err.kind === "transport" && err.hard === false
+      (err: unknown) => err instanceof ResolverError && err.hard === false
     );
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+// --- Distributor-hosted fallback --------------------------------------------------------------
+// The finding this exists for, checked 2026-07-22: VORAGO does not publish datasheets on its own
+// site at all. Its documentation index lists white papers, app notes, tech briefs, and PCNs, and
+// zero datasheets; the product page routes to a sales contact. The only public copies of
+// VA10820_DS_12.pdf are distributor-hosted. So for exactly the parts that define this product, a
+// distributor-hosted PDF is the only reachable source, and reading one a distributor serves
+// publicly to any browser needs no API key and no terms acceptance.
+
+test("tries a Mouser-hosted path for a part no manufacturer pattern claims", async () => {
+  const mouserUrl = "https://www.mouser.com/pdfdocs/VA10820.pdf";
+  const restore = stubDirectHit(mouserUrl);
+  try {
+    const ref = await new ScrapeResolver().resolve("VA10820", { manufacturer: "VORAGO" });
+    assert.ok(ref, "a distributor-hosted datasheet should still resolve");
+    assert.equal(ref!.pdfUrl, mouserUrl);
+    assert.equal(ref!.fileName, "VA10820.pdf");
+  } finally {
+    restore();
+  }
+});
+
+test("still resolves TI directly, unaffected by the distributor additions", async () => {
+  const tiUrl = "https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf";
+  const restore = stubDirectHit(tiUrl);
+  try {
+    const ref = await new ScrapeResolver().resolve("LMP7704-SP", { manufacturer: "Texas Instruments" });
+    assert.ok(ref);
+    assert.equal(ref!.pdfUrl, tiUrl);
+  } finally {
+    restore();
+  }
+});
+
+// --- Blocked search must not become a false "not found" ---------------------------------------
+import { SearchClient, SearchBlockedError } from "../resolvers/search";
+
+test("a blocked search throws SOFT instead of claiming the part has no datasheet", async () => {
+  // The production failure this prevents: on a cloud host every engine may refuse us. Returning
+  // null would make the route answer DATASHEET_NOT_FOUND, telling the user their part does not
+  // exist when we simply could not look. Soft means the composite swallows it, the user still gets
+  // the upload prompt, and the operator sees the real cause in the message.
+  const blockedClient = new SearchClient([
+    {
+      name: "all-blocked",
+      isConfigured: () => true,
+      search: async () => {
+        throw new SearchBlockedError("all-blocked", "captcha");
+      }
+    }
+  ]);
+  const restore = stubDirectHit("https://nothing.test/never.pdf"); // every direct candidate 404s
+  try {
+    await assert.rejects(
+      () => new ScrapeResolver(blockedClient).resolve("VA10820", { manufacturer: "VORAGO" }),
+      (err: unknown) =>
+        err instanceof ResolverError && err.hard === false && /refused/i.test(err.message)
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("deterministic candidates still resolve even when every search backend is blocked", async () => {
+  // The graceful-degradation property: TI parts keep working on a cloud host that search engines
+  // refuse to serve, because the direct vendor URL never touches a search engine.
+  const blockedClient = new SearchClient([
+    {
+      name: "all-blocked",
+      isConfigured: () => true,
+      search: async () => {
+        throw new SearchBlockedError("all-blocked", "HTTP 429");
+      }
+    }
+  ]);
+  const tiUrl = "https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf";
+  const restore = stubDirectHit(tiUrl);
+  try {
+    const ref = await new ScrapeResolver(blockedClient).resolve("LMP7704-SP", { manufacturer: "TI" });
+    assert.ok(ref, "direct vendor candidates must survive a total search outage");
+    assert.equal(ref!.pdfUrl, tiUrl);
+  } finally {
+    restore();
   }
 });

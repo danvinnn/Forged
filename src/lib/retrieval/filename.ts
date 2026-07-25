@@ -1,5 +1,5 @@
 // Filename sanitization for datasheet refs. Filenames come from user uploads and from resolver
-// responses (Nexar mpn strings), so neither can be trusted to be a safe basename. The generation
+// responses (vendor part-number strings), so neither can be trusted to be a safe basename. The generation
 // layer will eventually write files named off this, so path traversal and control characters are
 // stripped here, at the boundary.
 //

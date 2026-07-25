@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   getDeploymentMode,
   makeResolver,
+  clientKey,
+  activeLookupLimiter,
   toRetrievalSource,
   type DeploymentMode,
   type RetrievalError,
@@ -13,10 +15,18 @@ import { parseDatasheetPdf } from "../../../lib/datasheet";
 import { type PartRecord } from "../../../lib/types";
 
 export const runtime = "nodejs";
+// Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
+export const maxDuration = 30;
+
+// Bounded on purpose. Real manufacturer part numbers top out well under 64 characters, and these
+// strings are interpolated into vendor URLs and search queries, so an unbounded input is both a
+// memory concern and a way to generate absurd outbound requests from a public endpoint.
+const MAX_PART_NUMBER_LENGTH = 64;
+const MAX_MANUFACTURER_LENGTH = 64;
 
 const lookupSchema = z.object({
-  partNumber: z.string().trim().min(1),
-  manufacturer: z.string().trim().min(1).optional()
+  partNumber: z.string().trim().min(1).max(MAX_PART_NUMBER_LENGTH),
+  manufacturer: z.string().trim().min(1).max(MAX_MANUFACTURER_LENGTH).optional()
 });
 
 function fail(code: RetrievalErrorCode, error: string, mode: DeploymentMode, status: number) {
@@ -53,6 +63,17 @@ async function extractPart(
 export async function POST(request: Request) {
   const mode = getDeploymentMode();
 
+  // Rate limit BEFORE any parsing or resolution work. This route fans out to vendor sites and
+  // search engines, so an unlimited endpoint turns Forge into a traffic amplifier pointed at
+  // third parties we depend on.
+  const limit = activeLookupLimiter().check(clientKey(request));
+  if (!limit.allowed) {
+    return NextResponse.json<RetrievalError>(
+      { error: "Too many lookups. Try again shortly.", code: "RATE_LIMITED", mode },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } }
+    );
+  }
+
   const payload = await request.json().catch(() => null);
   const parsed = lookupSchema.safeParse(payload);
   if (!parsed.success) {
@@ -73,14 +94,21 @@ export async function POST(request: Request) {
   }
 
   // Retrieval (Layer 1): a deterministic resolver finds the datasheet. We never let a model find
-  // the URL; that hallucinates dead links. Nexar primary, scrape fallback.
+  // the URL; that hallucinates dead links. Manufacturer-direct primary, scrape fallback.
   let ref;
   try {
     ref = await resolver.resolve(partNumber, manufacturer ? { manufacturer } : undefined);
   } catch (error) {
+    // Never return the raw error to the client. The composite's aggregate message names internal
+    // resolvers, URLs, and upstream failure detail, which is operator information, not user
+    // information, and handing it to an anonymous caller maps out our internals for them.
+    console.error("[lookup] resolver chain failed", {
+      partNumber,
+      message: error instanceof Error ? error.message : String(error)
+    });
     return fail(
       "RESOLVER_FAILED",
-      error instanceof Error ? error.message : "Failed to resolve datasheet.",
+      "Could not retrieve the datasheet right now. Upload the PDF directly instead.",
       mode,
       502
     );

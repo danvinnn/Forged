@@ -20,6 +20,13 @@ export interface DatasheetRef {
   bytes: ArrayBuffer; // the downloaded PDF, ready to hand to the parser
   byteLength: number;
   sha256: string; // hash of bytes; the audit anchor identifying this exact PDF
+
+  // Which concrete resolver actually produced this ref. Set by CompositeResolver to the winning
+  // CHILD's name, because the composite's own name lists every resolver it tried and so answers
+  // "who could have" rather than "who did". The audit trail needs the latter: "resolved via
+  // manufacturer from ti.com" and "resolved via scrape" are different provenance claims, and
+  // traceability is a hard requirement, not a debugging nicety. Absent for uploads.
+  resolvedBy?: string;
 }
 
 export interface ResolveOptions {
@@ -33,7 +40,7 @@ export interface DatasheetResolver {
   readonly name: string;
 
   // A resolver may be present in the wiring but not usable right now, for example the
-  // Nexar resolver when its credentials are not set. The composite skips resolvers that
+  // a credentialed resolver whose keys are not set. The composite skips resolvers that
   // report themselves not ready, rather than treating a missing credential as a hard
   // failure. Resolvers with no configuration to check simply return true.
   isConfigured(): boolean;

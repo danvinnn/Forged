@@ -12,7 +12,7 @@ import type { DatasheetRef } from "./resolver";
 // audit trail records.
 export interface RetrievalSource {
   origin: "resolver" | "upload";
-  resolver?: string; // set when origin is "resolver", e.g. "composite(nexar,scrape)"
+  resolver?: string; // set when origin is "resolver"; the concrete winner, e.g. "manufacturer"
   fileName: string;
   pdfUrl?: string;
   sourcePageUrl?: string;
@@ -34,6 +34,7 @@ export type RetrievalErrorCode =
   | "DATASHEET_NOT_FOUND"
   | "RESOLVER_FAILED"
   | "UPLOAD_INVALID"
+  | "RATE_LIMITED"
   | "INTERNAL";
 
 export interface RetrievalError {
@@ -50,7 +51,9 @@ export function toRetrievalSource(
 ): RetrievalSource {
   return {
     origin,
-    resolver,
+    // Prefer the concrete resolver that produced the ref over the chain name passed by the caller.
+    // The caller only knows it holds a composite; the ref knows which child actually won.
+    resolver: ref.resolvedBy ?? resolver,
     fileName: ref.fileName,
     pdfUrl: ref.pdfUrl,
     sourcePageUrl: ref.sourcePageUrl,

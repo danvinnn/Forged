@@ -66,7 +66,15 @@ function formatSourceUrl(sourceUrl?: string) {
   }
 
   try {
-    return new URL(sourceUrl);
+    const parsed = new URL(sourceUrl);
+    // new URL() happily parses "javascript:..." and "data:...", and this value ends up as an
+    // anchor href. Our URLs come from the SSRF-guarded fetch path so they are already http(s),
+    // but this is the last hop before the DOM and the check is one line, so enforce it here too
+    // rather than relying on an invariant held three layers away.
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
