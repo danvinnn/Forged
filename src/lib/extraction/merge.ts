@@ -62,12 +62,45 @@ function searchableText(value: ModelValue["value"]): string | null {
   if (value === null) return null;
   if (typeof value === "number") return String(value);
   if (typeof value === "string") return value.trim() || null;
-  // A pin array has no single quotable string, so it cannot be verified this way.
+  // Arrays are verified structurally instead, see verifyPinTable.
   return null;
 }
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/\s+/g, "");
+}
+
+/**
+ * Fraction of a pin table's names that must appear on the page it cites for the
+ * citation to hold. Not 100%: a real table legitimately renders some names in
+ * ways the text layer mangles (rotated headers, glyph-split labels), and
+ * demanding perfection would reject correct tables. Not a bare majority either,
+ * since that would accept a table mostly invented around a few real names.
+ */
+const PIN_TABLE_MATCH_THRESHOLD = 0.6;
+
+/** Names too short or too generic to be evidence of anything. */
+function isDistinctive(name: string): boolean {
+  return name.trim().length >= 2;
+}
+
+/**
+ * Verifies a pin table by checking its names really are on the page it cites.
+ *
+ * A pin array has no single quotable string, so the string check cannot judge
+ * it, and the previous behavior was to leave it permanently uncited. That was a
+ * dead end: a model-supplied pin table could never be traceable, so it could
+ * never export, so the model could never help with the one field that blocks
+ * almost every part in the corpus. Checking the names individually asks the same
+ * question the string check asks, just spread across the rows.
+ */
+function verifyPinTable(pageText: string, pins: PinRecord[]): boolean {
+  const names = pins.map((pin) => pin.name).filter(isDistinctive);
+  if (names.length === 0) return false;
+
+  const haystack = normalize(pageText);
+  const found = names.filter((name) => haystack.includes(normalize(name))).length;
+  return found / names.length >= PIN_TABLE_MATCH_THRESHOLD;
 }
 
 /**
@@ -82,6 +115,14 @@ export function verifyCitation(doc: DatasheetText, claimed: ModelValue): Citatio
   if (claimed.page === null) return null;
   const page = doc.pages.find((candidate) => candidate.page === claimed.page);
   if (!page) return null;
+
+  // A pin table is judged by whether its rows are on the page, not by matching
+  // one string.
+  if (Array.isArray(claimed.value)) {
+    const pins = claimed.value as PinRecord[];
+    if (!verifyPinTable(page.text, pins)) return null;
+    return { page: page.page, snippet: `${pins.length}-row pin table`, region: null };
+  }
 
   const needle = searchableText(claimed.value);
   if (needle === null) return null;

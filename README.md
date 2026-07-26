@@ -114,13 +114,23 @@ Dev defaults to commercial mode, so lookup works with no configuration. Copy `.e
 there.
 
 ```bash
-npm test               # unit + integration + air-gap guard + security tests
-npx tsc --noEmit       # type check
-npm run bench:coverage # measured retrieval coverage (add -- --live for the real chain)
+npm test                 # unit + integration + air-gap guard + security tests
+npx tsc --noEmit         # type check
+npm run bench:coverage   # measured RETRIEVAL coverage (add -- --live for the real chain)
+npm run bench:extraction # measured EXTRACTION coverage (add -- --fetch to populate the cache)
 ```
 
-`npm run bench:coverage -- --live` should be run from the target deploy host: search engines block
-datacenter IP ranges, so the block rate on a laptop is not the block rate in production.
+The two benchmarks answer different questions, and both matter:
+
+- `bench:coverage` asks **can we find the datasheet**. Run `-- --live` from the target deploy host:
+  search engines block datacenter IP ranges, so the block rate on a laptop is not the block rate in
+  production.
+- `bench:extraction` asks **once we have it, how much can we read, and is the result good enough to
+  export**. It caches fetched PDFs under `.bench-cache/` (gitignored, never committed, since the
+  same rule that keeps datasheets out of `test-data/` applies).
+
+Measure before building. Judgment about coverage has been wrong twice in this repo, and both times a
+benchmark was what caught it.
 
 ## Validation
 
@@ -130,7 +140,7 @@ failures.
 
 ## Documentation
 
-- `ARCHITECTURE`-level intent and the three-layer rationale live with the team.
+- `ARCHITECTURE.md` is the top-level intent: the three-layer rationale and the hard constraints.
 - `src/lib/retrieval/LAYER1.md` is the decided record for retrieval, with every decision and its
   reasoning.
 - `DEFERRED.md` is the open backlog, each item with how to close it and how to prove it.

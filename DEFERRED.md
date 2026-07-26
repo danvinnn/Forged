@@ -42,6 +42,46 @@ against a fake; this is the live wiring.
 
 ---
 
+## P1: Pin-table extraction is the single thing blocking the product
+
+**What.** Measured, not guessed. `npm run bench:extraction` over the 67-part corpus on 2026-07-26,
+37 parts with a retrievable datasheet:
+
+```
+category              pdf    ident  pkg    geom   rad    cited  export
+radhard-major         8/8    100%    46%    25%    13%    39%    13%
+radhard-specialist    6/6    100%    17%     0%     4%    21%     0%
+analog               10/14   100%    67%    53%     0%    47%    10%
+mcu                   4/10   100%    17%    42%     0%    31%     0%
+power-discrete        3/10   100%    44%    44%     0%    39%     0%
+logic-interface       5/8    100%    67%    73%     0%    52%    20%
+connector             1/6     50%     0%    33%     0%    17%     0%
+memory-fpga           0/5      n/a    n/a    n/a    n/a    n/a    n/a
+TOTAL                37/67    99%    45%    39%     3%    38%     8%
+```
+
+**Only 8% of parsed parts are export-ready, and every blocked one is blocked on pin data**: 13
+missing pins, 11 missing pinCount, 10 missing both. Nothing else blocks a single part.
+
+Two more readings worth keeping:
+- **Identity extraction is 99%.** The parser reliably reads what a document IS. It cannot read
+  what is IN it. That is a structure problem, not a text-extraction problem.
+- **Radiation data is 3%**, and 13% on the rad-hard parts that define the product. For a rad-hard
+  intake tool, this is arguably as serious as the pin gap even though it does not block export.
+
+**How to close.** Two routes, and the corpus says to try them in this order:
+1. Look at the 34 blocked parts and see how many pin tables share a small number of layouts. The
+   deterministic parser currently understands one shape (`NAME NUM TYPE DESC`, TI's). If three
+   shapes cover most of the corpus, that is cheap and needs no model.
+2. Whatever remains is the genuine case for the model, which is now able to help: pin tables can be
+   citation-verified as of the same change that recorded this item, so a model-supplied table can
+   actually reach export instead of being permanently untraceable.
+
+**Proof.** Re-run `npm run bench:extraction` and move the export-ready number. It is the one metric
+that tracks whether the product works end to end.
+
+---
+
 ## P2: Verify search behavior from the real production host
 
 **What.** The search backends (`resolvers/search.ts`) degrade gracefully when blocked, but how often

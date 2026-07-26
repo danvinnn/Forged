@@ -169,3 +169,79 @@ test("the request carries pages, not a flattened blob", () => {
   // This is what makes a model answer citable at all.
   assert.match(request!.pages[1].text, /Terminal spacing/);
 });
+
+// --- Pin tables can now be verified, which unblocks the model path ----------
+// The benchmark showed pin data blocks 34 of 37 parsed corpus parts, and a model
+// is the intended answer for messy tables. While a pin array could never be
+// cited, a model-supplied table was permanently untraceable and so could never
+// export, making the model useless for the one field that actually matters.
+
+// Page 2 lists the pin names but in a layout the deterministic row parser cannot
+// read, which is exactly the case a model is for: the names ARE on the page, the
+// structure is not machine-readable.
+const pinTableDoc = datasheetTextFromPages([
+  "ACME1234 Quad Amplifier\nAvailable in a 8-pin SOIC package.",
+  "Pin assignments are shown in the package drawing: OUTA, INA-, INA+, VCC."
+]);
+
+test("a model pin table whose names ARE on the cited page gets a citation", () => {
+  const part = buildPartRecord(pinTableDoc, "ACME1234.pdf");
+  const result: ExtractionResult = {
+    values: {
+      pins: {
+        value: [
+          { number: "1", name: "OUTA", electricalType: "output" },
+          { number: "2", name: "INA-", electricalType: "input" },
+          { number: "3", name: "INA+", electricalType: "input" },
+          { number: "4", name: "VCC", electricalType: "power" }
+        ],
+        page: 2
+      }
+    }
+  };
+  const { part: merged, uncited } = mergeModelValues(part, pinTableDoc, result, "test-model");
+
+  assert.ok(merged.pins.citation, "a table whose rows are on the page must be citable");
+  assert.equal(merged.pins.citation!.page, 2);
+  assert.match(merged.pins.citation!.snippet, /4-row pin table/);
+  assert.ok(!uncited.includes("pins"));
+});
+
+test("a model pin table that is mostly invented is NOT cited", () => {
+  const part = buildPartRecord(pinTableDoc, "ACME1234.pdf");
+  const result: ExtractionResult = {
+    values: {
+      pins: {
+        value: [
+          { number: "1", name: "OUTA", electricalType: "output" },
+          { number: "2", name: "FAKE1", electricalType: "input" },
+          { number: "3", name: "FAKE2", electricalType: "input" },
+          { number: "4", name: "FAKE3", electricalType: "power" }
+        ],
+        page: 2
+      }
+    }
+  };
+  const { part: merged, uncited } = mergeModelValues(part, pinTableDoc, result, "test-model");
+
+  // Only 1 of 4 names is real, well under the threshold.
+  assert.equal(merged.pins.citation, null, "a mostly-fabricated table must not be cited");
+  assert.ok(uncited.includes("pins"));
+});
+
+test("a table cited to the WRONG page is not accepted", () => {
+  const part = buildPartRecord(pinTableDoc, "ACME1234.pdf");
+  const result: ExtractionResult = {
+    values: {
+      pins: {
+        value: [
+          { number: "1", name: "OUTA", electricalType: "output" },
+          { number: "2", name: "INA-", electricalType: "input" }
+        ],
+        page: 1
+      }
+    }
+  };
+  const { part: merged } = mergeModelValues(part, pinTableDoc, result, "test-model");
+  assert.equal(merged.pins.citation, null, "the rows are on page 2, not page 1");
+});

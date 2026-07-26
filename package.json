@@ -9,7 +9,8 @@
     "lint": "next lint",
     "test": "tsx --test 'src/lib/**/__tests__/*.test.ts'",
     "test:retrieval": "tsx --test 'src/lib/**/__tests__/*.test.ts'",
-    "bench:coverage": "tsx src/lib/retrieval/__bench__/coverage.ts"
+    "bench:coverage": "tsx src/lib/retrieval/__bench__/coverage.ts",
+    "bench:extraction": "tsx src/lib/__bench__/extraction.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
