@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertFetchableUrl, isBlockedAddress, BlockedUrlError } from "../resolvers/urlguard";
+import { assertFetchableUrl, isBlockedAddress, pinnedAgent, BlockedUrlError } from "../resolvers/urlguard";
 
 // The exposure these close: the scrape resolver fetches URLs it extracted from third-party
 // search-result HTML, and follows redirects. Without this guard, a poisoned result or a redirect
@@ -60,8 +60,32 @@ test("rejects a literal private IP in the URL", async () => {
 });
 
 test("accepts a real vendor datasheet URL", async () => {
-  const url = await assertFetchableUrl("https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf");
-  assert.equal(url.hostname, "www.ti.com");
+  const checked = await assertFetchableUrl("https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf");
+  assert.equal(checked.url.hostname, "www.ti.com");
+  // A named host is pinned to the address the guard cleared, which is what
+  // closes the rebinding window between the check and the connection.
+  assert.ok(checked.pinnedAddress, "a resolved hostname must be pinned");
+  assert.equal(isBlockedAddress(checked.pinnedAddress!), false, "the pin must be a cleared address");
+});
+
+test("a literal IP has nothing to pin", async () => {
+  // There is no name to re-resolve, so pinning adds nothing and is skipped.
+  const checked = await assertFetchableUrl("http://93.184.216.34/x.pdf");
+  assert.equal(checked.pinnedAddress, null);
+});
+
+test("the pinned agent connects only to the cleared address", async () => {
+  const checked = await assertFetchableUrl("https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf");
+  const agent = pinnedAgent(checked);
+  assert.ok(agent, "expected a pinned agent for a named host");
+  await agent!.close();
+});
+
+test("no agent is produced when there is nothing to pin", () => {
+  assert.equal(
+    pinnedAgent({ url: new URL("http://93.184.216.34/"), pinnedAddress: null, pinnedFamily: null }),
+    null
+  );
 });
 
 test("rejects a malformed URL rather than passing it to fetch", async () => {

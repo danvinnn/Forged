@@ -5,7 +5,8 @@
 // NETWORK MODULE. Only ever loaded through the commercial branch of makeResolver. Never imported
 // in air-gapped mode.
 
-import { assertFetchableUrl, BlockedUrlError } from "./urlguard";
+import type { Agent } from "undici";
+import { assertFetchableUrl, pinnedAgent, BlockedUrlError } from "./urlguard";
 import { MAX_PDF_BYTES } from "../pdf";
 
 // Search and API calls should return quickly; a slow one is usually a dead host.
@@ -42,18 +43,30 @@ export async function fetchWithTimeout(
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // One pinned agent per hop. undici's close() drains in-flight requests before
+  // tearing down, so these can all be closed as soon as the exchange is set up
+  // and the response body still streams to completion. Leaving them open would
+  // leak a connection pool per lookup on a long-running server.
+  const agents: Agent[] = [];
 
   try {
     let currentUrl = url;
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      await assertFetchableUrl(currentUrl);
+      const checked = await assertFetchableUrl(currentUrl);
+
+      // Pin the connection to the address the guard just cleared, so a DNS
+      // record that changes between the check and the connect cannot redirect
+      // the socket to an internal host.
+      const agent = pinnedAgent(checked);
+      if (agent) agents.push(agent);
 
       const response = await fetch(currentUrl, {
         ...init,
         signal: controller.signal,
-        redirect: "manual"
-      });
+        redirect: "manual",
+        ...(agent ? { dispatcher: agent } : {})
+      } as RequestInit);
 
       const location = response.headers.get("location");
       const isRedirect = response.status >= 300 && response.status < 400 && location;
@@ -71,6 +84,9 @@ export async function fetchWithTimeout(
     throw error;
   } finally {
     clearTimeout(timer);
+    // Safe on every path: close() drains before tearing down, so a response
+    // body the caller has not read yet still completes.
+    for (const agent of agents) void agent.close();
   }
 }
 

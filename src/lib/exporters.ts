@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { type ExportFormat, type PartRecord, type PinRecord } from "./types";
+import { type ExportFormat, type PinRecord, type ResolvedPart } from "./types";
 
 // Escapers for values interpolated into generated CAD files. Extracted fields (part number,
 // package type, manufacturer) are attacker-influenceable: they can arrive from a crafted datasheet
@@ -32,7 +32,7 @@ function stepPoint(x: number, y: number, z: number): string {
   return `(${formatStepNumber(x)},${formatStepNumber(y)},${formatStepNumber(z)})`;
 }
 
-function buildStepModel(part: PartRecord): { content: string; note: string; supported: boolean; fileName: string } {
+function buildStepModel(part: ResolvedPart): { content: string; note: string; supported: boolean; fileName: string } {
   const lengthMm = part.dimensions.bodyLengthMm ?? Math.max(part.pinCount * 0.8, 4.0);
   const widthMm = part.dimensions.bodyWidthMm ?? Math.max(part.pinCount * 0.55, 3.0);
   const heightMm = part.dimensions.bodyHeightMm ?? 1.5;
@@ -165,7 +165,7 @@ function kicadPinType(pinType: PinRecord["electricalType"]): string {
   }
 }
 
-function buildSymbol(part: PartRecord): string {
+function buildSymbol(part: ResolvedPart): string {
   const symbolName = kicadString(part.partNumber);
   const pinCount = Math.max(part.pins.length, part.pinCount);
   const leftPins = part.pins.filter((pin) => ["input", "power", "passive", "unspecified"].includes(pin.electricalType));
@@ -203,7 +203,7 @@ function buildSymbol(part: PartRecord): string {
   return lines.join("\n");
 }
 
-function buildFootprint(part: PartRecord): string {
+function buildFootprint(part: ResolvedPart): string {
   const pinCount = Math.max(part.pins.length, part.pinCount);
   const packageType = part.packageType.toUpperCase();
   const isPerimeterPackage = /CFP|QFP|LQFP|TQFP|SOP|SOIC|QFN|DFN|SON|LCC|CLCC|CERAMIC|FLAT PACK|HBH/.test(packageType);
@@ -279,7 +279,7 @@ function buildFootprint(part: PartRecord): string {
   return lines.join("\n");
 }
 
-function buildExchangeArtifact(part: PartRecord, format: Exclude<ExportFormat, "kicad">, kind: "symbol" | "footprint", content: string): { name: string; content: string } {
+function buildExchangeArtifact(part: ResolvedPart, format: Exclude<ExportFormat, "kicad">, kind: "symbol" | "footprint", content: string): { name: string; content: string } {
   return {
     name: `${slugify(part.partNumber)}.${format}.${kind}.txt`,
     content: [
@@ -291,7 +291,7 @@ function buildExchangeArtifact(part: PartRecord, format: Exclude<ExportFormat, "
   };
 }
 
-export async function createExportZip(part: PartRecord, format: ExportFormat) {
+export async function createExportZip(part: ResolvedPart, format: ExportFormat) {
   const zip = new JSZip();
   const baseName = slugify(part.partNumber);
   const stepModel = buildStepModel(part);

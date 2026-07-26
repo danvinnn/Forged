@@ -11,7 +11,9 @@ import {
   type RetrievalErrorCode,
   type RetrievalSuccess
 } from "../../../lib/retrieval";
-import { parseDatasheetPdf } from "../../../lib/datasheet";
+import { extractPartRecord } from "../../../lib/datasheet";
+import { PdfExtractionError } from "../../../lib/pdftext";
+import { buildExtractionRequest, makeExtractionModel, mergeModelValues } from "../../../lib/extraction";
 import { type PartRecord } from "../../../lib/types";
 
 export const runtime = "nodejs";
@@ -37,27 +39,39 @@ function normalizePartNumber(value: string): string {
   return value.trim().toUpperCase().replace(/\s+/g, "");
 }
 
-// Layer 2 extraction on already-retrieved bytes. Gemini is a cloud model, so it is gated to
-// commercial mode and reached only through a dynamic import: in air-gapped mode the cloud module
-// is never loaded and the deterministic parser is used. This mirrors the resolver air-gap guard.
-// Proper extraction (the ExtractionModel interface, local open-weight fallback for air-gapped)
-// is Layer 2 work; this is a demo-mode bridge that preserves the existing Gemini path safely.
+// Layer 2 extraction on already-retrieved bytes. The deterministic text pass always runs and always
+// wins; a model only fills fields it could not resolve. makeExtractionModel picks the model for the
+// deployment mode and reaches concrete models through dynamic imports, so the cloud model is never
+// loaded in air-gapped mode. This mirrors the resolver air-gap guard.
 async function extractPart(
   ref: { fileName: string; bytes: ArrayBuffer; pdfUrl?: string },
   mode: DeploymentMode,
   partNumberHint?: string
-): Promise<{ part: PartRecord; method: "gemini" | "regex" }> {
-  if (mode === "commercial" && process.env.GOOGLE_GEMINI_API_KEY) {
-    const { parseDatasheetWithGemini } = await import("../../../lib/datasheet-gemini");
-    const result = await parseDatasheetWithGemini(
-      Buffer.from(ref.bytes),
-      ref.pdfUrl ?? ref.fileName,
-      partNumberHint
-    );
-    return { part: result.part, method: "gemini" };
+): Promise<{ part: PartRecord; method: string }> {
+  // Deterministic pass first, always. A model only fills what it could not read.
+  const { doc, part } = await extractPartRecord(ref.fileName, ref.bytes, ref.pdfUrl);
+
+  const model = await makeExtractionModel(mode);
+  if (!model) return { part, method: "deterministic" };
+
+  const request = buildExtractionRequest(part, doc, ref.fileName, partNumberHint);
+  if (!request) return { part, method: "deterministic" };
+
+  try {
+    const result = await model.extract(request);
+    const outcome = mergeModelValues(part, doc, result, model.name);
+    return {
+      part: outcome.part,
+      method: outcome.filled.length > 0 ? `deterministic+${model.name}` : "deterministic"
+    };
+  } catch (error) {
+    // The deterministic record is still useful; a model outage must not lose it.
+    console.error("extraction model failed", error);
+    return {
+      part: { ...part, notes: [...part.notes, `The ${model.name} extraction pass failed; only text extraction was applied.`] },
+      method: "deterministic"
+    };
   }
-  const part = await parseDatasheetPdf(ref.fileName, ref.bytes, ref.pdfUrl);
-  return { part, method: "regex" };
 }
 
 export async function POST(request: Request) {
@@ -66,7 +80,7 @@ export async function POST(request: Request) {
   // Rate limit BEFORE any parsing or resolution work. This route fans out to vendor sites and
   // search engines, so an unlimited endpoint turns Forge into a traffic amplifier pointed at
   // third parties we depend on.
-  const limit = activeLookupLimiter().check(clientKey(request));
+  const limit = await activeLookupLimiter().check(clientKey(request));
   if (!limit.allowed) {
     return NextResponse.json<RetrievalError>(
       { error: "Too many lookups. Try again shortly.", code: "RATE_LIMITED", mode },
@@ -124,17 +138,33 @@ export async function POST(request: Request) {
   }
 
   // Extraction (Layer 2 hand-off): the resolver produced validated bytes; parse them.
-  const { part, method } = await extractPart(ref, mode, partNumber);
+  let part;
+  let method;
+  try {
+    ({ part, method } = await extractPart(ref, mode, partNumber));
+  } catch (error) {
+    // The resolver found a real PDF, but it is too large or complex to parse.
+    // That is a property of the document, not a server fault.
+    if (error instanceof PdfExtractionError) {
+      return NextResponse.json<RetrievalError>(
+        { error: error.message, code: "PARSE_LIMIT_EXCEEDED", mode },
+        { status: 422 }
+      );
+    }
+    throw error;
+  }
 
   // Keep the user-requested part number when the parser captured an unrelated token, and fill the
   // manufacturer hint when the parser could not find one.
   const requestedPart = normalizePartNumber(partNumber);
-  const parsedPart = normalizePartNumber(part.partNumber || "");
+  const parsedPart = normalizePartNumber(part.partNumber.value ?? "");
   if (!parsedPart || (!parsedPart.includes(requestedPart) && !requestedPart.includes(parsedPart))) {
-    part.partNumber = requestedPart;
+    // Supplied by the requester, not read off the datasheet, so it carries no
+    // citation and is marked as such rather than inheriting the parser's.
+    part.partNumber = { value: requestedPart, confidence: 1, method: "user", citation: null };
   }
-  if (manufacturer && part.manufacturer === "Unknown") {
-    part.manufacturer = manufacturer;
+  if (manufacturer && part.manufacturer.value === null) {
+    part.manufacturer = { value: manufacturer, confidence: 1, method: "user", citation: null };
   }
   part.sourceUrl = ref.pdfUrl;
   part.notes = [`Resolved via ${resolver.name} (${method}): ${ref.pdfUrl ?? ref.fileName}.`, ...part.notes];

@@ -1,1 +1,297 @@
-﻿{"format":"kicad","part":{"id":"1c2fde88-69ad-4c3f-9146-19a0ae10076f","partNumber":"LMP7704-SP","manufacturer":"Texas Instruments","packageType":"CFP (14)","pinCount":14,"pins":[{"number":"1","name":"OUTA","electricalType":"output","description":"OutputforamplifierA"},{"number":"3","name":"INA+","electricalType":"input","description":"NoninvertinginputforamplifierA"},{"number":"4","name":"OUTD1","electricalType":"output","description":"OutputforamplifierD"},{"number":"5","name":"INB+","electricalType":"input","description":"NoninvertinginputforamplifierB"},{"number":"7","name":"OUTB","electricalType":"output","description":"OutputforamplifierB"},{"number":"8","name":"OUTC","electricalType":"output","description":"OutputforamplifierC"},{"number":"10","name":"INC+","electricalType":"input","description":"NoninvertinginputforamplifierC"},{"number":"12","name":"IND+","electricalType":"input","description":"NoninvertinginputforamplifierD"}],"dimensions":{"bodyLengthMm":9.73,"bodyWidthMm":6.47,"bodyHeightMm":null,"pitchMm":null,"leadLengthMm":null,"leadCount":14},"radiation":{"tid":"100krad(Si)","see":"LET = 85MeV┬╖cm","sel":"LET = 85MeV┬╖cm","qmlClass":"QML Class V"},"sourceFileName":"LMP7704-SP.pdf","notes":["PDF pages: 30","Detected 8 pin candidates from text extraction.","Some package dimensions were extracted from text.","Radiation qualification text was detected."]}}
+{
+  "format": "kicad",
+  "part": {
+    "id": "8e8c0f9d-872b-407d-a18d-11c21f74ce52",
+    "partNumber": {
+      "value": "LMP7704-SP",
+      "confidence": 0.85,
+      "method": "deterministic",
+      "citation": {
+        "page": 1,
+        "snippet": "LMP7704-SP",
+        "region": {
+          "x": 503.982,
+          "y": 732.107,
+          "width": 54.01799999999997,
+          "height": 9
+        }
+      }
+    },
+    "manufacturer": {
+      "value": "Texas Instruments",
+      "confidence": 0.9,
+      "method": "deterministic",
+      "citation": {
+        "page": 1,
+        "snippet": "Texas Instruments",
+        "region": {
+          "x": 349.6,
+          "y": 288.57000000000005,
+          "width": 198.01600000000008,
+          "height": 8
+        }
+      }
+    },
+    "packageType": {
+      "value": "14-lead CFP",
+      "confidence": 0.75,
+      "method": "deterministic",
+      "citation": {
+        "page": 1,
+        "snippet": "14-lead CFP",
+        "region": {
+          "x": 70.862,
+          "y": 493.219,
+          "width": 213.2300000000001,
+          "height": 10
+        }
+      }
+    },
+    "pinCount": {
+      "value": 14,
+      "confidence": 0.95,
+      "method": "deterministic",
+      "citation": {
+        "page": 3,
+        "snippet": "IN A+ 3 Input Noninverting input for amp",
+        "region": {
+          "x": 58.86799999999998,
+          "y": 478.64200000000005,
+          "width": 282.245,
+          "height": 8.66700000000003
+        }
+      }
+    },
+    "pins": {
+      "value": [
+        {
+          "number": "1",
+          "name": "OUTA",
+          "electricalType": "output",
+          "description": "Output for amplifier A"
+        },
+        {
+          "number": "2",
+          "name": "INA-",
+          "electricalType": "input",
+          "description": "Inverting input for amplifier A"
+        },
+        {
+          "number": "3",
+          "name": "INA+",
+          "electricalType": "input",
+          "description": "Noninverting input for amplifier A"
+        },
+        {
+          "number": "4",
+          "name": "V+",
+          "electricalType": "power",
+          "description": "Positive supply"
+        },
+        {
+          "number": "5",
+          "name": "INB+",
+          "electricalType": "input",
+          "description": "Noninverting input for amplifier B"
+        },
+        {
+          "number": "6",
+          "name": "INB-",
+          "electricalType": "input",
+          "description": "Inverting input for amplifier B"
+        },
+        {
+          "number": "7",
+          "name": "OUTB",
+          "electricalType": "output",
+          "description": "Output for amplifier B"
+        },
+        {
+          "number": "8",
+          "name": "OUTC",
+          "electricalType": "output",
+          "description": "Output for amplifier C"
+        },
+        {
+          "number": "9",
+          "name": "INC-",
+          "electricalType": "input",
+          "description": "Inverting input for amplifier C"
+        },
+        {
+          "number": "10",
+          "name": "INC+",
+          "electricalType": "input",
+          "description": "Noninverting input for amplifier C"
+        },
+        {
+          "number": "11",
+          "name": "V-",
+          "electricalType": "power",
+          "description": "Negative supply"
+        },
+        {
+          "number": "12",
+          "name": "IND+",
+          "electricalType": "input",
+          "description": "Noninverting input for amplifier D"
+        },
+        {
+          "number": "13",
+          "name": "IND-",
+          "electricalType": "input",
+          "description": "Inverting input for amplifier D"
+        },
+        {
+          "number": "14",
+          "name": "OUTD",
+          "electricalType": "output",
+          "description": "Output for amplifier D"
+        }
+      ],
+      "confidence": 0.85,
+      "method": "deterministic",
+      "citation": {
+        "page": 3,
+        "snippet": "IN A+ 3 Input Noninverting input for amp",
+        "region": {
+          "x": 58.86799999999998,
+          "y": 478.64200000000005,
+          "width": 282.245,
+          "height": 8.66700000000003
+        }
+      }
+    },
+    "dimensions": {
+      "bodyLengthMm": {
+        "value": 9.73,
+        "confidence": 0.5,
+        "method": "deterministic",
+        "citation": {
+          "page": 1,
+          "snippet": "9.73mm × 6.47mm",
+          "region": {
+            "x": 465.937,
+            "y": 434.82,
+            "width": 66.91200000000003,
+            "height": 8
+          }
+        }
+      },
+      "bodyWidthMm": {
+        "value": 6.47,
+        "confidence": 0.5,
+        "method": "deterministic",
+        "citation": {
+          "page": 1,
+          "snippet": "9.73mm × 6.47mm",
+          "region": {
+            "x": 465.937,
+            "y": 434.82,
+            "width": 66.91200000000003,
+            "height": 8
+          }
+        }
+      },
+      "bodyHeightMm": {
+        "value": null,
+        "confidence": null,
+        "method": null,
+        "citation": null
+      },
+      "pitchMm": {
+        "value": null,
+        "confidence": null,
+        "method": null,
+        "citation": null
+      },
+      "leadLengthMm": {
+        "value": null,
+        "confidence": null,
+        "method": null,
+        "citation": null
+      },
+      "leadCount": {
+        "value": 14,
+        "confidence": 0.7,
+        "method": "deterministic",
+        "citation": {
+          "page": 1,
+          "snippet": "14-lead CFP",
+          "region": {
+            "x": 70.862,
+            "y": 493.219,
+            "width": 213.2300000000001,
+            "height": 10
+          }
+        }
+      }
+    },
+    "radiation": {
+      "tid": {
+        "value": "100krad(Si)",
+        "confidence": 0.8,
+        "method": "deterministic",
+        "citation": {
+          "page": 1,
+          "snippet": "RHA up to TID = 100krad(Si)",
+          "region": {
+            "x": 85.037,
+            "y": 613.219,
+            "width": 128.10000000000002,
+            "height": 10
+          }
+        }
+      },
+      "see": {
+        "value": "LET = 85MeV·cm2/mg",
+        "confidence": 0.8,
+        "method": "deterministic",
+        "citation": {
+          "page": 1,
+          "snippet": "SEE characterized to LET = 85MeV·cm2/mg",
+          "region": {
+            "x": 85.035,
+            "y": 577.219,
+            "width": 195.63700000000003,
+            "height": 10.83299999999997
+          }
+        }
+      },
+      "sel": {
+        "value": "LET = 85MeV·cm2/mg",
+        "confidence": 0.8,
+        "method": "deterministic",
+        "citation": {
+          "page": 1,
+          "snippet": "SEL resilient to LET = 85MeV·cm2/mg",
+          "region": {
+            "x": 85.037,
+            "y": 589.219,
+            "width": 168.958,
+            "height": 10.83299999999997
+          }
+        }
+      },
+      "qmlClass": {
+        "value": "QML Class V",
+        "confidence": 0.9,
+        "method": "deterministic",
+        "citation": {
+          "page": 1,
+          "snippet": "QML Class V",
+          "region": {
+            "x": 70.86699999999999,
+            "y": 638.719,
+            "width": 153.17000000000002,
+            "height": 10
+          }
+        }
+      }
+    },
+    "sourceFileName": "LMP7704-SP.pdf",
+    "notes": [
+      "PDF pages: 30"
+    ]
+  }
+}

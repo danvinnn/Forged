@@ -424,6 +424,35 @@ tbody td {
   padding-top: 2px;
 }
 
+/* Provenance: where a value came from and how sure the parser is. */
+.prov {
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--muted, #64748b);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.prov-unknown {
+  color: #b45309;
+}
+
+/* A model value with no verified citation: usable, but blocks export until confirmed. */
+.prov-untraceable {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.empty-state {
+  padding: 10px 12px;
+  border: 1px dashed #b45309;
+  border-radius: 4px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 @media (max-width: 1120px) {
   .tool-row,
   .content-grid,

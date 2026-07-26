@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import JSZip from "jszip";
 import { createExportZip } from "../exporters";
-import type { PartRecord } from "../types";
+import type { ResolvedPart } from "../types";
 
 // ENFORCED deferred obligation CADGEN_INPUT_SANITIZATION.
 //
@@ -16,7 +16,7 @@ import type { PartRecord } from "../types";
 // interpolating it into generated output. When that is done, this test passes, and the matching
 // ledger sentinel CADGEN_INPUT_SANITIZATION_DONE can be added.
 
-function partWith(partNumber: string): PartRecord {
+function partWith(partNumber: string): ResolvedPart {
   return {
     id: "inj-1",
     partNumber,
@@ -35,7 +35,7 @@ function partWith(partNumber: string): PartRecord {
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "test.pdf",
     notes: []
-  } as PartRecord;
+  } as ResolvedPart;
 }
 
 async function fileContents(zipBytes: Uint8Array): Promise<string> {

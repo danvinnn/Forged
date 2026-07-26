@@ -17,6 +17,10 @@ test("upload ref bytes parse into a PartRecord for LMP7704-SP", async () => {
   });
 
   const part = await parseDatasheetPdf(ref.fileName, ref.bytes, ref.pdfUrl);
-  assert.match(part.partNumber.toUpperCase(), /LMP7704/);
-  assert.ok(part.pins.length > 0, "expected the parser to find pins");
+  assert.match((part.partNumber.value ?? "").toUpperCase(), /LMP7704/);
+  assert.ok((part.pins.value ?? []).length > 0, "expected the parser to find pins");
+
+  // Traceability: a value that came off the datasheet must say where from.
+  assert.ok(part.partNumber.citation, "expected a citation for the part number");
+  assert.equal(part.partNumber.method, "deterministic");
 });

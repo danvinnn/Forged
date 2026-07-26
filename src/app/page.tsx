@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { ExportFormat, PartRecord, PinRecord } from "../lib/types";
+import { isUntraceable } from "../lib/provenance";
+import type { Extracted, ExportFormat, PartRecord, PinRecord } from "../lib/types";
 // Type-only import: erased at compile time, so no retrieval-layer runtime code (node:crypto,
 // the resolvers, etc.) is pulled into the client bundle.
 import type { DeploymentMode } from "../lib/retrieval";
@@ -17,30 +18,76 @@ const formatOptions: Array<{ value: ExportFormat; label: string; note: string }>
   { value: "cadence", label: "Cadence / OrCAD bundle", note: "Vendor-neutral exchange source, not native library files yet" }
 ]
 
+const nothing = <T,>(): Extracted<T> => ({ value: null, confidence: null, method: null, citation: null });
+
 const defaultPart: PartRecord = {
   id: "",
-  partNumber: "",
-  manufacturer: "",
-  packageType: "",
-  pinCount: 0,
-  pins: [],
+  partNumber: nothing<string>(),
+  manufacturer: nothing<string>(),
+  packageType: nothing<string>(),
+  pinCount: nothing<number>(),
+  pins: nothing<PinRecord[]>(),
   dimensions: {
-    bodyLengthMm: null,
-    bodyWidthMm: null,
-    bodyHeightMm: null,
-    pitchMm: null,
-    leadLengthMm: null,
-    leadCount: null
+    bodyLengthMm: nothing<number>(),
+    bodyWidthMm: nothing<number>(),
+    bodyHeightMm: nothing<number>(),
+    pitchMm: nothing<number>(),
+    leadLengthMm: nothing<number>(),
+    leadCount: nothing<number>()
   },
   radiation: {
-    tid: null,
-    see: null,
-    sel: null,
-    qmlClass: null
+    tid: nothing<string>(),
+    see: nothing<string>(),
+    sel: nothing<string>(),
+    qmlClass: nothing<string>()
   },
   sourceFileName: "",
   notes: []
 };
+
+/**
+ * A hand-entered value is fully trusted but has no citation, and must never
+ * keep the parser's provenance. Editing a field is a change of method.
+ */
+function userEdited<T>(value: T | null): Extracted<T> {
+  return { value, confidence: value === null ? null : 1, method: value === null ? null : "user", citation: null };
+}
+
+/** Renders provenance compactly: where it came from and how sure we are. */
+function Provenance({ field }: { field: Extracted<unknown> }) {
+  if (field.value === null) {
+    return <span className="prov prov-unknown">not found in datasheet</span>;
+  }
+  if (isUntraceable(field)) {
+    return (
+      <span className="prov prov-untraceable" title="Produced by an extraction model but not located in the datasheet. Verify it against the source, then edit the field to confirm.">
+        unverified · needs review
+      </span>
+    );
+  }
+  const parts: string[] = [];
+  if (field.citation) parts.push(`p${field.citation.page}`);
+  if (field.method === "user") parts.push("confirmed");
+  else if (field.method) parts.push(field.method);
+  if (field.confidence !== null) parts.push(`${Math.round(field.confidence * 100)}%`);
+  return (
+    <span className="prov" title={field.citation?.snippet ?? undefined}>
+      {parts.join(" · ")}
+    </span>
+  );
+}
+
+/** A value plus its provenance, for the read-only tables. */
+function Cell({ field }: { field: Extracted<string | number> }) {
+  return (
+    <>
+      <td>{field.value ?? "not found"}</td>
+      <td>
+        <Provenance field={field} />
+      </td>
+    </>
+  );
+}
 
 function clonePart(part: PartRecord): PartRecord {
   return JSON.parse(JSON.stringify(part)) as PartRecord;
@@ -48,8 +95,9 @@ function clonePart(part: PartRecord): PartRecord {
 
 function updatePin(part: PartRecord, index: number, field: keyof PinRecord, value: string) {
   const next = clonePart(part);
-  const pin = next.pins[index];
-  if (!pin) return next;
+  const pins = next.pins.value;
+  const pin = pins?.[index];
+  if (!pins || !pin) return next;
 
   if (field === "electricalType") {
     pin.electricalType = value as PinRecord["electricalType"];
@@ -57,6 +105,8 @@ function updatePin(part: PartRecord, index: number, field: keyof PinRecord, valu
     pin[field] = value;
   }
 
+  // The table was edited by hand, so the array's provenance changes with it.
+  next.pins = { value: pins, confidence: 1, method: "user", citation: next.pins.citation };
   return next;
 }
 
@@ -121,7 +171,7 @@ export default function HomePage() {
   }, []);
 
   const dimensionsRows = useMemo(
-    () => [
+    (): Array<[string, Extracted<number>]> => [
       ["Body length", part.dimensions.bodyLengthMm],
       ["Body width", part.dimensions.bodyWidthMm],
       ["Body height", part.dimensions.bodyHeightMm],
@@ -227,7 +277,7 @@ export default function HomePage() {
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = `${part.partNumber || "forge-part"}-forge.zip`;
+      anchor.download = `${part.partNumber.value || "forge-part"}-forge.zip`;
       anchor.click();
       URL.revokeObjectURL(objectUrl);
 
@@ -362,7 +412,7 @@ export default function HomePage() {
               </button>
             ))}
           </div>
-          <button className="export-button" type="button" onClick={handleExport} disabled={busy || !part.partNumber}>
+          <button className="export-button" type="button" onClick={handleExport} disabled={busy || !part.partNumber.value}>
             Download ZIP
           </button>
         </div>
@@ -382,23 +432,43 @@ export default function HomePage() {
           <div className="panel-title">Parsed part record</div>
           <div className="field-grid">
             <label>
-              <span>Part number</span>
-              <input value={part.partNumber} onChange={(event) => setPart({ ...part, partNumber: event.target.value })} />
+              <span>
+                Part number <Provenance field={part.partNumber} />
+              </span>
+              <input
+                value={part.partNumber.value ?? ""}
+                onChange={(event) => setPart({ ...part, partNumber: userEdited(event.target.value || null) })}
+              />
             </label>
             <label>
-              <span>Manufacturer</span>
-              <input value={part.manufacturer} onChange={(event) => setPart({ ...part, manufacturer: event.target.value })} />
+              <span>
+                Manufacturer <Provenance field={part.manufacturer} />
+              </span>
+              <input
+                value={part.manufacturer.value ?? ""}
+                onChange={(event) => setPart({ ...part, manufacturer: userEdited(event.target.value || null) })}
+              />
             </label>
             <label>
-              <span>Package type</span>
-              <input value={part.packageType} onChange={(event) => setPart({ ...part, packageType: event.target.value })} />
+              <span>
+                Package type <Provenance field={part.packageType} />
+              </span>
+              <input
+                value={part.packageType.value ?? ""}
+                onChange={(event) => setPart({ ...part, packageType: userEdited(event.target.value || null) })}
+              />
             </label>
             <label>
-              <span>Pin count</span>
+              <span>
+                Pin count <Provenance field={part.pinCount} />
+              </span>
               <input
                 type="number"
-                value={part.pinCount}
-                onChange={(event) => setPart({ ...part, pinCount: Number(event.target.value) || 0 })}
+                value={part.pinCount.value ?? ""}
+                placeholder="not found"
+                onChange={(event) =>
+                  setPart({ ...part, pinCount: userEdited(Number(event.target.value) || null) })
+                }
               />
             </label>
           </div>
@@ -410,13 +480,14 @@ export default function HomePage() {
                 <tr>
                   <th>Field</th>
                   <th>Value (mm)</th>
+                  <th>Source</th>
                 </tr>
               </thead>
               <tbody>
-                {dimensionsRows.map(([label, value]) => (
+                {dimensionsRows.map(([label, field]) => (
                   <tr key={label}>
                     <td>{label}</td>
-                    <td>{value ?? "—"}</td>
+                    <Cell field={field} />
                   </tr>
                 ))}
               </tbody>
@@ -430,30 +501,39 @@ export default function HomePage() {
                 <tr>
                   <th>Field</th>
                   <th>Value</th>
+                  <th>Source</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
                   <td>TID</td>
-                  <td>{part.radiation.tid ?? "—"}</td>
+                  <Cell field={part.radiation.tid} />
                 </tr>
                 <tr>
                   <td>SEE</td>
-                  <td>{part.radiation.see ?? "—"}</td>
+                  <Cell field={part.radiation.see} />
                 </tr>
                 <tr>
                   <td>SEL</td>
-                  <td>{part.radiation.sel ?? "—"}</td>
+                  <Cell field={part.radiation.sel} />
                 </tr>
                 <tr>
                   <td>QML/QPL</td>
-                  <td>{part.radiation.qmlClass ?? "—"}</td>
+                  <Cell field={part.radiation.qmlClass} />
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <div className="subpanel-title">Pin table</div>
+          <div className="subpanel-title">
+            Pin table <Provenance field={part.pins} />
+          </div>
+          {part.pins.value === null && (
+            <div className="empty-state">
+              No pin table was detected in this datasheet. Pins are left unknown rather than
+              estimated, and export is blocked until they are filled in.
+            </div>
+          )}
           <div className="table-wrap pin-table">
             <table>
               <thead>
@@ -465,7 +545,7 @@ export default function HomePage() {
                 </tr>
               </thead>
               <tbody>
-                {part.pins.map((pin, index) => (
+                {(part.pins.value ?? []).map((pin, index) => (
                   <tr key={`${pin.number}-${index}`}>
                     <td>
                       <input value={pin.number} onChange={(event) => setPart(updatePin(part, index, "number", event.target.value))} />

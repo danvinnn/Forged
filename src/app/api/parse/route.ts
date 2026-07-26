@@ -10,7 +10,12 @@ import {
   type RetrievalError,
   type RetrievalSuccess
 } from "../../../lib/retrieval";
-import { parseDatasheetPdf } from "../../../lib/datasheet";
+import { extractPartRecord } from "../../../lib/datasheet";
+import { PdfExtractionError } from "../../../lib/pdftext";
+// The extraction layer's public surface deliberately excludes the concrete
+// models, so importing it cannot pull a networked model into the air-gapped
+// module graph. makeExtractionModel reaches those by dynamic import.
+import { buildExtractionRequest, makeExtractionModel, mergeModelValues } from "../../../lib/extraction";
 
 export const runtime = "nodejs";
 // Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
@@ -20,16 +25,16 @@ export const maxDuration = 30;
 // Layer 1 step (validate, produce a DatasheetRef) and makes no network call, so this route is safe
 // in air-gapped mode.
 //
-// Extraction (Layer 2): Gemini is a cloud model, so it is gated to commercial mode and reached
-// only through a dynamic import. In air-gapped mode the cloud module is never loaded and the
-// deterministic parser runs. Proper extraction (local open-weight fallback for air-gapped) is
-// Layer 2 work; this preserves the existing Gemini demo path without breaking the air gap.
+// Extraction (Layer 2): the deterministic text pass always runs and always wins. A model is asked
+// only about fields it could not resolve, and can never overwrite one it did. Which model is even
+// available is decided by makeExtractionModel, which reaches concrete models through dynamic
+// imports so the cloud model is never loaded in air-gapped mode.
 export async function POST(request: Request) {
   const mode = getDeploymentMode();
 
   // Each call buffers and hashes megabytes, so the endpoint needs a ceiling even though it makes
   // no outbound request.
-  const limit = activeUploadLimiter().check(clientKey(request));
+  const limit = await activeUploadLimiter().check(clientKey(request));
   if (!limit.allowed) {
     return NextResponse.json<RetrievalError>(
       { error: "Too many uploads. Try again shortly.", code: "RATE_LIMITED", mode },
@@ -91,16 +96,45 @@ export async function POST(request: Request) {
     throw error;
   }
 
+  // Deterministic pass ALWAYS runs first and always wins. A model is only ever
+  // asked about fields the code could not read off the page.
+  let doc;
   let part;
-  let method: "gemini" | "regex";
-  if (mode === "commercial" && process.env.GOOGLE_GEMINI_API_KEY) {
-    const { parseDatasheetWithGemini } = await import("../../../lib/datasheet-gemini");
-    const result = await parseDatasheetWithGemini(Buffer.from(ref.bytes), ref.fileName);
-    part = result.part;
-    method = "gemini";
-  } else {
-    part = await parseDatasheetPdf(ref.fileName, ref.bytes);
-    method = "regex";
+  try {
+    const extracted = await extractPartRecord(ref.fileName, ref.bytes);
+    doc = extracted.doc;
+    part = extracted.part;
+  } catch (error) {
+    // A structurally valid PDF that is too large or too complex to parse is bad
+    // input, not a server fault, and must not read as a crash.
+    if (error instanceof PdfExtractionError) {
+      return NextResponse.json<RetrievalError>(
+        { error: error.message, code: "PARSE_LIMIT_EXCEEDED", mode },
+        { status: 422 }
+      );
+    }
+    throw error;
+  }
+  let method = "deterministic";
+
+  const model = await makeExtractionModel(mode);
+  if (model) {
+    const request = buildExtractionRequest(part, doc, ref.fileName);
+    if (request) {
+      try {
+        const result = await model.extract(request);
+        const outcome = mergeModelValues(part, doc, result, model.name);
+        part = outcome.part;
+        if (outcome.filled.length > 0) method = `deterministic+${model.name}`;
+      } catch (error) {
+        // A model failure must never cost the user the deterministic record.
+        console.error("extraction model failed", error);
+        part = {
+          ...part,
+          notes: [...part.notes, `The ${model.name} extraction pass failed; only text extraction was applied.`]
+        };
+      }
+    }
   }
 
   return NextResponse.json<RetrievalSuccess & { method: string }>({

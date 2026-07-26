@@ -14,25 +14,47 @@ function exportRequest(part: unknown, format = "kicad"): Request {
   });
 }
 
-// A complete part record that passes partSchema. Only partNumber varies across tests; the rest is
-// benign filler. If partSchema drifts, this is the one place to update.
+/** An honestly-unknown value: no value, so no confidence and no citation. */
+function notFound(): Record<string, unknown> {
+  return { value: null, confidence: null, method: null, citation: null };
+}
+
+/** Wraps a value in the Extracted envelope with a plausible citation. */
+function found(value: unknown): Record<string, unknown> {
+  return {
+    value,
+    confidence: 0.9,
+    method: "deterministic",
+    citation: { page: 1, snippet: String(value), region: null }
+  };
+}
+
+// A complete part record that passes partSchema AND resolveForExport. Only partNumber varies
+// across tests; the rest is benign filler. Pins are real because an export with no pin data is
+// now refused by design, which is the point of the extraction gate.
 function partWith(partNumber: string): Record<string, unknown> {
+  const pins = Array.from({ length: 8 }, (_, index) => ({
+    number: String(index + 1),
+    name: `P${index + 1}`,
+    electricalType: "unspecified"
+  }));
+
   return {
     id: "test-1",
-    partNumber,
-    manufacturer: "Test",
-    packageType: "SOIC-8",
-    pinCount: 8,
-    pins: [],
+    partNumber: found(partNumber),
+    manufacturer: found("Test"),
+    packageType: found("SOIC-8"),
+    pinCount: found(8),
+    pins: found(pins),
     dimensions: {
-      bodyLengthMm: 4.9,
-      bodyWidthMm: 3.9,
-      bodyHeightMm: 1.5,
-      pitchMm: 1.27,
-      leadLengthMm: 0.6,
-      leadCount: 8
+      bodyLengthMm: found(4.9),
+      bodyWidthMm: found(3.9),
+      bodyHeightMm: found(1.5),
+      pitchMm: found(1.27),
+      leadLengthMm: found(0.6),
+      leadCount: found(8)
     },
-    radiation: { tid: null, see: null, sel: null, qmlClass: null },
+    radiation: { tid: notFound(), see: notFound(), sel: notFound(), qmlClass: notFound() },
     sourceFileName: "test.pdf",
     notes: []
   };

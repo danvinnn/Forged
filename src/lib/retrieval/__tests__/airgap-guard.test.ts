@@ -31,7 +31,10 @@ const AIR_GAP_SAFE = [
   "ref.ts",
   "partnumber.ts",
   "cache.ts",
-  "ratelimit.ts"
+  "ratelimit.ts",
+  // Structured logging writes to stdout only. No transport, no vendor SDK, so
+  // it stays safe on the air-gapped path where every host still ingests stdout.
+  "logging.ts"
 ];
 
 test("air-gap-safe modules contain no fetch call", () => {
@@ -79,22 +82,99 @@ test("every retrieval-root module is accounted for in the air-gap scan", () => {
   );
 });
 
-// The parse route contains the cloud-extractor (Gemini) import. It must reach that import ONLY
-// through a dynamic import inside a commercial-mode branch, exactly like the resolver factory, so
-// air-gapped mode never loads the cloud module. This asserts the structural property, not just the
-// runtime gate the route tests cover.
-test("the parse route reaches the cloud extractor only via dynamic import", () => {
+// --- Layer 2 extraction subtree ----------------------------------------------------------------
+// Same guarantee as the resolver factory, now for extraction models. The cloud model must never be
+// loaded into an air-gapped process, and that is enforced structurally: the gate lives in
+// extraction/factory.ts, which reaches concrete models only through dynamic imports.
+
+const EXTRACTION_DIR = join(process.cwd(), "src", "lib", "extraction");
+
+function extractionCode(relativePath: string): string {
+  return stripComments(readFileSync(join(EXTRACTION_DIR, relativePath), "utf8"));
+}
+
+// Reachable in air-gapped mode (parse route -> extraction/index -> here). None may fetch.
+const EXTRACTION_AIR_GAP_SAFE = ["contracts.ts", "merge.ts", "factory.ts", "request.ts", "index.ts"];
+
+test("air-gap-safe extraction modules contain no fetch call", () => {
+  for (const file of EXTRACTION_AIR_GAP_SAFE) {
+    assert.doesNotMatch(extractionCode(file), /\bfetch\s*\(/, `${file} must not call fetch`);
+  }
+});
+
+test("air-gap-safe extraction modules contain no external URL literals", () => {
+  for (const file of EXTRACTION_AIR_GAP_SAFE) {
+    assert.doesNotMatch(extractionCode(file), /https?:\/\//, `${file} must not contain an external URL`);
+  }
+});
+
+test("every extraction-root module is accounted for in the air-gap scan", () => {
+  const { readdirSync } = require("node:fs") as typeof import("node:fs");
+  const present = readdirSync(EXTRACTION_DIR).filter(
+    (name) => name.endsWith(".ts") && !name.endsWith(".d.ts")
+  );
+  const listed = new Set(EXTRACTION_AIR_GAP_SAFE);
+  const missing = present.filter((name) => !listed.has(name));
+
+  assert.deepEqual(
+    missing,
+    [],
+    `these extraction-root modules are not covered by the air-gap scan: ${missing.join(", ")}. ` +
+      `Add each to EXTRACTION_AIR_GAP_SAFE, or move it under models/ if it is allowed to reach the network.`
+  );
+});
+
+test("the extraction factory reaches models only through dynamic imports", () => {
+  const factory = extractionCode("factory.ts");
+  assert.doesNotMatch(
+    factory,
+    /^\s*import\s+[^;]*from\s+["']\.\/models/m,
+    "factory must not statically import any concrete model"
+  );
+  assert.match(
+    factory,
+    /await\s+import\(\s*["']\.\/models\/gemini["']\s*\)/,
+    "the cloud model must be dynamic-imported"
+  );
+  assert.match(factory, /mode\s*===\s*["']commercial["']/, "the cloud model must be gated on commercial mode");
+});
+
+test("the cloud model is unreachable from the air-gapped branch of the factory", () => {
+  const factory = extractionCode("factory.ts");
+  // Everything before the commercial branch returns is the commercial path; the
+  // gemini import must not appear after it, which is the air-gapped fall-through.
+  const commercialBranch = factory.indexOf('mode === "commercial"');
+  const geminiImport = factory.indexOf("./models/gemini");
+  const branchEnd = factory.indexOf("return null;", commercialBranch);
+
+  assert.ok(commercialBranch >= 0 && geminiImport >= 0 && branchEnd >= 0);
+  assert.ok(
+    geminiImport > commercialBranch && geminiImport < branchEnd,
+    "the gemini import must sit inside the commercial branch"
+  );
+});
+
+test("the extraction index does not re-export the model subtree", () => {
+  assert.doesNotMatch(
+    extractionCode("index.ts"),
+    /from\s+["']\.\/models/,
+    "index must not surface the networked models"
+  );
+});
+
+test("the parse route does not statically import any extraction model", () => {
   const { readFileSync } = require("node:fs") as typeof import("node:fs");
   const route = stripComments(
     readFileSync(join(process.cwd(), "src", "app", "api", "parse", "route.ts"), "utf8")
   );
-  // No static import of the gemini module.
+  assert.doesNotMatch(
+    route,
+    /^\s*import\s+[^;]*from\s+["'][^"']*extraction\/models/m,
+    "parse route must not statically import a concrete model"
+  );
   assert.doesNotMatch(
     route,
     /^\s*import\s+[^;]*from\s+["'][^"']*datasheet-gemini/m,
-    "parse route must not statically import the cloud extractor"
+    "parse route must not statically import the legacy cloud extractor"
   );
-  // It is reached through a dynamic import, and that import is inside a commercial-mode gate.
-  assert.match(route, /await\s+import\(\s*["'][^"']*datasheet-gemini["']\s*\)/, "must be dynamic-imported");
-  assert.match(route, /mode\s*===\s*["']commercial["']/, "the cloud call must be gated on commercial mode");
 });

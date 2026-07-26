@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createExportZip } from "../../../lib/exporters";
-import { partSchema } from "../../../lib/types";
+import { partSchema, resolveForExport } from "../../../lib/types";
 import { sanitizeFileName, clientKey, RateLimiter } from "../../../lib/retrieval";
 
 export const runtime = "nodejs";
@@ -26,7 +26,7 @@ function contentDisposition(baseName: string): string {
 }
 
 export async function POST(request: Request) {
-  const limit = exportLimiter.check(clientKey(request));
+  const limit = await exportLimiter.check(clientKey(request));
   if (!limit.allowed) {
     return NextResponse.json(
       { error: "Too many exports. Try again shortly." },
@@ -46,6 +46,21 @@ export async function POST(request: Request) {
 
   const partResult = partSchema.safeParse(payload.part);
   if (!partResult.success) {
+    // A record in the pre-Extracted<T> shape fails with a wall of zod errors that
+    // do not say what is actually wrong. Detect it and say so plainly: every
+    // field is now { value, confidence, method, citation }, because the old flat
+    // shape had no way to express "this value is unknown".
+    const looksLegacy = typeof (payload.part as { partNumber?: unknown } | null)?.partNumber === "string";
+    if (looksLegacy) {
+      return NextResponse.json(
+        {
+          error:
+            "This part record uses the old flat format. Every extracted field is now an object: { value, confidence, method, citation }. Re-parse the datasheet to produce a current record.",
+          code: "LEGACY_RECORD_FORMAT"
+        },
+        { status: 400 }
+      );
+    }
     return NextResponse.json({ error: "Invalid part record.", details: partResult.error.flatten() }, { status: 400 });
   }
 
@@ -54,9 +69,35 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unsupported export format." }, { status: 400 });
   }
 
-  const bundle = await createExportZip(partResult.data, format);
+  // Refuse to generate CAD geometry from values nobody actually read off the
+  // datasheet. A guessed pin count becomes guessed pads on a flight part.
+  const resolved = resolveForExport(partResult.data);
+  if (!resolved.ok) {
+    if (resolved.untraceable?.length) {
+      return NextResponse.json(
+        {
+          error:
+            "Cannot generate CAD output: these values came from an extraction model and could not be located in the datasheet, so they are not traceable for sign-off. Verify them against the source and confirm before exporting.",
+          code: "UNTRACEABLE_EXTRACTION",
+          untraceable: resolved.untraceable
+        },
+        { status: 422 }
+      );
+    }
+    return NextResponse.json(
+      {
+        error:
+          "Cannot generate CAD output: required values were not extracted from the datasheet. Fill them in before exporting.",
+        code: "INCOMPLETE_EXTRACTION",
+        missing: resolved.missing
+      },
+      { status: 422 }
+    );
+  }
+
+  const bundle = await createExportZip(resolved.part, format);
   // sanitizeFileName enforces a safe basename; swap the .pdf it appends for the real .zip extension.
-  const fileName = sanitizeFileName(`${partResult.data.partNumber}-forge`).replace(/\.pdf$/, ".zip");
+  const fileName = sanitizeFileName(`${resolved.part.partNumber}-forge`).replace(/\.pdf$/, ".zip");
   const exportNote =
     format === "kicad"
       ? "KiCad source bundle generated successfully."

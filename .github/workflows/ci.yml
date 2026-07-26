@@ -1,10 +1,18 @@
 name: CI
 
-# Runs on every PR and on pushes to main. The retrieval suite (npm test) includes the two
-# merge-blocking gates from LAYER1.md: the air-gap source scan (air-gap-safe modules contain no
-# fetch/external URL and the resolver subtree stays dynamic-import only) and the corpus allowlist
-# (test-data/ holds only public, allowlisted part numbers). To make these actually block a merge,
-# enable branch protection on main and mark the "verify" job below as a required status check.
+# Runs on every PR and on pushes to main.
+#
+# This workflow is the ONLY mechanical gate on what reaches main, so it is written on the assumption
+# that a human reviewer may not read the diff closely. Everything a reviewer would otherwise be
+# relied on to catch, and that a machine can check, is checked here.
+#
+# npm test includes the merge-blocking gates from LAYER1.md: the air-gap source scan (air-gap-safe
+# modules contain no fetch/external URL, and both the resolver and extraction subtrees stay
+# dynamic-import only) and the corpus allowlist (test-data/ holds only public, allowlisted parts).
+#
+# IMPORTANT: "runs" is not "blocks". Until branch protection on main marks the "verify" job a
+# REQUIRED status check, a red build does not stop a merge. Enabling that is a one-time repo setting
+# and is the single highest-value safety control in this repo.
 on:
   pull_request:
   push:
@@ -19,8 +27,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Pinned via .nvmrc so CI and local dev agree. Local dev is on 21 (non-LTS); CI pins to
-          # an LTS so a Node-version quirk cannot pass locally and fail here, or the reverse.
+          # Pinned via .nvmrc so CI and local dev agree. Local dev has run on 21 (non-LTS) while
+          # this pins the LTS, which has already caused a real gap: a change verified only on 21 is
+          # not verified. Anything that must hold, holds here.
           node-version-file: .nvmrc
           cache: npm
 
@@ -30,5 +39,34 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
-      - name: Tests (retrieval suite, incl. air-gap scan + corpus allowlist gates)
+      - name: Tests (incl. air-gap scan + corpus allowlist gates)
         run: npm test
+
+      # Run the suite again. node:test executes files in PARALLEL and this codebase has already
+      # shipped two flaky races (rate-limiter singletons, fetch mutation). A single green run does
+      # not distinguish "passes" from "passed this time".
+      - name: Tests again (flake detection)
+        run: npm test
+
+      # The production build catches what tsc and tests do not: bundling errors, server/client
+      # boundary violations, and anything that only fails when Next actually compiles the app.
+      - name: Production build
+        run: npm run build
+
+      # A public repo. Committing a key is unrecoverable once pushed, so this is cheap insurance
+      # rather than a judgement call left to whoever opens the PR.
+      - name: Secret scan
+        run: |
+          if git grep -nEI \
+            'AIza[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY' \
+            -- . ':!package-lock.json'; then
+            echo "::error::Possible secret committed. Remove it and rotate the credential."
+            exit 1
+          fi
+          echo "No secret-shaped strings found."
+
+      # Advisory only: this repo carries pre-existing transitive advisories from next/eslint, so
+      # failing on them would make CI permanently red and train everyone to ignore it. Surfaced so a
+      # NEW one is at least visible in the log.
+      - name: Dependency audit (advisory)
+        run: npm audit --audit-level=critical || true

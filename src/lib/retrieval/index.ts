@@ -19,8 +19,8 @@ export type { UploadInput } from "./upload";
 
 export { makeResolver } from "./factory";
 
-export { RateLimiter, clientKey, lookupLimiter, uploadLimiter, activeLookupLimiter, activeUploadLimiter, __setLimiterOverrides } from "./ratelimit";
-export type { RateLimitResult } from "./ratelimit";
+export { RateLimiter, InMemoryRateLimitStore, clientKey, lookupLimiter, uploadLimiter, activeLookupLimiter, activeUploadLimiter, __setLimiterOverrides } from "./ratelimit";
+export type { RateLimitResult, RateLimitStore, RateLimiterOptions } from "./ratelimit";
 
 export { toRetrievalSource } from "./contracts";
 export type {

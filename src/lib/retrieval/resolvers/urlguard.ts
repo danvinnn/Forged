@@ -15,13 +15,19 @@
 //   2. Resolve the hostname and check the ADDRESSES it points at. Catches a public hostname that
 //      resolves to a private address, which is how DNS rebinding and internal-CNAME tricks work.
 //
-// Known residual risk, stated rather than hidden: between our DNS check and the connection, the
-// record could change (a TOCTOU rebinding attack). Closing that needs connection-level pinning,
-// which Node's fetch does not expose. Every redirect hop is re-checked, which is the main practical
-// vector, and the remaining window is narrow. Revisit if this ever handles untrusted input beyond
-// search results.
+//   3. PIN the connection to the address we validated. Steps 1 and 2 leave a window: between our
+//      DNS check and the socket connecting, the record can change, so the name we approved resolves
+//      to something else at connect time. That is DNS rebinding, and re-checking the URL does not
+//      close it because the check and the connection are two separate resolutions. `pinnedAgent`
+//      overrides connection-level lookup so the socket goes to the exact address the guard cleared.
+//
+// Residual risk after pinning, stated rather than hidden: a host legitimately behind round-robin DNS
+// is pinned to one of its addresses for that request, so a fetch can fail if that particular address
+// is down even though the name is healthy. That is an availability trade for a security guarantee,
+// and the failure maps to a soft transport error, so the chain moves on and upload still works.
 
 import { lookup } from "node:dns/promises";
+import { Agent } from "undici";
 
 export class BlockedUrlError extends Error {
   constructor(url: string, reason: string) {
@@ -66,9 +72,17 @@ export function isBlockedAddress(ip: string): boolean {
 const BLOCKED_HOSTNAMES = new Set(["localhost", "metadata.google.internal", "metadata"]);
 const BLOCKED_SUFFIXES = [".localhost", ".local", ".internal", ".localdomain"];
 
+/** A cleared URL plus the address the connection must actually go to. */
+export interface CheckedUrl {
+  url: URL;
+  /** The validated address to pin to, or null when there is nothing to pin. */
+  pinnedAddress: string | null;
+  pinnedFamily: 4 | 6 | null;
+}
+
 // Throws BlockedUrlError unless the URL is safe to fetch. Async because the DNS check is the half
 // that actually stops a public hostname pointing at an internal address.
-export async function assertFetchableUrl(rawUrl: string): Promise<URL> {
+export async function assertFetchableUrl(rawUrl: string): Promise<CheckedUrl> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -87,22 +101,23 @@ export async function assertFetchableUrl(rawUrl: string): Promise<URL> {
     throw new BlockedUrlError(rawUrl, "internal hostname");
   }
 
-  // Literal IP in the URL: check it directly, no DNS needed.
+  // Literal IP in the URL: check it directly, no DNS needed. Nothing to pin,
+  // because there is no name that could be re-resolved to something else.
   if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname) || hostname.includes(":")) {
     if (isBlockedAddress(hostname)) {
       throw new BlockedUrlError(rawUrl, "private or link-local address");
     }
-    return url;
+    return { url, pinnedAddress: null, pinnedFamily: null };
   }
 
   // Named host: resolve and check every address it points at.
-  let addresses: { address: string }[];
+  let addresses: { address: string; family: number }[];
   try {
     addresses = await lookup(hostname, { all: true });
   } catch {
     // DNS failure is not an SSRF signal. Let the fetch fail normally so it maps to a soft
     // transport error rather than looking like an attack.
-    return url;
+    return { url, pinnedAddress: null, pinnedFamily: null };
   }
 
   for (const { address } of addresses) {
@@ -111,5 +126,34 @@ export async function assertFetchableUrl(rawUrl: string): Promise<URL> {
     }
   }
 
-  return url;
+  // Pin to the first cleared address. Every address was checked above, so any of
+  // them is safe; taking one fixes what the socket will connect to and removes
+  // the second resolution that rebinding depends on.
+  const chosen = addresses[0];
+  return chosen
+    ? { url, pinnedAddress: chosen.address, pinnedFamily: chosen.family === 6 ? 6 : 4 }
+    : { url, pinnedAddress: null, pinnedFamily: null };
+}
+
+/**
+ * Builds a dispatcher whose connection-level lookup returns ONLY the address the
+ * guard already cleared, so the socket cannot be sent somewhere else by a DNS
+ * record that changed after the check.
+ *
+ * Returns null when there is nothing to pin (a literal IP, or a name that did
+ * not resolve), in which case the default dispatcher is used and behaviour is
+ * unchanged.
+ */
+export function pinnedAgent(checked: CheckedUrl): Agent | null {
+  if (!checked.pinnedAddress) return null;
+  const address = checked.pinnedAddress;
+  const family = checked.pinnedFamily ?? 4;
+
+  return new Agent({
+    connect: {
+      lookup(_hostname, _options, callback) {
+        callback(null, [{ address, family }]);
+      }
+    }
+  });
 }

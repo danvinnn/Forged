@@ -12,11 +12,16 @@
 // Fixed-window counter rather than a token bucket: the failure we care about is a burst from one
 // source, the window is short, and the simpler structure means less to get wrong.
 //
-// KNOWN LIMIT, stated plainly: this is per-process. On a serverless platform each instance keeps
-// its own counters, so the effective limit is roughly (limit x instances). That makes this a
-// mitigation, not a guarantee. A real guarantee needs shared state (Redis, or the platform's own
-// edge rate limiting) and should be added before any serious traffic. Per-process still stops the
-// single-client hammering case, which is the common one.
+// KNOWN LIMIT, stated plainly: the DEFAULT store is per-process. On a serverless platform each
+// instance keeps its own counters, so the effective limit is roughly (limit x instances). That makes
+// the default a mitigation, not a guarantee. Per-process still stops the single-client hammering
+// case, which is the common one.
+//
+// Closing that gap is now a store swap rather than surgery: `RateLimiter` talks to a
+// `RateLimitStore`, and `check` is async so a shared backend (Redis, Vercel KV, or the platform's
+// own edge limiter) can be dropped in without touching a single route. The concrete shared store
+// must live OUTSIDE this module, because everything here is reachable in air-gapped mode and may
+// not contain networking code; inject it at construction instead.
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -24,31 +29,44 @@ export interface RateLimitResult {
   retryAfterSeconds: number;
 }
 
+/**
+ * Storage behind a fixed-window counter.
+ *
+ * `hit` must be atomic per key: it records one request and reports the resulting
+ * state. Any implementation that reads and then writes non-atomically will
+ * undercount under concurrency, which is the whole failure this guards against.
+ */
+export interface RateLimitStore {
+  hit(key: string, limit: number, windowMs: number): Promise<RateLimitResult>;
+  reset(): void;
+  readonly size: number;
+}
+
 interface Window {
   count: number;
   resetAt: number;
 }
 
-export class RateLimiter {
+/**
+ * Default store. Single-process, no dependencies, safe in air-gapped mode.
+ * Atomic by construction because Node runs this synchronously on one thread.
+ */
+export class InMemoryRateLimitStore implements RateLimitStore {
   private readonly windows = new Map<string, Window>();
 
-  constructor(
-    private readonly limit: number,
-    private readonly windowMs: number,
-    private readonly maxKeys = 10_000
-  ) {}
+  constructor(private readonly maxKeys = 10_000) {}
 
-  check(key: string): RateLimitResult {
+  async hit(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
     const now = Date.now();
     const existing = this.windows.get(key);
 
     if (!existing || existing.resetAt <= now) {
       this.evictIfNeeded();
-      this.windows.set(key, { count: 1, resetAt: now + this.windowMs });
-      return { allowed: true, remaining: this.limit - 1, retryAfterSeconds: 0 };
+      this.windows.set(key, { count: 1, resetAt: now + windowMs });
+      return { allowed: true, remaining: limit - 1, retryAfterSeconds: 0 };
     }
 
-    if (existing.count >= this.limit) {
+    if (existing.count >= limit) {
       return {
         allowed: false,
         remaining: 0,
@@ -57,7 +75,7 @@ export class RateLimiter {
     }
 
     existing.count++;
-    return { allowed: true, remaining: this.limit - existing.count, retryAfterSeconds: 0 };
+    return { allowed: true, remaining: limit - existing.count, retryAfterSeconds: 0 };
   }
 
   // The map is keyed by client-controlled values, so it is itself a memory-exhaustion target: an
@@ -84,6 +102,39 @@ export class RateLimiter {
 
   get size(): number {
     return this.windows.size;
+  }
+}
+
+export interface RateLimiterOptions {
+  /** Defaults to an in-process store. Supply a shared one for a real guarantee. */
+  store?: RateLimitStore;
+  /** Only used by the default in-memory store. */
+  maxKeys?: number;
+}
+
+export class RateLimiter {
+  private readonly store: RateLimitStore;
+
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number,
+    options: RateLimiterOptions | number = {}
+  ) {
+    // A number keeps the older (limit, windowMs, maxKeys) call shape working.
+    const opts = typeof options === "number" ? { maxKeys: options } : options;
+    this.store = opts.store ?? new InMemoryRateLimitStore(opts.maxKeys);
+  }
+
+  check(key: string): Promise<RateLimitResult> {
+    return this.store.hit(key, this.limit, this.windowMs);
+  }
+
+  reset(): void {
+    this.store.reset();
+  }
+
+  get size(): number {
+    return this.store.size;
   }
 }
 

@@ -18,6 +18,7 @@
 
 import type { DatasheetRef, DatasheetResolver, ResolveOptions } from "../resolver";
 import { isHardFailure } from "./errors";
+import { logger } from "../logging";
 
 // Wall-clock ceiling for the whole chain. This matters more than it looks: our target parts are
 // rad-hard, and rad-hard MISSES in every resolver, so the full-chain walk is the COMMON path, not
@@ -72,11 +73,28 @@ export class CompositeResolver implements DatasheetResolver {
         break;
       }
 
+      const attemptedAt = Date.now();
       try {
         const ref = await resolver.resolve(partNumber, opts);
         // Stamp the winning child so the audit trail records who actually resolved it, not just
         // which chain was configured. A nested composite that already stamped keeps its inner name.
-        if (ref) return { ...ref, resolvedBy: ref.resolvedBy ?? resolver.name };
+        if (ref) {
+          // Resolver win rates and latency are otherwise invisible in production.
+          logger.info({
+            event: "resolver_hit",
+            resolver: ref.resolvedBy ?? resolver.name,
+            partNumber,
+            byteLength: ref.byteLength,
+            durationMs: Date.now() - attemptedAt
+          });
+          return { ...ref, resolvedBy: ref.resolvedBy ?? resolver.name };
+        }
+        logger.debug({
+          event: "resolver_miss",
+          resolver: resolver.name,
+          partNumber,
+          durationMs: Date.now() - attemptedAt
+        });
       } catch (error) {
         // Soft failures (rate limit, transport, timeout) are remembered but do not block the
         // fallback chain or the eventual upload path. Only hard failures (auth, bad response, or
@@ -102,6 +120,16 @@ export class CompositeResolver implements DatasheetResolver {
       throw new Error(`All datasheet resolvers failed for ${partNumber}. ${detail}${budgetNote}`);
     }
 
+    // The honest not-found. Logged so the miss RATE is measurable: a rising one
+    // is the signal that search is being blocked rather than that these parts
+    // genuinely have no datasheet.
+    logger.info({
+      event: "resolver_chain_miss",
+      chain: this.name,
+      partNumber,
+      budgetExhausted,
+      durationMs: Date.now() - startedAt
+    });
     return null;
   }
 }

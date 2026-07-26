@@ -78,7 +78,7 @@ test("commercial lookup resolves LMP7704-SP end to end", async () => {
     const res = await lookupPOST(jsonRequest({ partNumber: "LMP7704-SP", manufacturer: "Texas Instruments" }));
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.match(body.part.partNumber.toUpperCase(), /LMP7704/);
+    assert.match(String(body.part.partNumber.value).toUpperCase(), /LMP7704/);
     assert.equal(body.source.origin, "resolver");
     // The manufacturer resolver wins, with an empty .env and no third-party search call.
     // Provenance names the concrete resolver rather than the chain.
@@ -292,7 +292,8 @@ test("air-gapped upload NEVER invokes the cloud extractor, even with a key prese
   // Set the Gemini key AND air-gapped mode: the key must be irrelevant, the mode must win.
   const restoreEnv = setEnv({
     FORGE_DEPLOYMENT_MODE: "air-gapped",
-    GOOGLE_GEMINI_API_KEY: "test-key-that-must-never-be-used"
+    GOOGLE_GEMINI_API_KEY: "test-key-that-must-never-be-used",
+    FORGE_LOCAL_MODEL_URL: undefined
   });
   // Any outbound fetch during an air-gapped parse is a failure by definition.
   const originalFetch = globalThis.fetch;
@@ -307,7 +308,10 @@ test("air-gapped upload NEVER invokes the cloud extractor, even with a key prese
     const res = await parsePOST(new Request("http://test/api/parse", { method: "POST", body: form }));
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.equal(body.method, "regex", "air-gapped MUST use the local regex parser, never gemini");
+    // Asserted structurally rather than as an exact string, so a future rename
+    // of the deterministic pass cannot quietly weaken the ITAR invariant.
+    assert.match(body.method, /^deterministic/, "air-gapped MUST run the deterministic parser");
+    assert.doesNotMatch(body.method, /gemini/i, "no cloud model may appear in an air-gapped extraction");
     assert.equal(fetchCalled, false, "air-gapped parse must make no network call whatsoever");
   } finally {
     globalThis.fetch = originalFetch;
@@ -317,13 +321,14 @@ test("air-gapped upload NEVER invokes the cloud extractor, even with a key prese
 
 test("commercial upload without a Gemini key falls back to the local parser", async () => {
   // The gate is (commercial AND key). Commercial alone must not force a cloud call.
-  const restoreEnv = setEnv({ FORGE_DEPLOYMENT_MODE: "commercial", GOOGLE_GEMINI_API_KEY: undefined });
+  const restoreEnv = setEnv({ FORGE_DEPLOYMENT_MODE: "commercial", GOOGLE_GEMINI_API_KEY: undefined, FORGE_LOCAL_MODEL_URL: undefined });
   try {
     const form = new FormData();
     form.set("file", new File([new Uint8Array(REAL_PDF)], "LMP7704-SP.pdf", { type: "application/pdf" }));
     const res = await parsePOST(new Request("http://test/api/parse", { method: "POST", body: form }));
     const body = await res.json();
-    assert.equal(body.method, "regex");
+    assert.match(body.method, /^deterministic/);
+    assert.doesNotMatch(body.method, /gemini/i);
   } finally {
     restoreEnv();
   }

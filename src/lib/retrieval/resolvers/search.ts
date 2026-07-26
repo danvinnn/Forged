@@ -18,6 +18,7 @@
 // adding paid search later is an env var rather than a rewrite.
 
 import { fetchWithTimeout, SEARCH_TIMEOUT_MS } from "./http";
+import { logger } from "../logging";
 
 export interface SearchBackend {
   readonly name: string;
@@ -198,6 +199,13 @@ export class SearchClient {
     if (h.consecutiveBlocks >= BLOCK_THRESHOLD) {
       h.openUntil = Date.now() + COOLDOWN_MS;
       h.consecutiveBlocks = 0;
+      // Worth alerting on. A backend that goes dark is invisible otherwise, and
+      // the resulting coverage drop reads as "these parts have no datasheet".
+      logger.warn({
+        event: "search_circuit_opened",
+        backend: name,
+        cooldownMs: COOLDOWN_MS
+      });
     }
     this.health.set(name, h);
   }
@@ -227,6 +235,9 @@ export class SearchClient {
         if (error instanceof SearchBlockedError) {
           this.recordBlock(backend.name);
           anyBlocked = true;
+          // The block RATE is the metric that matters: it is the difference
+          // between "no datasheet exists" and "we could not look".
+          logger.warn({ event: "search_blocked", backend: backend.name, reason: error.message });
           continue;
         }
         // Transport failure or timeout. Try the next backend but do not count it as a block,

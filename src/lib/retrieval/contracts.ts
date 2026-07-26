@@ -35,6 +35,9 @@ export type RetrievalErrorCode =
   | "RESOLVER_FAILED"
   | "UPLOAD_INVALID"
   | "RATE_LIMITED"
+  // The PDF is structurally valid but too large or too complex to parse within
+  // the resource limits (page count, extracted text size, object count, time).
+  | "PARSE_LIMIT_EXCEEDED"
   | "INTERNAL";
 
 export interface RetrievalError {
