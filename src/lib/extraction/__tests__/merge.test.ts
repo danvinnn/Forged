@@ -150,7 +150,10 @@ test("no request is built when the text pass resolved everything it can", () => 
   }
   full.pins = { value: [{ number: "1", name: "A", electricalType: "unspecified" }], confidence: 1, method: "deterministic", citation: null };
   for (const key of Object.keys(full.dimensions) as Array<keyof typeof full.dimensions>) {
-    full.dimensions[key] = { value: 1, confidence: 1, method: "deterministic", citation: null };
+    // Lead width is a min/max pair rather than a scalar; every other dimension
+    // is a plain number and the value itself does not matter here.
+    const value = key === "leadWidthMm" ? { minMm: 1, maxMm: 1 } : 1;
+    full.dimensions[key] = { value, confidence: 1, method: "deterministic", citation: null } as never;
   }
   for (const key of Object.keys(full.radiation) as Array<keyof typeof full.radiation>) {
     full.radiation[key] = { value: "x", confidence: 1, method: "deterministic", citation: null };
@@ -244,4 +247,103 @@ test("a table cited to the WRONG page is not accepted", () => {
   };
   const { part: merged } = mergeModelValues(part, pinTableDoc, result, "test-model");
   assert.equal(merged.pins.citation, null, "the rows are on page 2, not page 1");
+});
+
+/**
+ * The shape a REAL model returns, which nothing exercised before 2026-07-29.
+ *
+ * Every fixture in this file builds well-formed `PinRecord`s by hand, so the
+ * merge was only ever tested against values already in our own types. A live
+ * Gemini call returns `{"number": 1}` as an INTEGER against a schema requiring a
+ * string, and `"electricalType": null` against an enum with no null member.
+ * Stored raw, those passed `resolveForExport` in process and then failed
+ * `partSchema.safeParse` at `/api/export` with "Invalid part record", so the
+ * model path had never once produced a bundle end to end.
+ */
+test("a model's pin rows are coerced to the record contract", () => {
+  const part = deterministic();
+  const merged = mergeModelValues(
+    part,
+    doc,
+    {
+      values: {
+        pins: {
+          value: [
+            { number: 1, name: "VIN", electricalType: null, description: "Input" },
+            { number: 2, name: "GND", electricalType: "power" }
+          ] as never,
+          page: 1
+        }
+      }
+    },
+    "gemini"
+  );
+
+  const pins = merged.part.pins.value!;
+  assert.equal(typeof pins[0].number, "string", "pinSchema requires a string");
+  assert.equal(pins[0].number, "1");
+  assert.equal(pins[0].electricalType, "unspecified", "null is not a member of the enum");
+  assert.equal(pins[1].electricalType, "power", "a valid type is kept");
+  // The gate the whole path failed at: this must survive the export boundary.
+  assert.equal(partSchema.safeParse(JSON.parse(JSON.stringify(merged.part))).success, true);
+});
+
+/**
+ * A model answer is held to the SAME proof the deterministic readers must pass.
+ *
+ * Both geometry readers require exactly 1..N with no gaps or repeats, and a
+ * model answer was not, which made it the weakest link in a chain built to
+ * refuse precisely this. The name-based citation check cannot catch it: a
+ * PCF8574 page draws a 16-pin and a 20-pin variant interleaved, so real names
+ * against the wrong package's numbers score full marks.
+ */
+test("a model pin table that does not number 1..N is discarded, not stored", () => {
+  const merged = mergeModelValues(
+    deterministic(),
+    doc,
+    {
+      values: {
+        pins: {
+          value: [
+            { number: 1, name: "VIN", electricalType: "power" },
+            { number: 3, name: "GND", electricalType: "power" }
+          ] as never,
+          page: 1
+        }
+      }
+    },
+    "gemini"
+  );
+
+  assert.equal(merged.part.pins.value, null, "the gap means the field stays unknown");
+  assert.ok(!merged.filled.includes("pins"));
+  assert.equal(merged.rejected[0]?.field, "pins");
+  assert.match(merged.rejected[0].reason, /1\.\.2|gaps|repeats/);
+  assert.ok(
+    merged.part.notes.some((note) => /discarded/i.test(note)),
+    "and the record says so rather than going quiet"
+  );
+});
+
+test("an exposed thermal pad refuses the table, and says that is why", () => {
+  // AD8232, measured: the model returns a correct 1..20 LFCSP table plus a 21st
+  // row numbered "EP". Emitting the numbered pins alone would be a footprint
+  // missing the pad the part must be soldered by, and geometry.ts has no
+  // exposed-pad concept at all.
+  const rows = Array.from({ length: 20 }, (_, index) => ({
+    number: index + 1,
+    name: `P${index + 1}`,
+    electricalType: "unspecified"
+  }));
+  rows.push({ number: "EP" as never, name: "", electricalType: "power" });
+
+  const merged = mergeModelValues(
+    deterministic(),
+    doc,
+    { values: { pins: { value: rows as never, page: 1 } } },
+    "gemini"
+  );
+
+  assert.equal(merged.part.pins.value, null);
+  assert.match(merged.rejected[0].reason, /exposed thermal pad/);
 });

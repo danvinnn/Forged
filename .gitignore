@@ -1,6 +1,13 @@
 node_modules
-.env.local
-.env*.local
+
+# Every env file EXCEPT the committed example. GEMINI_SETUP.md says to put the
+# Gemini key in .env.local, which was covered; a plain .env was not, and Next.js
+# loads that too, so anyone who typed the shorter name would have committed a
+# live key. Ignore the whole family and allow the one file that is meant to be
+# tracked, rather than listing the variants someone might pick.
+.env
+.env.*
+!.env.example
 
 # Build outputs
 .next
@@ -37,3 +44,4 @@ yarn-debug.log*
 yarn-error.log*
 # Cached vendor datasheets for the extraction benchmark. NEVER commit datasheets.
 .bench-cache
+.holdout-cache

@@ -489,3 +489,40 @@ tbody td {
 .airgap-notice {
   border-left: 3px solid var(--navy);
 }
+
+/* Package quick picks. Export refuses any package with no characterised land
+   pattern, so these are the set that will actually produce a footprint. */
+.package-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+
+.package-picker-label {
+  font-size: 0.72rem;
+  opacity: 0.7;
+  width: 100%;
+}
+
+.package-chip {
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.package-chip:hover {
+  opacity: 1;
+}
+
+.package-chip.active {
+  opacity: 1;
+  font-weight: 600;
+}

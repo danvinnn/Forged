@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createExportZip } from "../../../lib/exporters";
+import { createExportZip, FootprintUnavailableError, GeneratorUnavailableError } from "../../../lib/exporters";
 import { partSchema, resolveForExport } from "../../../lib/types";
 import { sanitizeFileName, clientKey, RateLimiter } from "../../../lib/retrieval";
 
@@ -95,13 +95,81 @@ export async function POST(request: Request) {
     );
   }
 
-  const bundle = await createExportZip(resolved.part, format);
+  // Most datasheets offer a part in several packages (UCC27524 is SOIC-8,
+  // HVSSOP-8 and WSON-8), and a footprint is per package. The extracted
+  // designator is a default, not an answer, so the caller may name the one they
+  // are actually ordering.
+  const requestedPackage = payload.packageType;
+  if (requestedPackage !== undefined && typeof requestedPackage !== "string") {
+    return NextResponse.json({ error: "packageType must be a string." }, { status: 400 });
+  }
+  // Naming a package DISCARDS the drawing evidence, and it has to. The outline
+  // code, the pitch and the lead width were all read off the one drawing
+  // confirmed to match the EXTRACTED designator, so against a different package
+  // they describe the wrong part of the datasheet. Keeping them would either
+  // refuse the caller's own explicit answer as "conflicting evidence" or, worse,
+  // size the lands of a TSSOP from a SOIC drawing.
+  const part = requestedPackage
+    ? {
+        ...resolved.part,
+        packageType: requestedPackage.slice(0, 64),
+        packageOutlineCode: null,
+        dimensions: { ...resolved.part.dimensions, pitchMm: null, leadWidthMm: null }
+      }
+    : resolved.part;
+
+  // Ceramic flat packs ship with straight leads that the assembler trims and
+  // forms, so their seated span is a board-process input rather than a datasheet
+  // value. There is no defensible default, so the caller supplies it.
+  const formedSpan = payload.formedLeadSpanMm;
+  if (formedSpan !== undefined && (typeof formedSpan !== "number" || !Number.isFinite(formedSpan) || formedSpan <= 0 || formedSpan > 200)) {
+    return NextResponse.json(
+      { error: "formedLeadSpanMm must be a positive number of millimetres." },
+      { status: 400 }
+    );
+  }
+
+  // A package with no characterised land pattern is a refusal, not a degraded
+  // export. Emitting the symbol and the 3D body while silently dropping the
+  // footprint would read as a success to anyone who did not check the file list.
+  let bundle: Awaited<ReturnType<typeof createExportZip>>;
+  try {
+    bundle = await createExportZip(part, format, { formedLeadSpanMm: formedSpan });
+  } catch (error) {
+    if (error instanceof GeneratorUnavailableError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: "GENERATOR_NOT_IMPLEMENTED",
+          format: error.format,
+          availableFormats: error.available
+        },
+        { status: 501 }
+      );
+    }
+    if (error instanceof FootprintUnavailableError) {
+      // Two different refusals, and conflating them leaves the user with nothing
+      // to do. `needs` populated means they can answer it and get their
+      // footprint; empty means the package has no characterised land pattern,
+      // which is ours to fix and not something they can type their way out of.
+      const answerable = error.needs.length > 0;
+      return NextResponse.json(
+        {
+          error: `Cannot generate CAD output: ${error.reason}${answerable ? "" : " A footprint is a manufacturing instruction, so Forge does not approximate one."}`,
+          code: answerable ? "INPUT_REQUIRED" : "PACKAGE_NOT_CHARACTERISED",
+          needs: error.needs,
+          packageType: part.packageType,
+          pinCount: resolved.part.pinCount,
+          supportedFamilies: error.supportedFamilies
+        },
+        { status: 422 }
+      );
+    }
+    throw error;
+  }
   // sanitizeFileName enforces a safe basename; swap the .pdf it appends for the real .zip extension.
   const fileName = sanitizeFileName(`${resolved.part.partNumber}-forge`).replace(/\.pdf$/, ".zip");
-  const exportNote =
-    format === "kicad"
-      ? "KiCad source bundle generated successfully."
-      : `Vendor-neutral exchange bundle generated for ${format}; native library emitters are still pending.`;
+  const exportNote = `Native ${format} library generated from the IPC-7351B land pattern.`;
 
   return new Response(new Uint8Array(bundle.buffer), {
     headers: {

@@ -94,7 +94,17 @@ function extractionCode(relativePath: string): string {
 }
 
 // Reachable in air-gapped mode (parse route -> extraction/index -> here). None may fetch.
-const EXTRACTION_AIR_GAP_SAFE = ["contracts.ts", "merge.ts", "factory.ts", "request.ts", "index.ts"];
+const EXTRACTION_AIR_GAP_SAFE = [
+  "contracts.ts",
+  "merge.ts",
+  "factory.ts",
+  "request.ts",
+  "pageselect.ts",
+  // Timers and arithmetic over the calling route's budget. It decides whether a
+  // model is worth asking; it never reaches one.
+  "budget.ts",
+  "index.ts"
+];
 
 test("air-gap-safe extraction modules contain no fetch call", () => {
   for (const file of EXTRACTION_AIR_GAP_SAFE) {

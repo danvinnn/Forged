@@ -73,6 +73,10 @@ export const BENCH_CORPUS: BenchPart[] = [
   { partNumber: "ADG5412", manufacturer: "Analog Devices", category: "analog", expect: "hit" },
   { partNumber: "ADR4525", manufacturer: "Analog Devices", category: "analog", expect: "hit" },
   { partNumber: "TSV911", manufacturer: "STMicroelectronics", category: "analog", expect: "hit" },
+  // PROMOTED from the hold-out 2026-07-31. Its "Pin connections (top view)" figure
+  // was opened to diagnose why seven ST parts read nothing; the other six stay in the
+  // hold-out as the check that whatever was fixed generalises.
+  { partNumber: "TSV321", manufacturer: "STMicroelectronics", category: "analog", expect: "hit" },
   // No manufacturer hint: exercises prefix claiming and the speculative tier.
   { partNumber: "OPA2277", category: "analog", expect: "hit", note: "no hint, must be claimed by prefix" },
   { partNumber: "AD8232", category: "analog", expect: "hit", note: "no hint" },
@@ -94,6 +98,9 @@ export const BENCH_CORPUS: BenchPart[] = [
   // --- power and discrete ----------------------------------------------------------------------
   { partNumber: "TPS7A4700", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit" },
   { partNumber: "UCC27524", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit" },
+  // PROMOTED from the hold-out 2026-07-31 to diagnose why TI's modern "Pin Functions"
+  // table reads nothing. MSP430FR2433 stays in the hold-out as the generality check.
+  { partNumber: "DRV8825", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit" },
   { partNumber: "LD1117", manufacturer: "STMicroelectronics", category: "power-discrete", expect: "hit" },
   { partNumber: "L7805", manufacturer: "STMicroelectronics", category: "power-discrete", expect: "hit" },
   { partNumber: "IRF540N", manufacturer: "Infineon", category: "power-discrete", expect: "miss" },

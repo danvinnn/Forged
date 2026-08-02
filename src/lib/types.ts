@@ -60,13 +60,32 @@ export const pinSchema = z.object({
   description: z.string().optional()
 });
 
+/**
+ * A lead width is a min/max pair on the drawing, not a single figure, and
+ * IPC-7351B uses both ends: the minimum sets the land width and the spread feeds
+ * the RSS tolerance. Collapsing it to one number would throw away the half the
+ * standard needs.
+ */
+export const leadWidthSchema = z.object({
+  minMm: z.number(),
+  maxMm: z.number()
+});
+
 export const packageDimensionsSchema = z.object({
   bodyLengthMm: extracted(z.number()),
   bodyWidthMm: extracted(z.number()),
   bodyHeightMm: extracted(z.number()),
   pitchMm: extracted(z.number()),
   leadLengthMm: extracted(z.number()),
-  leadCount: extracted(z.number().int().positive())
+  leadCount: extracted(z.number().int().positive()),
+  // Defaulted rather than required so a record produced before this field
+  // existed still validates as what it is: a record with no lead width read.
+  leadWidthMm: extracted(leadWidthSchema).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  })
 });
 
 export const radiationDataSchema = z.object({
@@ -76,11 +95,47 @@ export const radiationDataSchema = z.object({
   qmlClass: extracted(z.string())
 });
 
+/**
+ * A package the datasheet offers the part in.
+ *
+ * Recorded as a list because most datasheets offer several and a footprint is per
+ * package: LD1117 covers four, TSV911 six, ADG5412 two. Multi-package ambiguity
+ * now blocks more parts than any parsing defect, and every one of those refusals
+ * is a document that DOES say which packages exist and does not say which one the
+ * caller is holding. Reporting the list is what turns that refusal into a choice
+ * the caller can make in one click, which is the friction the input model budgets
+ * for.
+ */
+export const packageVariantSchema = z.object({
+  designator: z.string().min(1).max(64),
+  family: z.string().min(1).max(16),
+  leadCount: z.number().int().positive().max(600).nullable(),
+  /** Named where the datasheet introduces itself, rather than deeper in. */
+  inFrontMatter: z.boolean()
+});
+
 export const partSchema = z.object({
   id: z.string().min(1),
   partNumber: extracted(z.string().min(1)),
   manufacturer: extracted(z.string().min(1)),
   packageType: extracted(z.string().min(1)),
+  /**
+   * The outline code printed on this part's own package drawing (`DW0016B`).
+   * Recorded only when the drawing was confirmed to be this part's package, so
+   * its presence is itself the evidence that it can be believed.
+   */
+  packageOutlineCode: extracted(z.string().min(1)).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * Every package this datasheet names, so the caller can pick one when the
+   * document describes several. Defaulted, because a record stored before this
+   * field existed is still a valid record.
+   */
+  packageVariants: z.array(packageVariantSchema).max(32).default([]),
   pinCount: extracted(z.number().int().positive()),
   pins: extracted(z.array(pinSchema)),
   dimensions: packageDimensionsSchema,
@@ -108,6 +163,8 @@ export interface Extracted<T> {
   citation: Citation | null;
 }
 
+export type LeadWidth = { minMm: number; maxMm: number };
+
 export type PackageDimensions = {
   bodyLengthMm: Extracted<number>;
   bodyWidthMm: Extracted<number>;
@@ -115,6 +172,7 @@ export type PackageDimensions = {
   pitchMm: Extracted<number>;
   leadLengthMm: Extracted<number>;
   leadCount: Extracted<number>;
+  leadWidthMm: Extracted<LeadWidth>;
 };
 
 export type RadiationData = {
@@ -124,11 +182,15 @@ export type RadiationData = {
   qmlClass: Extracted<string>;
 };
 
+export type PackageVariantRecord = z.infer<typeof packageVariantSchema>;
+
 export type PartRecord = {
   id: string;
   partNumber: Extracted<string>;
   manufacturer: Extracted<string>;
   packageType: Extracted<string>;
+  packageOutlineCode: Extracted<string>;
+  packageVariants: PackageVariantRecord[];
   pinCount: Extracted<number>;
   pins: Extracted<PinRecord[]>;
   dimensions: PackageDimensions;
@@ -166,6 +228,8 @@ export interface ResolvedPart {
   partNumber: string;
   manufacturer: string;
   packageType: string;
+  /** Null when the datasheet prints no drawing we could confirm as this part's. */
+  packageOutlineCode: string | null;
   pinCount: number;
   pins: PinRecord[];
   dimensions: {
@@ -175,6 +239,7 @@ export interface ResolvedPart {
     pitchMm: number | null;
     leadLengthMm: number | null;
     leadCount: number | null;
+    leadWidthMm: LeadWidth | null;
   };
   radiation: {
     tid: string | null;
@@ -211,7 +276,8 @@ const GEOMETRY_DIMENSIONS = [
   "bodyHeightMm",
   "pitchMm",
   "leadLengthMm",
-  "leadCount"
+  "leadCount",
+  "leadWidthMm"
 ] as const;
 
 export interface ResolveOptions {
@@ -266,6 +332,7 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
       partNumber: partNumber as string,
       manufacturer: part.manufacturer.value ?? "Unknown",
       packageType: part.packageType.value ?? "Unknown package",
+      packageOutlineCode: part.packageOutlineCode.value,
       pinCount: pinCount as number,
       pins,
       dimensions: {
@@ -274,7 +341,8 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
         bodyHeightMm: part.dimensions.bodyHeightMm.value,
         pitchMm: part.dimensions.pitchMm.value,
         leadLengthMm: part.dimensions.leadLengthMm.value,
-        leadCount: part.dimensions.leadCount.value
+        leadCount: part.dimensions.leadCount.value,
+        leadWidthMm: part.dimensions.leadWidthMm.value
       },
       radiation: {
         tid: part.radiation.tid.value,

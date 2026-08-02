@@ -1,4 +1,5 @@
 import pdfParse from "pdf-parse";
+import { decodeShiftedFonts } from "./fontdecode";
 
 /**
  * Page and position aware text extraction.
@@ -28,6 +29,32 @@ export interface TextItem {
   height: number;
   start: number;
   end: number;
+}
+
+/**
+ * Whether a run's characters are in the order they are PRINTED in.
+ *
+ * pdf.js reports a run's `width` as its total advance from the origin. That is
+ * normally positive, because text advances rightwards. A NEGATIVE advance means
+ * the glyphs were individually positioned leftwards, so the run's string is the
+ * order the content stream drew them in and not the order a reader sees.
+ *
+ * An RHF310A prints pin 4 as `VCC-` and hands the run over as `"-VCC"` with an
+ * advance of -1.1 for four characters at 12 point. Its origin, 194.7, sits at the
+ * RIGHT edge of the column its three sibling names are right-aligned to, which is
+ * the corroboration: the first character of the string is the last one on the
+ * page. Rendering the page is what settled it.
+ *
+ * Nothing here tries to put such a run back in order. One sample does not
+ * establish how the glyphs were placed, and a name is a netlist. Callers that
+ * assemble names refuse them instead.
+ *
+ * Measured over the benchmark cache: 24 runs in 5 documents, and exactly one of
+ * them, RHF310A's, ever reached a pin name. The rest are on mechanical drawing
+ * pages, where they were already unusable.
+ */
+export function hasPrintedOrder(item: TextItem): boolean {
+  return item.width >= 0;
 }
 
 export interface PageText {
@@ -119,6 +146,13 @@ interface RawItem {
   y: number;
   width: number;
   height: number;
+  /**
+   * The PDF font resource this run was drawn with. Carried only so a font with
+   * a broken encoding can be identified and decoded; see fontdecode.ts. It is
+   * the right unit for that because the encoding belongs to the font, and a
+   * single page mixes healthy and broken fonts freely.
+   */
+  fontName?: string;
 }
 
 /**
@@ -303,13 +337,20 @@ export async function extractDatasheetText(
         return "";
       }
 
-      const raw: RawItem[] = content.items.map((item) => ({
-        str: item.str,
-        x: item.transform[4] ?? 0,
-        y: item.transform[5] ?? 0,
-        width: item.width ?? 0,
-        height: fontSizeOf(item)
-      }));
+      // Decoded BEFORE anything reads the text, so every downstream reader (pin
+      // table, pin figure, package drawing) sees the recovered characters. A
+      // font whose encoding is a constant offset is otherwise real, present and
+      // unreadable text: LD1117 draws its whole pin configuration that way.
+      const raw: RawItem[] = decodeShiftedFonts(
+        content.items.map((item) => ({
+          str: item.str,
+          x: item.transform[4] ?? 0,
+          y: item.transform[5] ?? 0,
+          width: item.width ?? 0,
+          height: fontSizeOf(item),
+          fontName: (item as { fontName?: string }).fontName
+        }))
+      );
 
       const offset = combined.length === 0 ? 0 : combined.length + PAGE_SEPARATOR.length;
 

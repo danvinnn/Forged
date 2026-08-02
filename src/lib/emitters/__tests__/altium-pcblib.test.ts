@@ -1,0 +1,336 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import JSZip from "jszip";
+import { emitAltiumPcbLib } from "../altium";
+import { AltiumEmitError } from "../altium/units";
+import { createExportZip, FootprintUnavailableError } from "../../exporters";
+import { type FootprintGeometry } from "../../geometry";
+import { type PinRecord, type ResolvedPart } from "../../types";
+
+/**
+ * The Altium generator is checked by an independent reader, not by reading our
+ * own bytes back with our own code. Altium silently refuses a malformed library,
+ * so "the writer looks right" is not evidence of anything.
+ *
+ * The oracle is pyaltiumlib. It reports both the geometry it recovered and every
+ * warning it logged, and a passing test requires the log to be empty: pyaltiumlib
+ * does not raise on a bad record, it complains and carries on, so a file can
+ * parse to plausible numbers and still be broken.
+ */
+
+const ORACLE = join(fileURLToPath(new URL(".", import.meta.url)), "altium-oracle.py");
+
+interface OraclePad {
+  kind: string;
+  layer: number;
+  designator: string;
+  location: { x: number; y: number };
+  sizeTop: { x: number; y: number };
+  holeSize: number;
+  shapeTop: number;
+  topLayerShape: number | null;
+  topCornerRadius: number | null;
+  rotation: number;
+}
+
+interface OracleRecord {
+  kind: string;
+  layer: number;
+  [key: string]: unknown;
+}
+
+interface OracleResult {
+  error?: string;
+  libHeader: string;
+  libType: string;
+  componentCount: number;
+  parts: Array<{ name: string; description: string; recordCount: number; records: OracleRecord[] }>;
+  diagnostics: string[];
+}
+
+/** Writes the library to a scratch file and reads it back with pyaltiumlib. */
+function readBack(library: Buffer, name = "forge-test"): OracleResult {
+  const directory = mkdtempSync(join(tmpdir(), "forge-altium-"));
+  const path = join(directory, `${name}.PcbLib`);
+  writeFileSync(path, library);
+
+  let stdout: string;
+  try {
+    stdout = execFileSync("python3", [ORACLE, path], { encoding: "utf8" });
+  } catch (error) {
+    // Deliberately not skipped. A suite that quietly stops checking the oracle
+    // when the oracle is missing gives exactly the false confidence this whole
+    // arrangement exists to prevent.
+    const detail = error instanceof Error && "stderr" in error ? String(error.stderr) : String(error);
+    throw new Error(
+      `The Altium oracle did not complete. It needs python3 with pyaltiumlib (pip install pyaltiumlib).\n${detail}`
+    );
+  }
+
+  const result = JSON.parse(stdout) as OracleResult;
+  assert.equal(result.error, undefined, `pyaltiumlib failed to read the library: ${result.error}`);
+  return result;
+}
+
+/** The same eight-pin SOIC the KiCad exporter tests use, so the two are comparable. */
+function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
+  const pins: PinRecord[] = Array.from({ length: 8 }, (_, index) => ({
+    number: String(index + 1),
+    name: `P${index + 1}`,
+    electricalType: "unspecified" as const
+  }));
+
+  return {
+    id: "test",
+    partNumber: "ACME27524",
+    manufacturer: "ACME",
+    packageType: "8-pin SOIC",
+    packageOutlineCode: null,
+    pinCount: 8,
+    pins,
+    dimensions: {
+      bodyLengthMm: 4.9,
+      bodyWidthMm: 3.9,
+      bodyHeightMm: 1.75,
+      pitchMm: null,
+      leadLengthMm: null,
+      leadCount: 8,
+      leadWidthMm: null
+    },
+    radiation: { tid: null, see: null, sel: null, qmlClass: null },
+    sourceFileName: "ACME27524.pdf",
+    notes: [],
+    ...overrides
+  };
+}
+
+/** The smallest library that is still a library: one footprint, one pad. */
+function onePadGeometry(): FootprintGeometry {
+  return {
+    name: "forge-one-pad",
+    description: "One pad, for checking the container round-trips",
+    partNumber: "FORGE-1",
+    pads: [
+      {
+        number: "1",
+        centre: { xMm: 2.7, yMm: -1.27 },
+        widthMm: 1.55,
+        heightMm: 0.6,
+        shape: "roundrect",
+        mounting: "smd"
+      }
+    ],
+    body: { halfWidthMm: 1.95, halfHeightMm: 2.45 },
+    courtyard: { halfWidthMm: 3.2, halfHeightMm: 2.7 },
+    pin1Marker: { xMm: -2.7, yMm: -2.2 },
+    provenance: {
+      family: "test",
+      source: "test",
+      densityLevel: "B",
+      padWidthMm: 0.6,
+      padLengthMm: 1.55,
+      centreToCentreMm: 5.4,
+      pitchMm: 1.27
+    }
+  };
+}
+
+test("pyaltiumlib identifies the file as a PCB binary library", () => {
+  const result = readBack(emitAltiumPcbLib(onePadGeometry()));
+
+  assert.match(result.libHeader, /PCB/);
+  assert.match(result.libHeader, /Binary Library File/);
+  assert.equal(result.libType, "PCB");
+});
+
+test("the library reports one component, under the name it was given", () => {
+  const result = readBack(emitAltiumPcbLib(onePadGeometry()));
+
+  assert.equal(result.componentCount, 1);
+  assert.equal(result.parts.length, 1);
+  assert.equal(result.parts[0].name, "forge-one-pad");
+  assert.equal(result.parts[0].description, "One pad, for checking the container round-trips");
+});
+
+test("the pad comes back at the position and size it was written at", () => {
+  // The milestone that de-risks everything else. Internal units are mils times
+  // 10000, so a wrong scale here reads back 25.4x out and nothing else notices.
+  const geometry = onePadGeometry();
+  const result = readBack(emitAltiumPcbLib(geometry));
+  const pad = result.parts[0].records.find((record) => record.kind === "PcbPad") as unknown as OraclePad;
+  assert.ok(pad, "the footprint must contain a pad");
+
+  const mm = (mils: number) => mils * 0.0254;
+
+  assert.equal(pad.designator, "1");
+  assert.equal(pad.layer, 1, "a surface-mount land belongs on the top copper layer");
+  assert.ok(Math.abs(mm(pad.location.x) - 2.7) < 0.001, `pad x came back as ${mm(pad.location.x)} mm`);
+  // pyaltiumlib negates Y on the way in, which undoes the flip the emitter
+  // applies, so what comes back is the geometry's own +y-down coordinate.
+  assert.ok(Math.abs(mm(pad.location.y) + 1.27) < 0.001, `pad y came back as ${mm(pad.location.y)} mm`);
+  assert.ok(Math.abs(mm(pad.sizeTop.x) - 1.55) < 0.001, `pad length came back as ${mm(pad.sizeTop.x)} mm`);
+  assert.ok(Math.abs(mm(Math.abs(pad.sizeTop.y)) - 0.6) < 0.001, `pad width came back as ${mm(pad.sizeTop.y)} mm`);
+
+  assert.equal(pad.holeSize, 0, "a surface-mount land has no hole");
+  assert.equal(pad.rotation, 0);
+  assert.equal(pad.topLayerShape, 9, "the land is a rounded rectangle");
+  assert.equal(pad.topCornerRadius, 50, "at Altium's default corner radius");
+});
+
+test("the footprint carries the drawing as well as the copper", () => {
+  const geometry = onePadGeometry();
+  const result = readBack(emitAltiumPcbLib(geometry));
+  const records = result.parts[0].records;
+
+  const tracks = records.filter((record) => record.kind === "PcbTrack");
+  const silkscreen = tracks.filter((record) => record.layer === 33);
+  const courtyard = tracks.filter((record) => record.layer === 71);
+  assert.equal(silkscreen.length, 4, "the body outline is four segments on the top overlay");
+  assert.equal(courtyard.length, 4, "and the courtyard is four more on its own layer");
+
+  const arcs = records.filter((record) => record.kind === "PcbArc");
+  assert.equal(arcs.length, 1, "a pin-1 marker, without which the part can be placed rotated");
+
+  const strings = records.filter((record) => record.kind === "PcbString");
+  assert.equal(strings.length, 1);
+  assert.equal(strings[0].text, ".Designator");
+
+  assert.equal(
+    result.parts[0].recordCount,
+    records.length,
+    "the header's primitive count matches the number of primitives"
+  );
+});
+
+test("the courtyard read back is the courtyard that was asked for", () => {
+  const geometry = onePadGeometry();
+  const result = readBack(emitAltiumPcbLib(geometry));
+  const courtyard = result.parts[0].records.filter(
+    (record) => record.kind === "PcbTrack" && record.layer === 71
+  ) as Array<OracleRecord & { start: { x: number; y: number }; end: { x: number; y: number } }>;
+
+  const xs = courtyard.flatMap((track) => [track.start.x, track.end.x]).map((mils) => mils * 0.0254);
+  const ys = courtyard.flatMap((track) => [track.start.y, track.end.y]).map((mils) => mils * 0.0254);
+  assert.ok(Math.abs(Math.max(...xs) - geometry.courtyard.halfWidthMm) < 0.001);
+  assert.ok(Math.abs(Math.min(...xs) + geometry.courtyard.halfWidthMm) < 0.001);
+  assert.ok(Math.abs(Math.max(...ys) - geometry.courtyard.halfHeightMm) < 0.001);
+  assert.ok(Math.abs(Math.min(...ys) + geometry.courtyard.halfHeightMm) < 0.001);
+});
+
+test("the reader logs nothing, which is the part that catches a malformed record", () => {
+  // pyaltiumlib does not raise on a bad record. It logs "common parameters array
+  // spacer is not as expected" or "stream does not match the declared block
+  // length" and returns something plausible. An empty log is the real assertion.
+  const result = readBack(emitAltiumPcbLib(onePadGeometry()));
+  assert.deepEqual(result.diagnostics, [], "pyaltiumlib complained about the generated library");
+});
+
+test("the same geometry produces the same bytes twice", () => {
+  // Identity GUIDs are derived, not random, so two exports of one part can be
+  // diffed against each other. For a part that ends up on flight hardware that
+  // is worth more than a fresh GUID.
+  const first = emitAltiumPcbLib(onePadGeometry());
+  const second = emitAltiumPcbLib(onePadGeometry());
+  assert.ok(first.equals(second));
+});
+
+test("a footprint with no pads is refused rather than written empty", () => {
+  const geometry = onePadGeometry();
+  assert.throws(() => emitAltiumPcbLib({ ...geometry, pads: [] }), AltiumEmitError);
+});
+
+test("a pad size that cannot be expressed is refused, not rounded away", () => {
+  const geometry = onePadGeometry();
+  assert.throws(
+    () => emitAltiumPcbLib({ ...geometry, pads: [{ ...geometry.pads[0], widthMm: 0 }] }),
+    AltiumEmitError
+  );
+  assert.throws(
+    () => emitAltiumPcbLib({ ...geometry, pads: [{ ...geometry.pads[0], centre: { xMm: 99999, yMm: 0 } }] }),
+    AltiumEmitError
+  );
+});
+
+// --- The exported part, end to end ---------------------------------------------
+// Everything above uses geometry written by hand. These take a part through the
+// real export path, because the value the manifest promises and the value in the
+// file are the two things a fabricator would compare.
+
+test("the exported land pattern is the one the manifest claims", async () => {
+  const bundle = await createExportZip(soicPart(), "altium");
+  const zip = await JSZip.loadAsync(bundle.buffer);
+  const library = await zip.files["acme27524.PcbLib"].async("nodebuffer");
+  const result = readBack(library);
+
+  const pads = result.parts[0].records.filter((record) => record.kind === "PcbPad") as unknown as OraclePad[];
+  assert.equal(pads.length, 8, "an eight-pin part exports eight lands");
+
+  const mm = (mils: number) => mils * 0.0254;
+  const promised = bundle.footprint;
+  const pad = pads[0];
+
+  assert.ok(
+    Math.abs(mm(pad.sizeTop.x) - promised.padLengthMm) < 0.05,
+    `land length ${mm(pad.sizeTop.x)} mm against the manifest's ${promised.padLengthMm} mm`
+  );
+  assert.ok(
+    Math.abs(mm(Math.abs(pad.sizeTop.y)) - promised.padWidthMm) < 0.05,
+    `land width ${mm(Math.abs(pad.sizeTop.y))} mm against the manifest's ${promised.padWidthMm} mm`
+  );
+  assert.ok(
+    Math.abs(Math.abs(mm(pad.location.x)) * 2 - promised.centreToCentreMm) < 0.05,
+    `centre span ${Math.abs(mm(pad.location.x)) * 2} mm against the manifest's ${promised.centreToCentreMm} mm`
+  );
+
+  const byNumber = new Map(pads.map((entry) => [entry.designator, entry]));
+  const adjacent = Math.abs(mm(byNumber.get("2")!.location.y) - mm(byNumber.get("1")!.location.y));
+  assert.ok(Math.abs(adjacent - promised.pitchMm) < 0.01, `pitch ${adjacent} mm against ${promised.pitchMm} mm`);
+
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test("Altium pads are numbered counterclockwise, the same as the KiCad ones", async () => {
+  // The defect this locks out is a miswired board, not a cosmetic one: both
+  // columns running downward puts pin 5 of an eight-pin part where pin 8 belongs.
+  const bundle = await createExportZip(soicPart(), "altium");
+  const zip = await JSZip.loadAsync(bundle.buffer);
+  const result = readBack(await zip.files["acme27524.PcbLib"].async("nodebuffer"));
+
+  const pads = result.parts[0].records.filter((record) => record.kind === "PcbPad") as unknown as OraclePad[];
+  const byNumber = new Map(pads.map((pad) => [pad.designator, pad.location]));
+
+  const one = byNumber.get("1")!;
+  const four = byNumber.get("4")!;
+  const five = byNumber.get("5")!;
+  const eight = byNumber.get("8")!;
+
+  assert.ok(one.x < 0 && eight.x > 0, "pin 1 is on the left, pin 8 on the right");
+  assert.equal(one.y, eight.y, "pin 1 and pin 8 sit on the same row");
+  assert.equal(four.y, five.y, "pin 4 and pin 5 sit on the same row");
+  assert.ok(four.y > one.y, "numbering runs down the left side");
+  assert.ok(five.y > eight.y, "and back up the right side, which is the whole point");
+});
+
+test("a part the standard cannot characterise refuses the Altium export too", async () => {
+  // The refusal is a property of the pipeline, not of one generator.
+  await assert.rejects(
+    () => createExportZip(soicPart({ packageType: "Unknown package" }), "altium"),
+    FootprintUnavailableError
+  );
+});
+
+test("a name too long for a compound-file storage still round-trips", () => {
+  // Altium truncates the storage name to 31 characters and records the mapping.
+  // The name readers report comes from the data stream, so it stays whole.
+  const geometry = onePadGeometry();
+  const name = "forge-really-long-footprint-name-that-will-not-fit-in-a-storage";
+  const result = readBack(emitAltiumPcbLib({ ...geometry, name }));
+
+  assert.equal(result.parts[0].name, name);
+  assert.deepEqual(result.diagnostics, []);
+});

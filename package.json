@@ -10,10 +10,13 @@
     "test": "tsx --test 'src/lib/**/__tests__/*.test.ts'",
     "test:retrieval": "tsx --test 'src/lib/**/__tests__/*.test.ts'",
     "bench:coverage": "tsx src/lib/retrieval/__bench__/coverage.ts",
-    "bench:extraction": "tsx src/lib/__bench__/extraction.ts"
+    "bench:extraction": "tsx src/lib/__bench__/extraction.ts",
+    "bench:holdout": "tsx src/lib/__bench__/holdout.ts",
+    "oracle:build": "bash tools/altium-oracle/setup.sh"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "cfb": "^1.2.2",
     "jszip": "^3.10.1",
     "next": "^15.4.0",
     "pdf-parse": "^1.1.1",

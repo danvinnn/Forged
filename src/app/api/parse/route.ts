@@ -16,20 +16,32 @@ import { PdfExtractionError } from "../../../lib/pdftext";
 // models, so importing it cannot pull a networked model into the air-gapped
 // module graph. makeExtractionModel reaches those by dynamic import.
 import { buildExtractionRequest, makeExtractionModel, mergeModelValues } from "../../../lib/extraction";
+import {
+  ModelDeadlineError,
+  modelBudgetMs,
+  withDeadline,
+  worthAsking
+} from "../../../lib/extraction/budget";
+import { computeLandPattern } from "../../../lib/ipc7351";
+import { resolvePackageDefinition } from "../../../lib/packages";
+import { findPackageDrawing, type PackageDrawing } from "../../../lib/packagedrawing";
+import { crossCheckLandPattern } from "../../../lib/vendorland";
 
 export const runtime = "nodejs";
 // Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
 export const maxDuration = 30;
 
-// Enterprise / air-gapped retrieval path: the user uploads the PDF directly. ingestUpload is the
-// Layer 1 step (validate, produce a DatasheetRef) and makes no network call, so this route is safe
-// in air-gapped mode.
-//
-// Extraction (Layer 2): the deterministic text pass always runs and always wins. A model is asked
-// only about fields it could not resolve, and can never overwrite one it did. Which model is even
-// available is decided by makeExtractionModel, which reaches concrete models through dynamic
-// imports so the cloud model is never loaded in air-gapped mode.
+/**
+ * The model pass gets a budget of its own, carved out of what is left of this
+ * route's. The reasoning and the measured numbers are in `extraction/budget.ts`;
+ * the short version is that a model call can take 41.6 seconds against this
+ * route's 30, and being killed by the platform costs the user a deterministic
+ * record that had already succeeded.
+ */
+const ROUTE_BUDGET_MS = maxDuration * 1000;
+
 export async function POST(request: Request) {
+  const startedAt = Date.now();
   const mode = getDeploymentMode();
 
   // Each call buffers and hashes megabytes, so the endpoint needs a ceiling even though it makes
@@ -120,27 +132,86 @@ export async function POST(request: Request) {
   const model = await makeExtractionModel(mode);
   if (model) {
     const request = buildExtractionRequest(part, doc, ref.fileName);
-    if (request) {
+    const budgetMs = modelBudgetMs(ROUTE_BUDGET_MS, Date.now() - startedAt);
+
+    if (request && !worthAsking(budgetMs)) {
+      // Retrieval and parsing have already used the route's budget. Asking now
+      // guarantees the platform kills the function mid-call, which would lose the
+      // record that is already in hand.
+      part = {
+        ...part,
+        notes: [
+          ...part.notes,
+          `Retrieval and text extraction used the request's time budget, so the ${model.name} extraction pass was skipped. Only text extraction was applied.`
+        ]
+      };
+    } else if (request) {
       try {
-        const result = await model.extract(request);
+        const result = await withDeadline(model.extract(request), budgetMs);
         const outcome = mergeModelValues(part, doc, result, model.name);
         part = outcome.part;
         if (outcome.filled.length > 0) method = `deterministic+${model.name}`;
       } catch (error) {
         // A model failure must never cost the user the deterministic record.
-        console.error("extraction model failed", error);
+        // Running out of time is reported as what it is rather than as a failure,
+        // because the two call for different actions: one is retryable, the other
+        // means the document is too big for this route's budget.
+        const timedOut = error instanceof ModelDeadlineError;
+        if (!timedOut) console.error("extraction model failed", error);
         part = {
           ...part,
-          notes: [...part.notes, `The ${model.name} extraction pass failed; only text extraction was applied.`]
+          notes: [
+            ...part.notes,
+            timedOut
+              ? `The ${model.name} extraction pass did not answer within its ${Math.round(budgetMs / 1000)}s budget and was abandoned; only text extraction was applied.`
+              : `The ${model.name} extraction pass failed; only text extraction was applied.`
+          ]
         };
       }
     }
   }
 
-  return NextResponse.json<RetrievalSuccess & { method: string }>({
+  // Cross-check the land pattern we would generate against the one the vendor
+  // prints, while the document is still in hand. The export route only ever sees
+  // the JSON record, so this is the last point at which the comparison is free.
+  // A disagreement is reported, not resolved: IPC-7351B and a vendor house rule
+  // are both legitimate and they genuinely differ.
+  const packageType = part.packageType.value;
+  const pinCount = part.pinCount.value;
+  if (packageType && pinCount !== null) {
+    // The same resolution the exporter performs, drawing evidence included. An
+    // ISO7741 calls itself a "16-pin SOIC" and its drawing is titled DW0016B,
+    // which is the wide body: resolving without the code here would report a
+    // land pattern check for a package the export does not build.
+    const lookup = resolvePackageDefinition(packageType, pinCount, {
+      outlineCode: part.packageOutlineCode.value,
+      pitchMm: part.dimensions.pitchMm.value,
+      leadWidthMm: part.dimensions.leadWidthMm.value
+    });
+    if (lookup.ok) {
+      try {
+        const land = computeLandPattern(lookup.definition.lead);
+        const check = crossCheckLandPattern(doc, land, lookup.definition.family);
+        if (check.agreement !== "unavailable") {
+          part = { ...part, notes: [...part.notes, `Land pattern check: ${check.detail}`] };
+        }
+      } catch {
+        // A land pattern that cannot be computed is reported by the export route
+        // with a proper refusal; it is not this endpoint's job to duplicate that.
+      }
+    }
+  }
+
+  // Where the mechanical drawing is, so a value we could not read can be asked
+  // for with that page already in front of the user instead of making them hunt
+  // for it. Nothing is read off the drawing here; this is only its location.
+  const packageDrawing = findPackageDrawing(doc, part.packageType.value ?? undefined);
+
+  return NextResponse.json<RetrievalSuccess & { method: string; packageDrawing: PackageDrawing | null }>({
     part,
     source: toRetrievalSource(ref, "upload"),
     mode,
-    method
+    method,
+    packageDrawing
   });
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { isUntraceable } from "../lib/provenance";
-import type { Extracted, ExportFormat, PartRecord, PinRecord } from "../lib/types";
+import type { Extracted, ExportFormat, LeadWidth, PartRecord, PinRecord } from "../lib/types";
 // Type-only import: erased at compile time, so no retrieval-layer runtime code (node:crypto,
 // the resolvers, etc.) is pulled into the client bundle.
 import type { DeploymentMode } from "../lib/retrieval";
@@ -10,12 +10,31 @@ import type { DeploymentMode } from "../lib/retrieval";
 interface AppConfig {
   mode: DeploymentMode;
   lookupEnabled: boolean;
+  /** Package families with a characterised IPC-7351B land pattern. */
+  packageFamilies?: string[];
 }
 
+/**
+ * Quick picks for the package field.
+ *
+ * A datasheet almost always offers a part in several packages, and a footprint
+ * is per package, so this is a choice the engineer makes rather than something
+ * extraction can settle. Export refuses any package with no characterised land
+ * pattern, and without these the only way to discover which ones work is to
+ * press Export and read the error.
+ */
+const PACKAGE_SUGGESTIONS: Record<string, string[]> = {
+  "SOIC narrow": ["SOIC-8", "SOIC-14", "SOIC-16"],
+  TSSOP: ["TSSOP-8", "TSSOP-14", "TSSOP-16"]
+};
+
 const formatOptions: Array<{ value: ExportFormat; label: string; note: string }> = [
-  { value: "kicad", label: "KiCad source", note: "Native .kicad_sym + .kicad_mod" },
-  { value: "altium", label: "Altium bundle", note: "Vendor-neutral exchange source, not native SchLib/PcbLib yet" },
-  { value: "cadence", label: "Cadence / OrCAD bundle", note: "Vendor-neutral exchange source, not native library files yet" }
+  { value: "kicad", label: "KiCad", note: "Native .kicad_sym + .kicad_mod" },
+  // Each format gets its own generator reading the same IPC-7351B geometry.
+  // These two say "no generator yet" rather than offering a renamed KiCad file,
+  // which is what they used to do.
+  { value: "altium", label: "Altium", note: "Native .SchLib + .PcbLib, generator not built yet" },
+  { value: "cadence", label: "Cadence / OrCAD", note: "Native library output, generator not built yet" }
 ]
 
 const nothing = <T,>(): Extracted<T> => ({ value: null, confidence: null, method: null, citation: null });
@@ -25,6 +44,8 @@ const defaultPart: PartRecord = {
   partNumber: nothing<string>(),
   manufacturer: nothing<string>(),
   packageType: nothing<string>(),
+  packageOutlineCode: nothing<string>(),
+  packageVariants: [],
   pinCount: nothing<number>(),
   pins: nothing<PinRecord[]>(),
   dimensions: {
@@ -33,7 +54,8 @@ const defaultPart: PartRecord = {
     bodyHeightMm: nothing<number>(),
     pitchMm: nothing<number>(),
     leadLengthMm: nothing<number>(),
-    leadCount: nothing<number>()
+    leadCount: nothing<number>(),
+    leadWidthMm: nothing<LeadWidth>()
   },
   radiation: {
     tid: nothing<string>(),
@@ -183,6 +205,11 @@ export default function HomePage() {
   );
 
   const sourceUrl = formatSourceUrl(part.sourceUrl);
+  // Flattened from the families the server says it can build, so the list can
+  // never drift from what export actually accepts.
+  const supportedPackages = (config?.packageFamilies ?? []).flatMap(
+    (family) => PACKAGE_SUGGESTIONS[family] ?? []
+  );
 
   async function handleLookup() {
     const trimmedPart = partPrompt.trim();
@@ -455,8 +482,59 @@ export default function HomePage() {
               </span>
               <input
                 value={part.packageType.value ?? ""}
+                placeholder="e.g. SOIC-8"
                 onChange={(event) => setPart({ ...part, packageType: userEdited(event.target.value || null) })}
               />
+              {/*
+                The packages THIS datasheet names, which is a different question
+                from which ones Forge can build. Multi-package ambiguity blocks
+                more parts than any parsing defect, and in every case the document
+                does say what the packages are and does not say which one the user
+                is holding. So it is asked, once, with the answers pre-filled.
+              */}
+              {part.packageVariants.length > 1 && (
+                <span className="package-picker">
+                  <span className="package-picker-label">
+                    This datasheet describes {part.packageVariants.length} packages. Which one are you
+                    building?
+                  </span>
+                  {part.packageVariants.map((variant) => (
+                    <button
+                      key={variant.designator}
+                      type="button"
+                      className={
+                        part.packageType.value === variant.designator
+                          ? "package-chip active"
+                          : "package-chip"
+                      }
+                      onClick={() => setPart({ ...part, packageType: userEdited(variant.designator) })}
+                    >
+                      {variant.designator}
+                    </button>
+                  ))}
+                </span>
+              )}
+              {supportedPackages.length > 0 && (
+                <span className="package-picker">
+                  <span className="package-picker-label">
+                    Characterised footprints (anything else is refused):
+                  </span>
+                  {supportedPackages.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      className={
+                        part.packageType.value === suggestion
+                          ? "package-chip active"
+                          : "package-chip"
+                      }
+                      onClick={() => setPart({ ...part, packageType: userEdited(suggestion) })}
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </span>
+              )}
             </label>
             <label>
               <span>

@@ -1,10 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { citationAt, extractDatasheetText, type DatasheetText } from "./pdftext";
+import { extractPinFigureByGeometry } from "./pinfigure";
+import { extractPinTableByGeometry } from "./pintable";
+import { readDrawingDimensions, type DrawnDimensions } from "./drawingdimensions";
+import {
+  declaredLeadCount,
+  findOrderablePackages,
+  findPackageVariants,
+  namesPackageFamily,
+  selectSinglePackage,
+  soleDeclaredLeadCount,
+  type PackageVariant
+} from "./packagevariants";
 import {
   extractedValue,
   unknown,
   type Citation,
   type Extracted,
+  type LeadWidth,
   type PackageDimensions,
   type PartRecord,
   type PinElectricalType,
@@ -127,23 +140,115 @@ function fallbackPartNumber(sourceFileName: string): string {
   return baseName.replace(/[^A-Z0-9\-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "UNKNOWN-PART";
 }
 
-function findPartNumber(doc: DatasheetText, sourceFileName: string): Extracted<string> {
-  const patterns: RegExp[] = [
-    /(?:PRODUCT|DEVICE|PART)\s+NUMBER\s*[:\-]\s*([A-Z0-9][A-Z0-9\-./]{2,})/i,
-    /\b[A-Z][A-Z0-9]{2,}(?:-[A-Z0-9]+)+\b/,
-    /\b[A-Z]{2,}\d{2,}[A-Z0-9]*(?:-[A-Z0-9]+)+\b/
-  ];
+/**
+ * Identifiers that are shaped exactly like a part number and are not one.
+ *
+ * Every datasheet cites standards, qualification methods and its own literature
+ * numbers, and they all match "letters, digits, a hyphen". Taking the first such
+ * token in the whole document made UCC27524 come back as `JESD22-C101`, a JEDEC
+ * ESD test method named on page 5. That is not a cosmetic defect: the part
+ * number names the generated symbol, the footprint and the STEP product, so the
+ * entire CAD bundle ends up filed under a test standard.
+ *
+ * Each entry is anchored to the whole candidate, so a real part whose name
+ * merely starts with these letters (ISO7741, a TI digital isolator) is safe.
+ */
+const NOT_A_PART_NUMBER: RegExp[] = [
+  /^JESD/i,
+  /^JEDEC/i,
+  /^MIL-(?:STD|PRF|DTL|S|M|C)/i,
+  /^(?:IPC|ASME|ANSI|EIA|IEEE|SAE)-/i,
+  /^ISO-\d/i,
+  /^IEC-?\d/i,
+  /^UL-?\d/i,
+  /^AEC-Q/i,
+  /^EN-\d/i,
+  // Vendor document, revision and literature numbers. ST and Microchip stamp a
+  // "DS<number>" on every page, so it outnumbers the part number itself and wins
+  // any frequency ranking: STM32H743ZI came back as DS12110 without this.
+  /^DS\d{3,}/i,
+  /^FN\d{3,}/i,
+  /^(?:DOC|DOCID|REV|TB|AN)\d/i,
+  // TI literature numbers: four letters then digits, e.g. SLUSFA9, SNAS411P.
+  /^S[A-Z]{3}\d/i,
+  /^\d+-\d+$/,
+  // Package designators with a lead count. These are the other thing on a front
+  // page shaped like a part number, and they made AD590 report "SOIC-8".
+  /^(?:SOIC|SOP|TSSOP|SSOP|HVSSOP|VSSOP|MSOP|TSOT|SOT|X\d?QFN|VQFN|WQFN|UQFN|QFN|WSON|VSON|SON|DFN|LQFP|TQFP|HTQFP|QFP|FBGA|TBGA|BGA|WCSP|DSBGA|CDIP|PDIP|DIP|CFP|CLCC|PLCC|LCC|TO|SC)-?\d/i
+];
 
-  for (const pattern of patterns) {
-    const match = firstMatch(doc.text, pattern);
-    const candidate = match?.groups[0] ?? match?.text;
-    if (match && candidate && /\d/.test(candidate) && /-/.test(candidate)) {
-      return extractedValue(cleanValue(candidate), 0.85, cite(doc, match));
-    }
+/** A part number is at least a few characters and contains a digit. */
+const PART_NUMBER_CANDIDATE = /\b[A-Z][A-Z0-9]{2,}(?:-[A-Z0-9]+)*\b/g;
+const MIN_PART_NUMBER_LENGTH = 5;
+
+function isPlausiblePartNumber(candidate: string): boolean {
+  if (!/\d/.test(candidate)) return false;
+  return !NOT_A_PART_NUMBER.some((pattern) => pattern.test(candidate));
+}
+
+/** The filename with its extension dropped, kept close to what the vendor wrote. */
+function fileNameStem(sourceFileName: string): string {
+  return sourceFileName.replace(/\.[^.]+$/, "").trim().toUpperCase();
+}
+
+function findPartNumber(doc: DatasheetText, sourceFileName: string): Extracted<string> {
+  // The strongest signal available, and the cheapest: the file is named after a
+  // part AND the document says the same thing. Two independent sources agreeing
+  // beats any single regex, and because the document is where the match is
+  // found, the value still carries a citation.
+  // The stem has to look like a part number before it is allowed to corroborate.
+  // Without this a file saved as "datasheet.pdf" matches the word "datasheet" in
+  // the document and is reported as the part number at high confidence.
+  const stem = fileNameStem(sourceFileName);
+  if (stem.length >= MIN_PART_NUMBER_LENGTH && isPlausiblePartNumber(stem)) {
+    const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const corroborated = firstMatch(doc.text, new RegExp(`\\b${escaped}\\b`, "i"));
+    if (corroborated) return extractedValue(stem, 0.95, cite(doc, corroborated));
   }
 
-  // The filename is a real signal (vendor-named PDFs), but it is not read off
-  // the document, so it is recorded at low confidence with no citation.
+  // An explicit label wins outright when the document offers one.
+  const labelled = firstMatch(
+    doc.text,
+    /(?:PRODUCT|DEVICE|PART)\s+NUMBER\s*[:\-]\s*([A-Z0-9][A-Z0-9\-./]{2,})/i
+  );
+  const labelledValue = labelled ? cleanValue(labelled.groups[0] ?? "") : "";
+  if (labelled && labelledValue && isPlausiblePartNumber(labelledValue)) {
+    return extractedValue(labelledValue, 0.9, cite(doc, labelled));
+  }
+
+  // Otherwise take candidates from the front matter only, and rank them by how
+  // often the WHOLE document repeats them. A part number is stamped on every
+  // page header, in the ordering table and in every section title; a package
+  // code or a qualification standard is mentioned a handful of times. Measured
+  // over the benchmark corpus this lifted front-matter-only identification from
+  // roughly 5% to 84%, where the residue is datasheets covering a whole family
+  // (TLV9061/9062/9064) in which no single part is "the" part.
+  const scope = doc.text.slice(0, frontMatterEnd(doc));
+  const upper = doc.text.toUpperCase();
+  const counted = new Map<string, number>();
+
+  for (const match of scope.toUpperCase().matchAll(PART_NUMBER_CANDIDATE)) {
+    const candidate = match[0];
+    if (candidate.length < MIN_PART_NUMBER_LENGTH) continue;
+    if (counted.has(candidate)) continue;
+    if (!isPlausiblePartNumber(candidate)) continue;
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    counted.set(candidate, upper.split(new RegExp(`\\b${escaped}\\b`)).length - 1);
+  }
+
+  const ranked = [...counted.entries()].sort((left, right) => right[1] - left[1]);
+  const leader = ranked[0];
+  if (leader && leader[1] > 1) {
+    const runnerUp = ranked[1]?.[1] ?? 0;
+    // A clear leader is a part number. A near-tie is a family datasheet, where
+    // the choice is genuinely arbitrary, so it is reported at low confidence.
+    const decisive = leader[1] >= runnerUp * 1.5;
+    const located = firstMatch(doc.text, new RegExp(`\\b${leader[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"));
+    return extractedValue(leader[0], decisive ? 0.85 : 0.55, located ? cite(doc, located) : null);
+  }
+
+  // The filename is still a real signal, but nothing in the document confirmed
+  // it, so it is recorded at low confidence with no citation.
   const fromFileName = fallbackPartNumber(sourceFileName);
   return fromFileName === "UNKNOWN-PART" ? unknown<string>() : extractedValue(fromFileName, 0.3, null);
 }
@@ -195,24 +300,63 @@ function isPlausiblePackage(designator: string): boolean {
   return Number(letters[2]) >= 2;
 }
 
-function findPackageType(doc: DatasheetText): Extracted<string> {
-  const scope = doc.text.slice(0, frontMatterEnd(doc));
-  const patterns: RegExp[] = [
-    /\b(?:package|pkg)\s*[:\-]\s*([A-Z0-9][A-Z0-9\-()\/]{1,20})/i,
-    /\b(\d{1,3}-(?:lead|pin)\s+[A-Z]{2,8})\b/i,
-    /\b([A-Z]{2,6}\s*\(\d{1,3}\))/
-  ];
+/**
+ * Package designator forms seen in the front matter of real datasheets, e.g.
+ * "SOIC-8", "SOIC (8)", "SOIC 8)", "8-pin SOIC", "14-lead CFP".
+ *
+ * Most datasheets offer a part in SEVERAL packages: UCC27524 is SOIC-8,
+ * HVSSOP-8 and WSON-8, ISO7741 is SOIC and SSOP. A footprint is per package, so
+ * which one applies is a choice the caller makes, not something the document
+ * decides. This returns the best single candidate for display; the export path
+ * takes an explicit override.
+ */
+const PACKAGE_DESIGNATOR_PATTERNS: RegExp[] = [
+  /\b(?:package|pkg)\s*[:\-]\s*([A-Z0-9][A-Z0-9\-()\/]{1,20})/i,
+  /\b(\d{1,3}-(?:lead|pin)\s+[A-Z]{2,8})\b/i,
+  // The space before the bracket is required, and it is the same rule
+  // findDeclaredPinCount relies on: a package designator is a separate token
+  // ("SOIC (8)", "SON (6)") and a footnote marker is glued to the word it
+  // annotates ("NUMBER(3)", "TYPE(1)", "CMTI(1)"). This pattern allowed the
+  // space to be optional while the count's did not, so a TLV9061 read its pin
+  // table correctly and then reported its package as "NUMBER(3)", which no land
+  // pattern can match.
+  /\b([A-Z]{2,6}\s\(\d{1,3}\))/,
+  // "SOIC-8" and "SOIC 8)", the two forms the previous patterns missed. This is
+  // why UCC27524 had no package at all and so could not export.
+  /\b([A-Z]{3,8}-\d{1,3})\b/,
+  /\b([A-Z]{3,8})\s+\d{1,3}\)/
+];
 
-  for (const pattern of patterns) {
+function findPackageType(doc: DatasheetText, variants?: PackageVariant[]): Extracted<string> {
+  const scope = doc.text.slice(0, frontMatterEnd(doc));
+
+  for (const pattern of PACKAGE_DESIGNATOR_PATTERNS) {
     for (const match of allMatches(scope, pattern)) {
       const candidate = cleanValue(match.groups[0] ?? match.text);
-      if (candidate && isPlausiblePackage(candidate)) {
+      // A candidate that names no package family is not a designator, whatever
+      // shape it has. This is what stops `80-pin target development board`
+      // becoming an MSP430F5529's package and `MIL-STD-883B` an RTAX2000S's.
+      if (candidate && isPlausiblePackage(candidate) && namesPackageFamily(candidate)) {
         return extractedValue(candidate, 0.75, cite(doc, match));
       }
     }
   }
 
-  return unknown<string>();
+  // Nothing in the front matter, which is the common case on the parts that
+  // could not export: the designator is real and printed somewhere else, in a
+  // form these five patterns do not cover. `SO48` and `Flat-16P` are glued
+  // together, `64 Ld EP-TQFP` is a thermal table entry, `16-Lead TSSOP` is on
+  // page 8. The variant reader finds all of them, and answers here only when the
+  // document describes ONE package; otherwise the choice goes to the caller.
+  const single = selectSinglePackage(variants ?? findPackageVariants(doc.text, frontMatterEnd(doc)));
+  if (!single) return unknown<string>();
+
+  const escaped = single.designator.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const located = firstMatch(doc.text, new RegExp(escaped, "i"));
+  // Lower than the front-matter patterns: this is a real designator read from a
+  // real document, and it was found somewhere the document was not introducing
+  // itself, so it deserves less weight than a front page saying so outright.
+  return extractedValue(single.designator, 0.6, located ? cite(doc, located) : null);
 }
 
 /**
@@ -223,26 +367,140 @@ function findPackageType(doc: DatasheetText): Extracted<string> {
  * design beat the part's own package. Scoping to the front matter and
  * requiring a package-shaped match removes that entire class of error.
  */
+/**
+ * Letter prefixes whose trailing number is not a pin count.
+ *
+ * All of these were caught reading the benchmark corpus, and each one produced a
+ * confidently wrong pin count before it was listed here:
+ *
+ * - `TO-220`, `TO-257`, `SOT-23`, `SOT-223`, `SOT-553`, `DO-214`: JEDEC package
+ *   OUTLINE codes. The number is the outline, not a terminal count, and TO-220
+ *   is a three-lead part.
+ * - `STD-883`, `PRF-38535`: MIL standards. An RTAX2000S read as an 883-pin part.
+ * - `RS-485`, `RS-232`: interface standards.
+ * - `MO-220`, `MS-012`: JEDEC outline registrations.
+ *
+ * This is deliberately a list of observed liars rather than a rule, because the
+ * shape `LETTERS-NUMBER` is genuinely how packages are written too (`SOIC-8`,
+ * `DBQ-16`, `GDIP-14`), and no property of the string separates them.
+ */
+const NOT_A_PIN_COUNT_PREFIX = new Set([
+  "TO", "SOT", "DO", "DPAK", "SOD", "SC",
+  "STD", "MIL", "PRF", "JESD", "JEDEC", "EIA", "IPC", "IEC", "ISO", "ANSI", "ASME", "DIN", "EN",
+  "MO", "MS", "RS", "USB", "SPI", "I2C", "CAN"
+]);
+
+/**
+ * The pin count the document declares about itself, as opposed to the one read
+ * off a pin table.
+ *
+ * Both signals are weak in different ways, which is why `buildPartRecord` treats
+ * a disagreement between them as unknown. This one's weakness is that a
+ * datasheet's front matter is dense with numbers that look like designators, so
+ * every candidate is filtered three ways: the letters must not be a known
+ * standard or outline family, the letters must not be a signal name, and the
+ * count must be plausible for a package.
+ */
 function findDeclaredPinCount(doc: DatasheetText): Extracted<number> {
   const scope = doc.text.slice(0, frontMatterEnd(doc));
+  // Ordered by how much the form constrains its own meaning. "14-lead CFP" says
+  // what the number counts; "GDIP-14" only implies it. The parenthesised form
+  // runs last because it used to run second, which is the whole reason an
+  // LM139AQML-SP declared seven pins: it matched GND(7) before reaching GDIP-14.
+  //
+  // That form also requires a SPACE before the bracket, and the space is doing
+  // real work. Across the corpus the designators are written with one and the
+  // false positives are not, without exception: SOIC (8), SON (6), UQFN (12)
+  // against GND(7), NUMBER(3), CMTI(1), SIZE(2). A footnote marker is glued to
+  // the word it annotates; a package designator is a separate token. That is a
+  // property of how the documents are typeset rather than a list of words we
+  // happened to lose to, so it should keep working on datasheets nobody has
+  // looked at.
   const patterns: RegExp[] = [
     /\b(\d{1,3})-(?:pin|lead)\s+[A-Z]{2,8}\b/i,
-    /\b[A-Z]{2,6}\s*\((\d{1,3})\)/,
-    /\b[A-Z]{2,6}-(\d{1,3})\b/
+    /\b([A-Z]{2,6})-(\d{1,3})\b/,
+    /\b([A-Z]{2,6})\s+\((\d{1,3})\)/
   ];
 
   for (const pattern of patterns) {
     for (const match of allMatches(scope, pattern)) {
-      const count = Number(match.groups[0]);
+      // The first pattern captures only the count; the other two capture the
+      // letters first so they can be judged.
+      const [first, second] = match.groups;
+      const prefix = second === undefined ? null : (first ?? "").toUpperCase();
+      const count = Number(second ?? first);
+
+      if (prefix && (NOT_A_PIN_COUNT_PREFIX.has(prefix) || NOT_A_PACKAGE.has(prefix))) continue;
       // A 1-pin package does not exist, so a (1) is a signal label, not a
       // designator. Same false positive that made ST's "OUT (1)" a package.
-      if (Number.isFinite(count) && count >= 2 && count <= 1000) {
-        return extractedValue(count, 0.7, cite(doc, match));
-      }
+      if (!Number.isFinite(count) || count < 2 || count > 1000) continue;
+
+      return extractedValue(count, 0.7, cite(doc, match));
     }
   }
 
   return unknown<number>();
+}
+
+/**
+ * The pin count an ORDERING SCHEME encodes in the part number.
+ *
+ * An MCU datasheet covers a whole family, so it declares no single pin count. It
+ * does print the scheme that decodes the ordering code, as a labelled list:
+ *
+ *     Pin count
+ *       T = 36 pins
+ *       C = 48 pins
+ *       R = 64 pins
+ *       V = 100 pins
+ *
+ * The mapping is READ from that list rather than remembered. `C = 48` is this
+ * document's statement about this family, and a table of vendor letters carried
+ * in code is exactly the kind of knowledge that goes stale silently.
+ *
+ * Only the POSITION is structural: the code sits immediately after the subfamily
+ * digits, which is what the scheme's own example (`STM32 F 103 C 8 T 7`) lays
+ * out. Position is needed because a letter appears in more than one of the
+ * scheme's lists — `T` is both 36 pins and an LQFP — so searching the part number
+ * for any listed letter is ambiguous where reading the one at the right offset is
+ * not.
+ *
+ * This unblocks nothing by itself. It supplies the count that CHOOSES among the
+ * package columns of a pin table that has already proved itself: an STM32F103C8's
+ * table yields a clean 1..48 and a clean 1..64 side by side, and nothing else in
+ * the document says which one the caller is holding.
+ */
+const ORDERING_PIN_COUNT_HEADING = /^pin\s+count$/i;
+const ORDERING_CODE_LINE = /^([A-Z])\s*=\s*(\d{1,3})\s*pins?\b/i;
+const ORDERING_PART_NUMBER = /^(STM32[A-Z])(\d+)([A-Z])/i;
+
+function findOrderingSchemePinCount(doc: DatasheetText, partNumber: string | null): number | null {
+  const code = partNumber ? ORDERING_PART_NUMBER.exec(partNumber)?.[3]?.toUpperCase() : null;
+  if (!code) return null;
+
+  for (const page of doc.pages) {
+    const lines = [...page.items]
+      .sort((left, right) => right.y - left.y || left.x - right.x)
+      .map((item) => cleanValue(item.str));
+
+    for (let index = 0; index < lines.length; index += 1) {
+      if (!ORDERING_PIN_COUNT_HEADING.test(lines[index])) continue;
+
+      // The list runs until a line that is not one of its entries, so a heading
+      // cannot reach across the page and collect an unrelated list.
+      const counts = new Map<string, number>();
+      for (let next = index + 1; next < Math.min(index + 10, lines.length); next += 1) {
+        const entry = ORDERING_CODE_LINE.exec(lines[next]);
+        if (!entry) break;
+        counts.set(entry[1].toUpperCase(), Number(entry[2]));
+      }
+
+      const found = counts.get(code);
+      if (found !== undefined) return found;
+    }
+  }
+
+  return null;
 }
 
 function classifyPinType(name: string, description = ""): PinElectricalType {
@@ -255,18 +513,81 @@ function classifyPinType(name: string, description = ""): PinElectricalType {
   return "unspecified";
 }
 
-const PIN_SECTION_HEADING = /(?:Pin\s+Functions|Pin\s+Description[s]?|Terminal\s+Functions|Pin\s+Configuration[s]?)/i;
+const PIN_SECTION_HEADING =
+  /(?:Pin\s+Functions|Pin\s+Description[s]?|Terminal\s+Functions|Pin\s+Configuration[s]?|Pin\s+Assignment[s]?|Signal\s+Description[s]?)/i;
+
+/**
+ * Dotted leaders, the signature of a table-of-contents entry.
+ *
+ * Datasheets name their pin section in the contents before the section itself,
+ * so the FIRST match of the heading is almost always the contents line. The
+ * parser then read contents entries as pin rows, found nothing, and reported no
+ * pin table. Measured across the corpus this was the single largest cause of
+ * missing pin data: 20 of 24 blocked parts had a real pin section the parser
+ * never reached.
+ */
+const TOC_LEADER = /\.{4,}|(?:\.\s){4,}/;
+
+/** Finds the pin section, skipping contents entries that merely name it. */
+function findPinSection(text: string): RawMatch | null {
+  const candidates = allMatches(text, PIN_SECTION_HEADING);
+  for (const candidate of candidates) {
+    // Judge by what FOLLOWS the heading: a contents entry is followed by dotted
+    // leaders and a page number, a real section by the table itself.
+    const following = text.slice(candidate.index, candidate.index + 300);
+    if (!TOC_LEADER.test(following)) return candidate;
+  }
+  return candidates[0] ?? null;
+}
 const SIGN_LINE = /^[+\-–−]$/;
 /**
  * Pin-name characters include the Unicode minus and en dash, because datasheets
  * set the "-" of an inverting input as a typographic minus, not ASCII. Missing
  * them silently dropped every inverting input and V- from the table.
  */
+/**
+ * A pin-function table row: NAME, number, type, description.
+ *
+ * **Measured negative, 2026-07-27. Do not widen the type column again without
+ * new evidence.** Real tables mostly abbreviate the type, and a TI SN65HVD230
+ * reads `D 1 I`, `GND 2 GND`, `VCC 3 Supply`, `CANL 6 I/O`, of which only the
+ * `I/O` rows match here. Adding the terse forms (`I`, `O`, `P`, `GND`, `Supply`,
+ * and the rest) looked obviously right and moved the benchmark by nothing:
+ * export-readiness, package and citation rates were identical to four
+ * significant figures before and after.
+ *
+ * The reason is worth keeping. The extra matches were not table rows, they were
+ * PINOUT DIAGRAM lines, and they arrive with the number glued to the name:
+ * `OutA1`, `IN–3`, `GND4`, `V–4`, `OUT61`. So the wider vocabulary bought noise
+ * that the completeness gate then threw away, while leaving the matcher loose
+ * enough that a stray prose run could one day fake a gap-free 1..N.
+ *
+ * The tables this misses are not missed because of the type column. They are
+ * missed because pdf-parse interleaves the wrapped description column between
+ * the rows, which no row-at-a-time regex recovers from. That needs column
+ * geometry, the same conclusion the number-first pin tables reached.
+ */
 const PIN_ROW = /^([A-Z][A-Z0-9\s+\-_/–−]*?)\s+(\d{1,3})\s+(Input|Output|Power|Passive|Bidirectional|I\/O|NC)\b\s*(.*)$/i;
 
+/**
+ * Fewest rows a pin table may have and still be believed. A two-terminal part
+ * exists; a one-row "table" is a line of prose that matched `PIN_ROW`.
+ */
+const MIN_TABLE_PINS = 2;
+
 /** Normalizes typographic minus variants to ASCII so names compare and export cleanly. */
+/**
+ * A pin name's sign, written as ASCII.
+ *
+ * `±` is in the list because of how a PDF encodes it, not because of what it
+ * means: an INA240's pinout figure draws `IN–` and the font hands that glyph
+ * back as `±`, so the part exported with a pin called `IN±`. Confirmed by
+ * RENDERING page 3 rather than by reading the text layer, which is the only way
+ * to settle a question about a drawing. A pin name carries a plus or a minus; it
+ * does not carry a tolerance, and no other name in the corpus contains one.
+ */
 function normalizeSigns(name: string): string {
-  return name.replace(/[–−]/g, "-");
+  return name.replace(/[–−±]/g, "-");
 }
 
 /**
@@ -276,8 +597,8 @@ function normalizeSigns(name: string): string {
  *
  * Returns an empty list when no table is found. It never synthesizes rows.
  */
-function extractPins(doc: DatasheetText): { pins: PinRecord[]; citation: Citation | null; confidence: number } {
-  const heading = firstMatch(doc.text, PIN_SECTION_HEADING);
+function extractPinTable(doc: DatasheetText): { pins: PinRecord[]; citation: Citation | null; confidence: number } {
+  const heading = findPinSection(doc.text);
   const sectionStart = heading ? heading.index : 0;
   const scope = doc.text.slice(sectionStart, sectionStart + 6000);
 
@@ -338,10 +659,358 @@ function extractPins(doc: DatasheetText): { pins: PinRecord[]; citation: Citatio
 
   pins.sort((left, right) => Number(left.number) - Number(right.number));
 
+  // A read that is not a whole table is not a small table, it is noise.
+  //
+  // `PIN_ROW` matches anything shaped like NAME NUMBER TYPE, and body prose hits
+  // that often enough to matter: over the benchmark corpus it produced pins 16
+  // and 18 for an 8-pin LM358, pin 73 alone for an STM32F103C8, and one row of
+  // an AD8628 named "GENERALDESCRIPTIONWithanoffsetvoltageofonly". Those reads
+  // were not merely useless. Where the document declared no count of its own,
+  // `pins.length` became the pin count, and four parts in the corpus passed the
+  // export gate on them: an STM32F103C8 was export-ready as a ONE-PIN part.
+  //
+  // So the table is now held to the same bar as the pinout figure, which has
+  // refused partial reads since it was written: the numbers it recovered must be
+  // exactly 1..N with no gaps. That is what a table of a real package looks like
+  // when it has been read whole, and it is not what prose produces. Every one of
+  // the fourteen bad reads in the corpus fails it.
+  //
+  // The floor is two rows rather than the figure's four, because a two- or
+  // three-terminal part is a real thing this product must not refuse, and with
+  // the 1..N rule a spurious pair has to be numbered exactly 1 and 2 to survive.
+  // It is set by what the corpus showed, not by taste: two rows is the smallest
+  // floor that rejects all fourteen.
+  const numbers = pins.map((pin) => Number(pin.number));
+  const complete = numbers.length >= MIN_TABLE_PINS && numbers.every((value, index) => value === index + 1);
+  if (!complete) return { pins: [], citation: null, confidence: 0 };
+
   const citation =
     firstRowIndex !== null ? citationAt(doc, firstRowIndex, 40) : heading ? cite(doc, heading) : null;
 
   return { pins, citation, confidence: heading ? 0.85 : 0.6 };
+}
+
+/**
+ * One row of a two-column top-view pinout figure: the left pin and its number,
+ * then the right pin's number and its name, which is the order pdf-parse emits
+ * for that layout.
+ *
+ *   VCC1 1 16 VCC2
+ *   GND1 2 15 GND2
+ */
+const DIAGRAM_PIN_NAME = String.raw`[A-Z][A-Z0-9+\-_/.–−]*`;
+const DIAGRAM_ROW = new RegExp(
+  String.raw`^(${DIAGRAM_PIN_NAME})\s+(\d{1,3})\s+(\d{1,3})\s+(${DIAGRAM_PIN_NAME})$`,
+  "i"
+);
+
+/** Two rows is the smallest thing that can be a two-column figure at all. */
+const MIN_DIAGRAM_PINS = 4;
+
+/**
+ * Reads the pinout figure rather than the pin function table.
+ *
+ * This is worth a second parser because unlike every other pin signal it carries
+ * its own proof. In a top view the left column ascends while the right descends,
+ * so leftNumber + rightNumber is the same constant on every row, and that
+ * constant is pinCount + 1. Since both numbers are then bounded by that sum, a
+ * figure that yields sum - 1 distinct numbers has yielded exactly 1..N with no
+ * gaps. Prose does not do that by accident.
+ *
+ * Measured over the 37-part benchmark corpus: 6 parts whose function table no
+ * regex could read (ADS1115, ADC128S102QML-SP, SN74LVC1G08, TPS7A4501-SP,
+ * TXB0104, UCC27524) give a complete and internally consistent pinout here.
+ *
+ * Returns null unless the figure proves itself complete. A partial read is
+ * refused rather than reported, because a footprint built from half a pinout is
+ * worse than an honest gap.
+ */
+function extractPinDiagram(doc: DatasheetText): { pins: PinRecord[]; citation: Citation | null } | null {
+  const bySum = new Map<number, { number: number; name: string; index: number }[]>();
+  let cursor = 0;
+
+  for (const rawLine of doc.text.split("\n")) {
+    const lineStart = cursor;
+    cursor += rawLine.length + 1;
+
+    const row = DIAGRAM_ROW.exec(rawLine.trim());
+    if (!row) continue;
+
+    const left = Number(row[2]);
+    const right = Number(row[3]);
+    // The left column ascends and the right descends, so the left number is
+    // always the smaller one. Rows that do not obey that are not this figure.
+    if (left < 1 || left >= right) continue;
+
+    const sum = left + right;
+    const group = bySum.get(sum) ?? [];
+    group.push({ number: left, name: normalizeSigns(row[1]), index: lineStart });
+    group.push({ number: right, name: normalizeSigns(row[4]), index: lineStart });
+    bySum.set(sum, group);
+  }
+
+  // Every candidate sum is judged on its own. Looking at only the largest group
+  // was the first attempt and it was wrong: on a 50-page UCC27524 an unrelated
+  // parameter table outgrew the real figure, and the real figure was never
+  // reached. Completeness is what makes a group trustworthy, not size.
+  const complete: { sum: number; names: Map<number, { name: string; index: number }> }[] = [];
+
+  for (const [sum, rows] of bySum) {
+    // A figure is at least two rows, so at least four pins. Without this floor a
+    // single stray line establishes its own trivially "complete" group: the
+    // UCC27524 timing table's "tM 1 2 ns" reads as a complete 2-pin part and
+    // then conflicts with the real 8-pin figure, so both were thrown away.
+    if (sum - 1 < MIN_DIAGRAM_PINS || rows.length < 4) continue;
+
+    const names = new Map<number, { name: string; index: number }>();
+    let consistent = true;
+
+    for (const row of rows) {
+      const existing = names.get(row.number);
+      if (!existing) {
+        names.set(row.number, { name: row.name, index: row.index });
+        continue;
+      }
+      // One datasheet often draws several devices or package variants, and they
+      // can disagree about what lives at a position: ISO7741 pin 6 is IND in one
+      // figure and OUTD in the other, SN65HVD230 pin 8 is RS or NC by variant.
+      // That is a real ambiguity in the source, so the figure is refused.
+      if (existing.name.toUpperCase() !== row.name.toUpperCase()) {
+        consistent = false;
+        break;
+      }
+    }
+
+    // Both numbers on a row are bounded by the sum, so sum - 1 distinct numbers
+    // means the set is exactly 1..N with no gaps. Anything less is a partial
+    // read of the figure and is not reported as a pinout.
+    if (consistent && names.size === sum - 1) complete.push({ sum, names });
+  }
+
+  if (complete.length === 0) return null;
+  // Two complete figures that imply different pin counts are two packages, and
+  // choosing between them is the caller's job, not a regex's.
+  if (complete.some((candidate) => candidate.sum !== complete[0].sum)) return null;
+
+  const best = complete.reduce((left, right) => (right.names.size > left.names.size ? right : left));
+  const pins: PinRecord[] = [...best.names.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([number, entry]) => ({
+      number: String(number),
+      name: entry.name,
+      electricalType: classifyPinType(entry.name)
+    }));
+
+  const firstRow = Math.min(...[...best.names.values()].map((entry) => entry.index));
+  return { pins, citation: citationAt(doc, firstRow, 40) };
+}
+
+/**
+ * Does the pinout FIGURE resolve to the same pin count as the table?
+ *
+ * Corroboration by a second reader that shares no code with the first. The table
+ * reader proves a gap-free 1..N down a column of row geometry; the figure reader
+ * proves one by the constant sum of opposing sides. Neither can produce the
+ * other's proof by accident, so agreement on N is evidence about the DEVICE and
+ * not merely about the table, which is exactly what `needsCorroboration` asks for.
+ *
+ * Deliberately compares the COUNT and nothing else. The two readers disagree
+ * about names often and legitimately (a figure abbreviates what a table spells
+ * out), and requiring the names to match would refuse parts that are read
+ * correctly. The count is the value the footprint is built from and the only one
+ * this needs to settle.
+ *
+ * No declared count is passed. Supplying one lets the figure reader choose among
+ * figures using the very signal this is standing in for, which would make the
+ * agreement circular.
+ */
+function figureAgreesWithTable(
+  doc: DatasheetText,
+  tablePins: number,
+  partNumber?: string,
+  packageType?: string
+): boolean {
+  const figure = extractPinFigureByGeometry(doc, partNumber, packageType, null);
+  return figure !== null && figure.pins.length === tablePins;
+}
+
+/**
+ * The pin signal, from the function table when it is readable and from the
+ * pinout figure when it is not.
+ *
+ * `selfVerified` marks a result the document proved internally, which only the
+ * figure can do (see extractPinDiagram). Callers use it to decide whether the
+ * pin count may be trusted over a disagreeing package designator.
+ */
+function extractPins(
+  doc: DatasheetText,
+  partNumber?: string,
+  packageType?: string,
+  /**
+   * The count the document declares, used by ONE reader and only to choose
+   * between number columns that have each already proved themselves; see
+   * `readContinuedTable`. It never vouches for a column.
+   */
+  declaredCount?: number | null
+): {
+  pins: PinRecord[];
+  citation: Citation | null;
+  confidence: number;
+  selfVerified: boolean;
+  /**
+   * Set when the pins were read as a table whose subject cannot be confirmed.
+   * The reader proved a well-formed table exists; it could not prove the table
+   * belongs to the device being asked about, so the count must be corroborated
+   * by the document's own declared count before it is believed.
+   */
+  needsCorroboration?: boolean;
+  /**
+   * The pins came from a TABLE read off row geometry, not from a figure.
+   *
+   * Load-bearing for the figure tie-break in `buildPartRecord`: asking whether a
+   * figure agrees with pins the FIGURE itself produced compares a reader to
+   * itself and always says yes. That is the AD590 shape, an eight-pin figure on
+   * a part declared as a two-lead flatpack, and it is guarded by a test.
+   */
+  fromTable?: boolean;
+} {
+  // Geometry first. It is the only reader that sees the page as a table rather
+  // than as lines, so it recovers rows whose description column wrapped, which
+  // is the shape that defeats both readers below. It also proves itself twice
+  // over: the numbers it found spell 1..N with no gaps, and the type column
+  // reads as pin types rather than as a figure's opposite-side numbers.
+  const geometry = extractPinTableByGeometry(doc, partNumber, packageType, declaredCount);
+
+  // Where the table's length CONTRADICTS the count the document declares, and a
+  // figure on the same document agrees with that count, the figure is the better
+  // answer.
+  //
+  // This is the rule `readContinuedTable` already applies to a table's per-package
+  // columns and `extractPinFigureByGeometry` to a document's several figures,
+  // applied one level up: the count only ever chooses between readings that have
+  // each already proved themselves, so it cannot promote a bad one.
+  //
+  // Without it the first reader wins outright and its disagreement then throws the
+  // pin count away, losing BOTH answers. Measured on the hold-out, that is the
+  // largest single loss: a document drawing a five-pin SOT and an eight-pin SOIC
+  // has the table reader find one and the designator declare the other, and the
+  // part comes back with a pinout it refuses to count.
+  if (geometry && declaredCount != null && geometry.pins.length !== declaredCount) {
+    const corroborated = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount);
+    if (corroborated && corroborated.pins.length === declaredCount) {
+      return {
+        pins: corroborated.pins.map((pin) => ({
+          number: String(pin.number),
+          name: normalizeSigns(pin.name),
+          electricalType: classifyPinType(pin.name)
+        })),
+        citation: citationAt(doc, corroborated.start, 40),
+        confidence: 0.9,
+        selfVerified: false,
+        needsCorroboration: true
+      };
+    }
+  }
+
+  if (geometry) {
+    return {
+      pins: geometry.pins.map((pin) => ({
+        number: pin.number,
+        name: pin.name,
+        electricalType: classifyPinType(pin.name, `${pin.type} ${pin.description}`),
+        description: pin.description || undefined
+      })),
+      citation: citationAt(doc, geometry.start, 40),
+      confidence: 0.9,
+      // NOT self-verified, and the distinction is the whole point. This proves
+      // the page holds a well-formed pin table; it does not prove the table is
+      // THIS part's. A TLV9061 datasheet also covers the TLV9062 and TLV9064,
+      // and the first complete table on the page set is the quad's: reading it
+      // as self-verifying made a five-pin op-amp export as a sixteen-pin part.
+      //
+      // The pinout figure earns the flag because its proof is about the device
+      // it draws. A table's proof is only about the table.
+      selfVerified: false,
+      // Unless the table's own caption names the part that was asked for, which
+      // is a proof about the device and is what corroboration was ever for. The
+      // TLV9061 case above is exactly this: `Table 5-1. Pin Functions: TLV9061`
+      // sits above the five-pin table and `Pin Functions: TLV9064S` above the
+      // sixteen-pin one. A claimed table still does not outrank a declared count
+      // that CONTRADICTS it, because the numbering proof says nothing about
+      // which package the caller wants.
+      needsCorroboration: !geometry.claimed,
+      fromTable: true
+    };
+  }
+
+  const table = extractPinTable(doc);
+  const diagram = extractPinDiagram(doc);
+
+  if (!diagram) {
+    if (table.pins.length > 0) return { ...table, selfVerified: false };
+
+    // Last resort, and deliberately last: the pinout figure read off the page
+    // GEOMETRY rather than the flattened text. It runs only when both text
+    // readers found nothing, so it can add parts and cannot take any away.
+    //
+    // Its count is NOT self-verified, which is the difference between it and the
+    // text figure reader above. The constant-sum proof says the figure is
+    // complete, not that it is the package the caller wants, and a datasheet
+    // draws several: an AD590 draws an eight-pin SOIC while declaring a two-lead
+    // flatpack, an AD8628 draws an eight-pin SOIC and a five-pin TSOT. So the
+    // pins are reported and the count waits for the declared count to agree,
+    // which is the same rule the geometry TABLE follows and for the same reason.
+    const figure = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount);
+    if (figure) {
+      return {
+        pins: figure.pins.map((pin) => ({
+          number: String(pin.number),
+          name: normalizeSigns(pin.name),
+          electricalType: classifyPinType(pin.name)
+        })),
+        citation: citationAt(doc, figure.start, 40),
+        confidence: 0.85,
+        selfVerified: false,
+        needsCorroboration: true
+      };
+    }
+
+    return { ...table, selfVerified: false };
+  }
+  // When both agree on the count the table wins on content, since it carries
+  // the type column and the description the figure does not have.
+  if (table.pins.length === diagram.pins.length) return { ...table, selfVerified: true };
+
+  // The text figure reader won, so the answer is a FIGURE. Where the geometry
+  // reader read the same figure and agrees on the count, its NAMES supersede: it
+  // is reading positions rather than a flattened line, so it recovers a name that
+  // arrives in several runs and a subscript on its own baseline. The text reader
+  // sees only what survived flattening, which is how an SN74LVC1G08 pin 6 came
+  // back called `V` when the figure says `VCC`.
+  //
+  // Only the names change. The count is the text reader's and stays self-verified
+  // on the strength of the agreement, so this cannot alter which pins exist.
+  // The declared count is passed here for the same reason it is passed above: a
+  // document drawing several packages offers several figures, and where neither
+  // the device nor the package caption separates them the count does. An
+  // SN74LVC1G08 draws its DBV, DRL, DSF, YZP and DRY packages on one page, two of
+  // them five-pin and two six-pin, so without it the figures disagree, no names
+  // supersede, and pin 6 goes back to the `V` the flattened text gives.
+  const geometryFigure = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount);
+  if (geometryFigure && geometryFigure.pins.length === diagram.pins.length) {
+    const byNumber = new Map(geometryFigure.pins.map((pin) => [String(pin.number), pin.name]));
+    return {
+      ...diagram,
+      pins: diagram.pins.map((pin) => {
+        const better = byNumber.get(String(pin.number));
+        return better ? { ...pin, name: normalizeSigns(better) } : pin;
+      }),
+      confidence: 0.9,
+      selfVerified: true
+    };
+  }
+
+  return { ...diagram, confidence: 0.9, selfVerified: true };
 }
 
 function findDimension(doc: DatasheetText, pattern: RegExp, confidence = 0.7): Extracted<number> {
@@ -353,6 +1022,34 @@ function findDimension(doc: DatasheetText, pattern: RegExp, confidence = 0.7): E
   return extractedValue(value, confidence, cite(doc, match));
 }
 
+/**
+ * Merges what the mechanical drawing states into the dimensions read from prose.
+ *
+ * The drawing WINS wherever it has an answer, and that ordering is the point of
+ * reading it. A prose pitch is a regex over whatever sentence happened to use
+ * the word, and this corpus has caught that pattern picking up a neighbouring
+ * package's figure; a drawing's `6X 1.27` is the pitch of the outline it is
+ * drawn on, tagged with a repeat count that checks against the pin count, on a
+ * page already confirmed to be this part's package.
+ */
+function withDrawnDimensions(
+  dimensions: PackageDimensions,
+  drawn: DrawnDimensions | null
+): PackageDimensions {
+  if (!drawn) return dimensions;
+
+  // Confidence 0.9 rather than the prose reader's 0.7: the value is tagged with
+  // a repeat count that had to agree with the pin count before it was accepted.
+  const pitch = drawn.pitchMm
+    ? extractedValue(drawn.pitchMm.value, 0.9, drawn.pitchMm.citation)
+    : dimensions.pitchMm;
+  const leadWidth = drawn.leadWidthMm
+    ? extractedValue(drawn.leadWidthMm.value, 0.9, drawn.leadWidthMm.citation)
+    : dimensions.leadWidthMm;
+
+  return { ...dimensions, pitchMm: pitch, leadWidthMm: leadWidth };
+}
+
 function parseDimensions(doc: DatasheetText, leadCount: Extracted<number>): PackageDimensions {
   const pair = firstMatch(doc.text, /\b(\d+(?:\.\d+)?)\s*mm\s*[×x]\s*(\d+(?:\.\d+)?)\s*mm\b/i);
 
@@ -360,6 +1057,7 @@ function parseDimensions(doc: DatasheetText, leadCount: Extracted<number>): Pack
   const bodyWidth = findDimension(doc, /body\s*width[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i);
 
   return {
+    leadWidthMm: unknown<LeadWidth>(),
     bodyLengthMm:
       bodyLength.value !== null
         ? bodyLength
@@ -399,22 +1097,105 @@ function findRadiationField(doc: DatasheetText, patterns: RegExp[], confidence =
 /** A linear energy transfer spec, bounded so it stops at the unit. */
 const LET_VALUE = String.raw`LET\s*=\s*[^\n]{0,24}?\/\s*mg`;
 
+/**
+ * A total dose figure, e.g. "100 krad(Si)", "300 kRad (Si, Functional)".
+ *
+ * The parenthesised species is optional because ST writes "tested up to 300 krad"
+ * with no qualifier at all.
+ *
+ * Two guards, both from values this corpus produced:
+ * - The leading lookbehind rejects a figure that starts mid-number. Without it
+ *   UT54LVDS217's "Total Ionizing Dose (TID) 1.0E6 rad(Si)" was reported as
+ *   "6 rad(Si)", off by five orders of magnitude and confidently cited.
+ * - The trailing lookahead rejects a dose RATE. "10mrad(Si)/s" and "0.55 rad/s"
+ *   are irradiation conditions, not a qualification level, and they appear far
+ *   more often in a radiation report than the total dose does.
+ */
+const DOSE_FIGURE = String.raw`(?<![\d.eE])\d+(?:\.\d+)?\s*[kKmM]?[Rr]ad\s*(?:\(\s*Si[^)]{0,16}\))?(?!\s*/\s*s)`;
+
+/**
+ * A linear energy transfer figure in any of the punctuations vendors use for
+ * MeV-cm2/mg: TI sets the separator as a middle dot, ST as a period, Microsemi
+ * as a hyphen, and the exponent on cm2 is frequently lost in text extraction.
+ */
+const LET_FIGURE = String.raw`\d+(?:\.\d+)?\s*MeV\s*[·•.\-/]?\s*cm\s*2?\s*/\s*mg`;
+
+/**
+ * Radiation qualification, which is the field that decides whether a part is
+ * usable at all for this product's customers, and the one the parser was worst
+ * at: 3% corpus-wide and 13% even on rad-hard parts, because every pattern was
+ * fitted to one TI phrasing with an equals sign.
+ *
+ * What the corpus actually shows: TI writes "Total Ionizing Dose 100 krad(Si)",
+ * ST writes "Rad-hard: 300 kRad(Si) TID performance" with the value BEFORE the
+ * cue, and Microsemi writes "Total Ionizing dose Up to 300 krad (Si, Functional)".
+ * So the general patterns pair a cue with a bounded figure rather than trying to
+ * spell out the sentence.
+ *
+ * The single-event patterns are deliberately case SENSITIVE. "SEE" and "SET"
+ * are ordinary English words that appear on nearly every page of a datasheet
+ * ("see Table 9", "set by an external resistor"), and matching them
+ * case-insensitively next to any nearby number is how a prose sentence becomes
+ * a radiation spec. Vendors always capitalise the acronym.
+ */
 function extractRadiationData(doc: DatasheetText): RadiationData {
   return {
     tid: findRadiationField(doc, [
+      // Exact TI phrasing first, so a document that has it is unaffected.
       /(?:RHA\s+up\s+to\s+)?TID\s*[=:]\s*(\d+(?:\.\d+)?\s*[kKmM]?rad\s*(?:\([^)]{0,10}\))?)/i,
+      new RegExp(
+        String.raw`(?:Total\s+Ionizing\s+Dose|TID)\b[^\n]{0,40}?(${DOSE_FIGURE})`,
+        "i"
+      ),
+      // ST puts the figure first: "Rad-hard: 300 kRad(Si) TID performance".
+      new RegExp(String.raw`(${DOSE_FIGURE})\s{0,4}TID\b`, "i"),
+      new RegExp(
+        String.raw`(?:Rad[\s-]?hard\w*|Radiation\s+Hardness\s+Assur\w*|RHA)\b[^\n]{0,40}?(${DOSE_FIGURE})`,
+        "i"
+      ),
       /(?:RHA\s+up\s+to\s+)?TID\s*[=:]\s*([^\n,.;]{1,40})/i
     ]),
     see: findRadiationField(doc, [
       new RegExp(String.raw`SEE\s+characterized\s+to\s+(${LET_VALUE})`, "i"),
+      new RegExp(String.raw`\b(?:SEE|SEU|SET|SEFI)\b[^\n]{0,60}?(${LET_FIGURE})`),
       /SEE\s+characterized\s+to\s+([^\n,.;]{1,40})/i
     ]),
     sel: findRadiationField(doc, [
       new RegExp(String.raw`SEL\s+(?:resilient|immune)\s+to\s+(${LET_VALUE})`, "i"),
+      new RegExp(
+        String.raw`(?:\bSEL\b|Single[\s-]?Event\s+Latch[\s-]?Up)[^\n]{0,60}?(${LET_FIGURE})`
+      ),
       /SEL\s+(?:resilient|immune)\s+to\s+([^\n,.;]{1,40})/i
     ]),
-    qmlClass: findRadiationField(doc, [/\b(QML\s+Class\s+[A-Z0-9]+)\b/i], 0.9)
+    qmlClass: findQmlClass(doc)
   };
+}
+
+/**
+ * QML class, in one of two canonical spellings: "QML Class V" or "QML-V".
+ *
+ * ST typesets it as "Qml-V qualified" and the hyphenated short form is as common
+ * in this corpus as the spelled-out one, so both are read. The result is
+ * canonicalised rather than kept verbatim because case and spacing carry no
+ * meaning in a classification label, while "Qml-V" in an export record reads as
+ * a parse fault. The citation still points at the source text, so the claim
+ * stays checkable.
+ */
+function findQmlClass(doc: DatasheetText): Extracted<string> {
+  const found = findRadiationField(
+    doc,
+    [/\b(QML[\s-]+Class\s+[A-Z0-9]+)\b/i, /\b(QML\s*-\s*[VQTNH])\b/i],
+    0.9
+  );
+  if (found.value === null) return found;
+
+  const spelledOut = /^QML[\s-]+Class\s+(\w+)$/i.exec(found.value);
+  if (spelledOut) return { ...found, value: `QML Class ${spelledOut[1].toUpperCase()}` };
+
+  const short = /^QML\s*-\s*(\w)$/i.exec(found.value);
+  if (short) return { ...found, value: `QML-${short[1].toUpperCase()}` };
+
+  return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,28 +1211,151 @@ function extractRadiationData(doc: DatasheetText): RadiationData {
 export function buildPartRecord(doc: DatasheetText, fileName: string, sourceUrl?: string): PartRecord {
   const partNumber = findPartNumber(doc, fileName);
   const manufacturer = findManufacturer(doc);
-  const packageType = findPackageType(doc);
+
+  // The vendor's own ordering table, where the document has one, REPLACES the
+  // prose reader rather than adding to it. It is keyed to the part number, so it
+  // is the only source here that can tell this part's packages from its
+  // siblings', and the prose reader pools them by construction: an OPA333
+  // document describes the OPA2333 too and prose yields seven families where the
+  // ordering table yields two, of which exactly one has this part's pin count.
+  //
+  // Measured over both caches, on the 30 documents that have the table: it drops
+  // an MSP430F5529 from six families to `LQFP (PN) | 80`, a TLV9061 from ten to
+  // three, and it is the ONLY source for a CD4017B, whose prose yields nothing at
+  // all. It also carries the outline CODE, which is what tells a `SOIC (D)` from
+  // a `SOIC (DW)`; those two share a name and differ by 4.3 mm of lead span.
+  //
+  // Falling back rather than merging is deliberate. A union would put the
+  // siblings straight back in, which is the thing this fixes.
+  const orderable = findOrderablePackages(doc.text, partNumber.value ?? "");
+  const packageVariants =
+    orderable.length > 0 ? orderable : findPackageVariants(doc.text, frontMatterEnd(doc));
+  const packageType = findPackageType(doc, packageVariants);
   const declaredPinCount = findDeclaredPinCount(doc);
-  const { pins, citation: pinCitation, confidence: pinConfidence } = extractPins(doc);
+
+  // The lead count the RESOLVED designator declares is a second source for this,
+  // and a better-founded one than a fresh regex over the front matter: that
+  // designator has already been checked to name a real package family, and its
+  // count was parsed by the same reader that found it.
+  //
+  // It is what corroborates a pinout on the parts whose designator the front
+  // matter pattern cannot see at all. `Flat-16P` is the case: that pattern is
+  // case-sensitive where its sibling is not, so a mixed-case designator declared
+  // nothing, and an RHFL4913A read a complete 16-pin table next to a 16-lead
+  // package name and still reported an unknown pin count.
+  //
+  // Computed BEFORE the pins because one reader needs it: a table continued
+  // across pages can prove two number columns at once (an MSP430F5529's 80-pin
+  // and 64-pin columns are both internally perfect) and the declared count is
+  // what picks. It is a selector there, never a corroboration; see
+  // `readContinuedTable`.
+  // The designator's OWN lead count comes first, ahead of the front-matter scan.
+  //
+  // Both are guesses, but they are not equally specific. `declaredLeadCount` reads
+  // the count out of the package this part was settled on; `declaredPinCount` is a
+  // regex over the front matter that matches the first `N-pin XXXX` it meets,
+  // which on a family datasheet is routinely a SIBLING's package.
+  //
+  // Measured on the hold-out: an OPA2189 front matter yields 14 while its own
+  // designator says `SOIC (8)`, and the pin table reads 8. Taking 14 made the
+  // table look like a misread and the pin count was thrown away, on a part where
+  // two of the three signals already agreed.
+  const declared =
+    (packageType.value !== null ? declaredLeadCount(packageType.value) : null) ??
+    declaredPinCount.value ??
+    // A family datasheet may declare no count anywhere while printing the scheme
+    // that decodes one out of the ordering code.
+    findOrderingSchemePinCount(doc, partNumber.value) ??
+    // And where the package is AMBIGUOUS, the document may still name exactly one
+    // lead count across every package it offers, which corroborates a table that
+    // reads that many pins without saying which package the caller holds. An
+    // ADG5412 is a 16-lead TSSOP and a 16-lead LFCSP: two packages, one count.
+    soleDeclaredLeadCount(packageVariants);
+
+  const {
+    pins,
+    citation: pinCitation,
+    confidence: pinConfidence,
+    selfVerified,
+    needsCorroboration,
+    fromTable
+  } = extractPins(doc, partNumber.value ?? undefined, packageType.value ?? undefined, declared);
 
   // Two independent signals, the package designator and the pin table, either
   // corroborate each other or they do not. When they disagree, at least one is
-  // a misread, and there is no basis for choosing between them: an AD590
+  // a misread, and there is usually no basis for choosing between them: an AD590
   // (a 2-lead part) produced three garbage pins from a prose paragraph, and
   // preferring the "table" exported a 3-pad footprint. Disagreement therefore
   // means unknown, which fails closed at the export boundary.
+  //
+  // The one exception is a pin signal the document proved itself: a pinout
+  // figure that resolves to a gap-free 1..N under a single constant sum cannot
+  // be a misread, while the declared count is a regex over front matter that
+  // this corpus has caught returning 220 for an LD1117 and 883 for an RTAX2000S.
+  // Between a proof and a guess there IS a basis for choosing, so the proof
+  // wins, and the discrepancy is written into the notes so it stays auditable.
   let pinCount: Extracted<number>;
-  const declared = declaredPinCount.value;
-  if (pins.length > 0 && declared !== null && declared !== pins.length) {
+  const disagrees = pins.length > 0 && declared !== null && declared !== pins.length;
+
+  // A table read off the page geometry proves it is a real table and not that it
+  // is THIS device's table. A TLV9061 datasheet also documents the TLV9062 and
+  // TLV9064, and the only complete table in it is the quad's; taken on its own
+  // it made a five-pin op-amp a sixteen-pin part. So an uncorroborated table
+  // reports its pins, which are useful to look at, and refuses to set the count,
+  // which is what the footprint is built from.
+  const uncorroborated = needsCorroboration === true && declared === null && pins.length > 0;
+
+  // A TABLE and a FIGURE that resolve to the same N, against a declared count
+  // that disagrees with both.
+  //
+  // This is the exception above with a second proof standing in for the first.
+  // The two readers share no code and prove different things: the table reader
+  // finds a gap-free 1..N down a column of row geometry, the figure reader finds
+  // one under a single constant sum across opposing sides. Neither can produce
+  // the other's proof by accident, so their agreement is at least as strong as
+  // the self-verified figure that already outranks a declared count here, and
+  // the thing it outranks is the same regex that returned 220 for an LD1117.
+  //
+  // Computed ONLY inside the disagreement, which is rare. Running the figure
+  // reader on every part that has a table costs 7% of p50 parse latency and 12%
+  // of p95 for nothing: measured, agreement never changes the answer anywhere
+  // else, because a table that already agrees with the declared count is
+  // believed without it.
+  const figureBacksTable =
+    disagrees &&
+    !selfVerified &&
+    fromTable === true &&
+    figureAgreesWithTable(doc, pins.length, partNumber.value ?? undefined, packageType.value ?? undefined);
+
+  if (disagrees && !selfVerified && !figureBacksTable) {
+    pinCount = unknown<number>();
+  } else if (uncorroborated) {
     pinCount = unknown<number>();
   } else if (pins.length > 0) {
-    pinCount = extractedValue(pins.length, declared === pins.length ? 0.95 : 0.7, pinCitation);
+    const confidence = declared === pins.length ? 0.95 : selfVerified || figureBacksTable ? 0.9 : 0.7;
+    pinCount = extractedValue(pins.length, confidence, pinCitation);
   } else {
     pinCount = declaredPinCount;
   }
   const conflicted = pinCount.value === null && pins.length > 0 && declared !== null;
 
-  const dimensions = parseDimensions(doc, declaredPinCount);
+  // A designator that declares a lead count and disagrees with the settled pin
+  // count is about a DIFFERENT PACKAGE, and keeping it is how a part gets the
+  // wrong land pattern. An ADC128S102QML-SP names four packages in its front
+  // matter and the first one recognised is `14-pin CFP`; the part is 16 pins, so
+  // that designator belongs to something else in the document. This is the same
+  // rule the pin count follows one block up, applied to the other signal, and it
+  // is the check the ISO7741 footprint failure was missing.
+  const declaredLeads = packageType.value !== null ? declaredLeadCount(packageType.value) : null;
+  const packageContradicts =
+    declaredLeads !== null && pinCount.value !== null && declaredLeads !== pinCount.value;
+  const resolvedPackageType = packageContradicts ? unknown<string>() : packageType;
+
+  // Read AFTER the pin count is settled, because settling it is what lets the
+  // drawing be confirmed as this part's: the outline code's lead count has to
+  // agree with it. Both signals the drawing reader needs are now final.
+  const drawn = readDrawingDimensions(doc, resolvedPackageType.value ?? undefined, pinCount.value);
+  const dimensions = withDrawnDimensions(parseDimensions(doc, declaredPinCount), drawn);
   const radiation = extractRadiationData(doc);
 
   const notes: string[] = [`PDF pages: ${doc.pageCount}`];
@@ -466,12 +1370,56 @@ export function buildPartRecord(doc: DatasheetText, fileName: string, sourceUrl?
       `Conflicting pin counts: the package designator declares ${declared} but ${pins.length} rows were read as a pin table. Both are suspect, so the pin count is recorded as unknown. Resolve it manually before export.`
     );
   }
+  if (packageContradicts) {
+    notes.push(
+      `The package designator "${packageType.value}" declares ${declaredLeads} leads, but this part reads ${pinCount.value} pins, so the designator describes a different package in the same document. It is recorded as unknown rather than used to pick a land pattern. Name the package explicitly to override.`
+    );
+  }
+  if (disagrees && figureBacksTable && !selfVerified) {
+    notes.push(
+      `The package designator declares ${declared} pins, but the pin table numbers 1 to ${pins.length} with no gaps AND the pinout figure independently resolves to the same ${pins.length}. Two agreeing readers outrank the designator, so ${pins.length} was used. Check the package designator before export.`
+    );
+  }
+  if (disagrees && selfVerified) {
+    notes.push(
+      `The package designator declares ${declared} pins, but the pinout diagram numbers 1 to ${pins.length} with no gaps, which is self-consistent evidence the designator is not. The diagram was used. Check the package designator before export.`
+    );
+  }
 
   return {
     id: randomUUID(),
     partNumber,
     manufacturer,
-    packageType,
+    packageType: resolvedPackageType,
+    // Reported whether or not a single package could be chosen. When one could
+    // not, this list is the whole answer the caller needs: the document names
+    // the packages, it just does not say which one is in their hand.
+    //
+    // Narrowed to the packages that fit THIS part. A datasheet covering a family
+    // names its siblings' packages too, and offering one of those is offering a
+    // wrong answer dressed as a choice: an OPA2277 is an eight-pin part and its
+    // document also describes the quad's `14-Pin SOIC`. A variant that declares
+    // no count is kept, because it contradicts nothing.
+    packageVariants: packageVariants
+      .filter(
+        (variant) =>
+          pinCount.value === null || variant.leadCount === null || variant.leadCount === pinCount.value
+      )
+      .map((variant) => ({
+        designator: variant.designator.slice(0, 64),
+        family: variant.family,
+        leadCount: variant.leadCount,
+        inFrontMatter: variant.inFrontMatter
+      })),
+    // The code is only present when the drawing carrying it was confirmed to be
+    // this part's package, so recording it IS the record of that confirmation.
+    packageOutlineCode: drawn?.code
+      ? extractedValue(drawn.code.code, 0.95, {
+          page: drawn.page,
+          snippet: drawn.code.code,
+          region: null
+        })
+      : unknown<string>(),
     pinCount,
     pins: pins.length > 0 ? extractedValue(pins, pinConfidence, pinCitation) : unknown<PinRecord[]>(),
     dimensions,

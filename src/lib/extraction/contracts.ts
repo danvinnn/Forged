@@ -1,4 +1,5 @@
 import type { PinRecord } from "../types";
+import type { PageSelection } from "./pageselect";
 
 /**
  * Layer 2 extraction model contract.
@@ -54,6 +55,12 @@ export interface ExtractionRequest {
    * code.
    */
   fields: ExtractionField[];
+  /**
+   * What `pages` is a subset of, and how it was chosen. Present so a partial
+   * view of the document is recorded rather than silent: a model that answered
+   * null may simply never have been shown the page.
+   */
+  selection?: PageSelection;
 }
 
 export interface ExtractionResult {
