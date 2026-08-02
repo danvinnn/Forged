@@ -77,6 +77,40 @@ const PIN_TYPE_WORDS = new Set([
 ]);
 
 /**
+ * Longest a type CELL may be, in words, before it stops being a type and starts
+ * being a description.
+ */
+const MAX_TYPE_WORDS = 3;
+
+/**
+ * Whether a cell is a pin TYPE, allowing the phrases vendors actually print.
+ *
+ * The set above holds single words, and set membership alone missed the most
+ * common house style there is. TI writes `Digital input`, `Power supply`,
+ * `Analog output` and `Analog input, output`; every word of each is already in
+ * the vocabulary and not one of the phrases is, so a perfectly ordinary
+ * `Pin Functions` table failed the type check and was discarded whole. Measured
+ * on ADS8688, whose 38-pin table types every row that way.
+ *
+ * A phrase qualifies only when EVERY word of it is type vocabulary, which is
+ * what keeps this from becoming a prose matcher. The description column beside
+ * it reads `Data input for serial communication`, whose first word is not in the
+ * set, so it is rejected on the first word and the two columns stay
+ * distinguishable. The word bound does the same job from the other end.
+ */
+function isPinType(text: string): boolean {
+  const cleaned = clean(text).toUpperCase();
+  if (cleaned.length === 0) return false;
+  if (PIN_TYPE_WORDS.has(cleaned)) return true;
+
+  // Split on the separators these phrases actually use, so `ANALOG INPUT, OUTPUT`
+  // and `INPUT/OUTPUT` are read as their words rather than as one unknown token.
+  const words = cleaned.split(/[\s,/]+/).filter((word) => word.length > 0);
+  if (words.length < 2 || words.length > MAX_TYPE_WORDS) return false;
+  return words.every((word) => PIN_TYPE_WORDS.has(word));
+}
+
+/**
  * Fraction of rows whose type cell must be recognised. Not all of them: real
  * tables carry the odd blank or an exposed-pad row spelled its own way.
  */
@@ -2031,7 +2065,7 @@ function readOneTable(
     // most type vocabulary is the type column, and two cells are required so a
     // single stray word cannot nominate one.
     const typed = (candidate: TextItem[]) =>
-      candidate.filter((item) => PIN_TYPE_WORDS.has(clean(item.str).toUpperCase())).length;
+      candidate.filter((item) => isPinType(item.str)).length;
 
     const typeColumn = cluster(
       [...rows.values()].flat().filter((item) => item.x > lo),
@@ -2179,7 +2213,7 @@ function readOneTable(
 
   for (let index = 0; index < numbers.length; index += 1) {
     const { name, type, description } = cells[index];
-    if (PIN_TYPE_WORDS.has(type.toUpperCase())) typed += 1;
+    if (isPinType(type)) typed += 1;
 
     pins.push({
       number: clean(numbers[index].str),

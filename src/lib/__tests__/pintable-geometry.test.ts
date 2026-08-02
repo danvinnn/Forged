@@ -1489,3 +1489,55 @@ test("a bus range that does not say which way it runs is refused", () => {
 
   assert.deepEqual(readPinTablesFromPage(descending, "X"), [], "no direction, no read");
 });
+
+/**
+ * A type column written in PHRASES, which is the common house style.
+ *
+ * The vocabulary that validates a pin table holds single words, and membership
+ * was tested against the whole cell. So `Digital input` matched nothing even
+ * though both of its words are in the set, and a perfectly ordinary table failed
+ * the type check and was discarded whole. Found on ADS8688, whose every row is
+ * typed that way.
+ *
+ * The description column beside it is what keeps the looser rule honest: it
+ * starts `Data input for serial communication`, and `DATA` is not type
+ * vocabulary, so the two columns stay distinguishable.
+ */
+test("a type column written in phrases is still a type column", () => {
+  const table = readPinTableFromPage(
+    page([
+      item("SDI", 57, 470), item("1", 107, 470),
+      item("Digital input", 147, 470), item("Data input for serial comms", 220, 470),
+      item("REFGND", 57, 456), item("2", 107, 456),
+      item("Power supply", 147, 456), item("Reference ground pin", 220, 456),
+      item("REFCAP", 57, 442), item("3", 107, 442),
+      item("Analog output", 147, 442), item("Decoupling capacitor pin", 220, 442),
+      item("REFIO", 57, 428), item("4", 107, 428),
+      item("Analog input, output", 147, 428), item("Reference in or out", 220, 428)
+    ])
+  );
+
+  assert.ok(table, "every row is typed, in two words instead of one");
+  assert.deepEqual(
+    table.pins.map((pin) => `${pin.number}:${pin.name}`),
+    ["1:SDI", "2:REFGND", "3:REFCAP", "4:REFIO"]
+  );
+});
+
+test("a description is not mistaken for a type just because it is short", () => {
+  // Every cell in the type position here is prose. Widening the vocabulary to
+  // phrases must not widen it to sentences, or a bond-pad coordinate table reads
+  // as a pinout.
+  const table = readPinTableFromPage(
+    page([
+      item("ROW", 57, 470), item("1", 107, 470),
+      item("Bond pad", 147, 470), item("X MIN 35.45", 220, 470),
+      item("ROW", 57, 456), item("2", 107, 456),
+      item("Bond pad", 147, 456), item("X MAX 41.02", 220, 456),
+      item("ROW", 57, 442), item("3", 107, 442),
+      item("Bond pad", 147, 442), item("Y MIN 12.80", 220, 442)
+    ])
+  );
+
+  assert.equal(table, null, "`Bond pad` is not pin-type vocabulary and must not pass");
+});
