@@ -67,6 +67,13 @@ export const BENCH_CORPUS: BenchPart[] = [
   { partNumber: "OPA333", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "INA240", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "ADS1115", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
+  {
+    partNumber: "ADS8688",
+    manufacturer: "Texas Instruments",
+    category: "analog",
+    expect: "hit",
+    note: "Promoted out of the hold-out on 2026-08-02, replaced there by ADS1256. TI's continued Pin Functions template: a 68-page document whose pin table spans pages and whose rows the reader refuses at the type gate. Promoted because diagnosing it requires reading it."
+  },
   { partNumber: "TLV9061", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "REF5025", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "AD8628", manufacturer: "Analog Devices", category: "analog", expect: "hit" },

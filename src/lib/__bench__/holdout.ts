@@ -63,7 +63,13 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   { partNumber: "THS3491", manufacturer: "Texas Instruments", kind: "opamp" },
   { partNumber: "INA226", manufacturer: "Texas Instruments", kind: "converter" },
   { partNumber: "ADS1220", manufacturer: "Texas Instruments", kind: "converter" },
-  { partNumber: "ADS8688", manufacturer: "Texas Instruments", kind: "converter" },
+  // ADS8688 was PROMOTED into BENCH_CORPUS on 2026-08-02 and ADS1256 replaces it.
+  // Diagnosing a hold-out failure means reading the document, and a document that
+  // has been read is a tuned document; leaving it here would quietly turn the
+  // honest number into the fitted one. Third promotion, after TSV321 -> TSB611
+  // and DRV8825 -> TPS61022. The replacement was chosen by part number alone and
+  // its datasheet has NOT been opened.
+  { partNumber: "ADS1256", manufacturer: "Texas Instruments", kind: "converter" },
   { partNumber: "DAC8552", manufacturer: "Texas Instruments", kind: "converter" },
   { partNumber: "PCM1808", manufacturer: "Texas Instruments", kind: "converter" },
   { partNumber: "TPS62130", manufacturer: "Texas Instruments", kind: "power" },
