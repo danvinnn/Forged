@@ -36,6 +36,40 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The emitter oracles. These are not optional extras: the Altium and KiCad
+      # tests read our output back with THIRD-PARTY readers, and those tests
+      # THROW rather than skip when a reader is missing, deliberately, because a
+      # check that quietly stops running is worse than one that fails.
+      #
+      # They were developed locally and only reached CI once the emitter suite
+      # was committed, at which point CI went red on a machine that had none of
+      # them. Installing them here is what makes the green tick mean what it says.
+      #
+      # setup-python rather than the system interpreter: the runner images ship an
+      # externally-managed Python (PEP 668) where a plain `pip install` is refused.
+      # This puts a writable interpreter first on PATH, and the tests invoke
+      # `python3`, so it is the one they get.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # PINNED, for the reason tools/altium-oracle/setup.sh pins its AltiumSharp
+      # commit: an oracle that silently changes under you is not an oracle. These
+      # are the versions the emitter suite was verified against; bumping one is a
+      # deliberate edit whose diff is the place to argue about it.
+      - name: Install the Python emitter oracles
+        run: python3 -m pip install "pyaltiumlib==0.6.2" "kiutils==1.4.8"
+
+      # The second Altium oracle, AltiumSharp, read through tools/altium-oracle.
+      # `npm run oracle:build` clones AltiumSharp at a PINNED commit and builds
+      # the dumper; the project targets net10.0, so the SDK major must match.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build the AltiumSharp oracle
+        run: npm run oracle:build
+
       - name: Typecheck
         run: npx tsc --noEmit
 
