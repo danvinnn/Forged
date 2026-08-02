@@ -1541,3 +1541,92 @@ test("a description is not mistaken for a type just because it is short", () => 
 
   assert.equal(table, null, "`Bond pad` is not pin-type vocabulary and must not pass");
 });
+
+/**
+ * A table that numbers ONE part and names SEVERAL DEVICES, under a header
+ * stacked over four baselines.
+ *
+ * ADS8688's shape, laid out from its pages 4 and 5 item by item. Two things
+ * defeated every existing reader at once. The header puts `PIN`, `NO.`,
+ * `NAME I/O DESCRIPTION` and the device names on four separate lines, where
+ * `numberFirstHeader` wants them on one. And the rows carry one name per device
+ * sharing a single number column, where `selectVariantColumn` resolves several
+ * NUMBER columns and has nothing to say about several NAME columns.
+ *
+ * Pin 27 is the one that matters: the 4-channel ADS8684 reads `NC` there and the
+ * 8-channel ADS8688 reads `AIN_5P`. Eight pins differ that way, so reading the
+ * wrong column returns eight no-connects in place of eight analog inputs, on a
+ * part whose whole purpose is those inputs.
+ */
+function deviceColumnPage(pageNumber: number, rows: [number, string, string?][]): PageText {
+  const items: TextItem[] = [
+    // The stacked header. `PIN` spans NO. and NAME; `NAME` spans both devices.
+    item("PIN", 116, 694),
+    item("NAME", 124, 682), item("I/O", 220, 682), item("DESCRIPTION", 385, 682),
+    item("NO.", 60, 676),
+    item("ADS8684", 91, 670), item("ADS8688", 147, 670)
+  ];
+
+  let y = 640;
+  for (const [number, left, right] of rows) {
+    items.push(item(String(number), 57, y));
+    if (right === undefined) {
+      // One name, centred: the devices agree on this pin.
+      items.push(item(left, 124, y));
+    } else {
+      items.push(item(left, 101, y));
+      items.push(item(right, 150, y));
+    }
+    items.push(item("Analog input", 205, y));
+    y -= 16;
+  }
+
+  return { ...page(items), page: pageNumber };
+}
+
+test("a table with one name column per device is read for the device asked about", () => {
+  const first = deviceColumnPage(4, [
+    [1, "SDI"], [2, "RST/PD"], [3, "DAISY"], [4, "REFSEL"]
+  ]);
+  const second = deviceColumnPage(5, [
+    [5, "NC", "AIN_5P"], [6, "NC", "AIN_5GND"], [7, "AGND"], [8, "AVDD"]
+  ]);
+  const doc = { text: "", pages: [first, second], pageCount: 2, truncated: false };
+
+  const table = extractPinTableByGeometry(doc as never, "ADS8688");
+
+  assert.ok(table, "the header is stacked, and the numbering proves itself on the union of the pages");
+  assert.deepEqual(
+    table.pins.map((pin) => `${pin.number}:${pin.name}`),
+    ["1:SDI", "2:RST/PD", "3:DAISY", "4:REFSEL", "5:AIN_5P", "6:AIN_5GND", "7:AGND", "8:AVDD"],
+    "the '8688 column where the devices differ, and the shared name where they agree"
+  );
+});
+
+test("the sibling device's column is read when the sibling is asked for", () => {
+  const first = deviceColumnPage(4, [[1, "SDI"], [2, "RST/PD"], [3, "DAISY"], [4, "REFSEL"]]);
+  const second = deviceColumnPage(5, [
+    [5, "NC", "AIN_5P"], [6, "NC", "AIN_5GND"], [7, "AGND"], [8, "AVDD"]
+  ]);
+  const doc = { text: "", pages: [first, second], pageCount: 2, truncated: false };
+
+  const table = extractPinTableByGeometry(doc as never, "ADS8684");
+
+  assert.ok(table);
+  assert.equal(table.pins[4].name, "NC", "the 4-channel part really does read NC on pin 5");
+  assert.equal(table.pins[5].name, "NC");
+});
+
+test("a device-column table is refused when the caller's device is not one of them", () => {
+  const first = deviceColumnPage(4, [[1, "SDI"], [2, "RST/PD"], [3, "DAISY"], [4, "REFSEL"]]);
+  const second = deviceColumnPage(5, [
+    [5, "NC", "AIN_5P"], [6, "NC", "AIN_5GND"], [7, "AGND"], [8, "AVDD"]
+  ]);
+  const doc = { text: "", pages: [first, second], pageCount: 2, truncated: false };
+
+  assert.equal(
+    extractPinTableByGeometry(doc as never, "ADS9999"),
+    null,
+    "naming neither column is not a licence to pick one"
+  );
+});

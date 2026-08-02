@@ -144,6 +144,16 @@ const HEADING_X_TOLERANCE = 30;
 const LINE_TOLERANCE = 2;
 
 /**
+ * How far two items' left edges may differ and still be the SAME alignment.
+ *
+ * Much tighter than `COLUMN_TOLERANCE`, which asks whether two items are in the
+ * same column. This asks whether they were laid out against the same edge, which
+ * is what separates a table's number column from the page number printed in the
+ * same margin three units away.
+ */
+const ALIGNED_TOLERANCE = 2;
+
+/**
  * The caption a vendor prints above a pin table, and the device it names.
  *
  * This is the only thing on the page that says which device a table describes.
@@ -2363,6 +2373,235 @@ function numberFirstCells(items: TextItem[], header: NumberFirstHeader): NumberC
  * a number, so it is simply not a pin here, which is correct: it is the thermal pad
  * and this reader numbers leads.
  */
+/**
+ * The header of a table that numbers one part and NAMES several devices, written
+ * as a stacked block rather than as one line.
+ *
+ * ADS8688's is the shape, and every piece of it sits on its own baseline:
+ *
+ *     PIN                                      <- spans NO. and NAME
+ *          NAME        I/O    DESCRIPTION
+ *     NO.
+ *       ADS8684  ADS8688                       <- the devices, under NAME
+ *
+ * `numberFirstHeader` wants `PIN NO.` and `PIN NAME` on a single line and finds
+ * nothing here, so the ordinary reader falls through to splitting each row at the
+ * number column. With the number FIRST there is nothing to its left, so the row
+ * splitter takes the device name as the pin name's type and the table is refused
+ * at the type gate. That refusal is the one this exists to remove.
+ */
+interface DeviceColumnHeader {
+  /** Baseline of the lowest header row: the rows start below this. */
+  bottom: number;
+  numberX: number;
+  /** The name band, opening after the number column and closing at the type. */
+  nameLo: number;
+  nameHi: number;
+  /** Centre of the sub-header for the device that was asked about. */
+  deviceX: number;
+  /** How many devices this table names, which is what makes it ambiguous. */
+  devices: number;
+}
+
+/** A sub-header naming a device: letters and digits, as a part number is. */
+const DEVICE_SUBHEADING = /^[A-Za-z][A-Za-z0-9-]{3,}\d[A-Za-z0-9-]*$/;
+
+function deviceColumnHeader(items: TextItem[], partNumber: string): DeviceColumnHeader | null {
+  const at = (pattern: RegExp) => items.filter((item) => pattern.test(clean(item.str)));
+
+  for (const number of at(/^(?:pin\s*)?(?:no\.?|numbers?)$/i)) {
+    const rowHeight = Math.max(number.height, 1);
+
+    // `NAME`, `I/O` and `DESCRIPTION` all sit within a couple of lines of `NO.`
+    // and to its right. The band is deliberately generous vertically and strict
+    // horizontally, because the stacking is the whole difficulty here and the
+    // left-to-right order is what actually identifies the columns.
+    const near = (pattern: RegExp) =>
+      at(pattern)
+        .filter((item) => item.x > number.x && Math.abs(item.y - number.y) <= rowHeight * 4)
+        .sort((left, right) => left.x - right.x)[0];
+
+    const name = near(/^(?:pin\s*)?names?$/i);
+    const description = near(/^(?:descriptions?|functions?)$/i);
+    if (!name || !description) continue;
+
+    // The type column closes the name band. Where a table has none, the
+    // description closes it instead.
+    const type = at(/^(?:i\/o|type)$/i)
+      .filter((item) => item.x > name.x && item.x < description.x && Math.abs(item.y - number.y) <= rowHeight * 4)
+      .sort((left, right) => left.x - right.x)[0];
+    const nameHi = (type ?? description).x;
+    if (!(number.x < name.x && name.x < nameHi)) continue;
+
+    // The devices, on the line BELOW the one `NAME` sits on and inside the name
+    // band. Two or more is what makes this reader necessary; one is an ordinary
+    // table and the ordinary readers already have it.
+    const subHeadings = items
+      .filter(
+        (item) =>
+          item.y < name.y &&
+          item.y >= name.y - rowHeight * 3 &&
+          item.x >= number.x &&
+          item.x < nameHi &&
+          DEVICE_SUBHEADING.test(clean(item.str))
+      )
+      .sort((left, right) => left.x - right.x);
+    if (subHeadings.length < 2) continue;
+
+    // Which column is the caller's. Exact device match or nothing: this is the
+    // point where reading the wrong column would hand back the sibling device's
+    // netlist, and on ADS8688 that is eight analog inputs replaced by eight NCs.
+    const wanted = normalizeDevice(partNumber);
+    const mine = subHeadings.filter((item) => normalizeDevice(clean(item.str)) === wanted);
+    if (mine.length !== 1) continue;
+
+    return {
+      bottom: Math.min(...subHeadings.map((item) => item.y)),
+      numberX: number.x,
+      nameLo: number.x,
+      nameHi,
+      deviceX: mine[0].x + mine[0].width / 2,
+      devices: subHeadings.length
+    };
+  }
+
+  return null;
+}
+
+/**
+ * A pin table whose rows carry one NAME PER DEVICE, read for the device asked
+ * about.
+ *
+ * The shape `selectVariantColumn` does not cover: that one resolves several
+ * NUMBER columns, one per package, and this is a single number column with
+ * several NAME columns, one per device. ADS8684 and ADS8688 share a 38-pin
+ * package and a datasheet, and differ on eight pins where the 4-channel part
+ * reads `NC` and the 8-channel part reads an analog input.
+ *
+ * A row names the device explicitly or it does not name one at all: pin 27 prints
+ * `NC` under ADS8684 and `AIN_5P` under ADS8688, while pin 28 prints one `AGND`
+ * centred across both because the devices agree. So a row with several names is
+ * resolved by which sub-heading it sits under, and a row with ONE name is shared
+ * by every device the table covers. Anything else is refused.
+ *
+ * Read per page and proved on the UNION, which is what carries a table across a
+ * page break without a continuation rule: ADS8688 puts pins 1 to 11 on one page
+ * under `Pin Functions` and 12 to 38 on the next under `Pin Functions
+ * (continued)`, and both pages repeat the header this keys off.
+ */
+function readDeviceColumnTable(doc: DatasheetText, partNumber?: string): GeometryPinTable | null {
+  if (!partNumber) return null;
+
+  const pins: GeometryPin[] = [];
+  let firstPage: number | null = null;
+
+  for (const page of doc.pages) {
+    const items = page.items ?? [];
+    if (items.length === 0) continue;
+
+    const header = deviceColumnHeader(items, partNumber);
+    if (!header) continue;
+
+    // The number column, then its TIGHTEST x alignment.
+    //
+    // The page furniture is the reason for the second step. A footer page number
+    // sits in the same margin as the column and well inside any sensible column
+    // tolerance: ADS8688 draws its rows at x=57.0 and the page number at x=54.0,
+    // which a 12-unit band happily swallows, and the extra `4` broke the 1..N
+    // proof on a table that was otherwise read perfectly.
+    //
+    // Not separable by vertical gap, which was the first thing tried: the gap
+    // above the footer is 24.6 and the gap between rows 3 and 4 is 28.2, because
+    // that row's description wraps. Alignment does separate them, and it is the
+    // better statement anyway. A column is items sharing an x; a page number is
+    // not part of the column and does not share it.
+    const candidateNumbers = items.filter(
+      (item) =>
+        item.y < header.bottom &&
+        isInteger(clean(item.str)) &&
+        Math.abs(item.x - header.numberX) <= COLUMN_TOLERANCE * 2
+    );
+    const numbers = cluster(candidateNumbers, (item) => item.x, ALIGNED_TOLERANCE).reduce<TextItem[]>(
+      (best, band) => (band.length > best.length ? band : best),
+      []
+    );
+    if (numbers.length === 0) continue;
+    if (firstPage === null) firstPage = page.page;
+
+    for (const cell of numbers) {
+      const rowHeight = Math.max(cell.height, 1);
+      const candidates = items
+        .filter(
+          (item) =>
+            Math.abs(item.y - cell.y) <= rowHeight * 0.75 &&
+            item.x > header.nameLo + COLUMN_TOLERANCE &&
+            item.x + item.width <= header.nameHi &&
+            clean(item.str).length > 0
+        )
+        .sort((left, right) => left.x - right.x);
+
+      if (candidates.length === 0) return null;
+
+      // A name may arrive in SEVERAL runs, so the row is grouped by adjacency
+      // before a column is chosen. `RST/PD` is drawn as `RST/` ending at x=137.7
+      // and `PD` beginning at x=137.7, because the overbar splits the run; the
+      // two DEVICES' names on the same row sit 38 units apart. Touching runs are
+      // one name and separated runs are different columns, and the gap between
+      // those two cases is an order of magnitude.
+      const groups: TextItem[][] = [];
+      for (const item of candidates) {
+        const current = groups[groups.length - 1];
+        const previous = current?.[current.length - 1];
+        if (previous && item.x - (previous.x + previous.width) <= rowHeight * 0.5) current.push(item);
+        else groups.push([item]);
+      }
+
+      // One name is shared by every device; several are per device and the one
+      // under this device's sub-heading is ours.
+      const centre = (group: TextItem[]) =>
+        (group[0].x + group[group.length - 1].x + group[group.length - 1].width) / 2;
+      const chosen =
+        groups.length === 1
+          ? groups[0]
+          : groups.reduce((best, group) =>
+              Math.abs(centre(group) - header.deviceX) < Math.abs(centre(best) - header.deviceX)
+                ? group
+                : best
+            );
+
+      const name = chosen.map((item) => clean(item.str)).join("").replace(/\s+/g, "");
+      if (name.length === 0 || name.length > MAX_CAPTIONED_NAME_LENGTH) return null;
+      if (NUMBER_CELL.test(name)) return null;
+
+      pins.push({
+        number: clean(cell.str),
+        name,
+        type: "",
+        description: "",
+        start: cell.start
+      });
+    }
+  }
+
+  if (pins.length === 0 || firstPage === null) return null;
+
+  pins.sort((left, right) => Number(left.number) - Number(right.number));
+  if (!spellsOneToN(pins.map((pin) => Number(pin.number)))) return null;
+
+  return {
+    pins,
+    page: firstPage,
+    start: pins[0].start,
+    // The table named this device in its own header, which is a proof about the
+    // DEVICE and not merely about the table; see `GeometryPinTable.claimed`.
+    device: partNumber,
+    claimed: true,
+    captioned: true,
+    packageQualifier: null,
+    captionLabel: null
+  };
+}
+
 function readNumberFirstTable(
   doc: DatasheetText,
   declaredCount?: number | null
@@ -2958,6 +3197,14 @@ export function extractPinTableByGeometry(
   if (found.length === 0) {
     const numberFirst = readNumberFirstTable(doc, declaredCount);
     if (numberFirst) found.push(numberFirst);
+  }
+
+  // And a table carrying one NAME COLUMN PER DEVICE under a stacked header,
+  // which none of the readers above can see either. Last, and only when nothing
+  // else produced a table, so it can add parts and cannot take any away.
+  if (found.length === 0) {
+    const perDevice = readDeviceColumnTable(doc, partNumber);
+    if (perDevice) found.push(perDevice);
   }
 
   if (found.length === 0) return null;

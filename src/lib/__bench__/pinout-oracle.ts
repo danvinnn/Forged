@@ -47,6 +47,30 @@ export interface PinoutOracleEntry {
  * choice between them is typography rather than data. Everything else must match.
  */
 export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
+  ADS8688: {
+    packageType: "TSSOP-38 (DBT)",
+    source:
+      "page 3, Figure in section 6 (the RIGHT of the two figures, which is the '8688; the LEFT is the 4-channel ADS8684), cross-checked pin by pin against Table Pin Functions on pages 3 and 4. They agree on all 38.",
+    pins: {
+      "1": "SDI", "2": "RST/PD", "3": "DAISY", "4": "REFSEL",
+      "5": "REFIO", "6": "REFGND", "7": "REFCAP", "8": "AGND",
+      "9": "AVDD", "10": "AUX_IN", "11": "AUX_GND",
+      // Pins 12-15 and 24-27 are where the two devices DIFFER: the ADS8684 reads
+      // NC on every one of them. Reading the wrong column would return eight NCs
+      // in place of eight analog inputs, which is the whole reason this entry
+      // exists before the reader that will need it.
+      "12": "AIN_6P", "13": "AIN_6GND", "14": "AIN_7P", "15": "AIN_7GND",
+      "16": "AIN_0P", "17": "AIN_0GND", "18": "AIN_1P", "19": "AIN_1GND",
+      // Printed `AIN2_GND`, not `AIN_2GND`. That is TI's own inconsistency on
+      // this page and it is recorded as printed, because the oracle's job is to
+      // say what the vendor wrote.
+      "20": "AIN2_GND", "21": "AIN_2P", "22": "AIN_3GND", "23": "AIN_3P",
+      "24": "AIN_4GND", "25": "AIN_4P", "26": "AIN_5GND", "27": "AIN_5P",
+      "28": "AGND", "29": "AGND", "30": "AVDD", "31": "AGND", "32": "AGND",
+      "33": "DGND", "34": "DVDD", "35": "DNC", "36": "SDO",
+      "37": "SCLK", "38": "CS"
+    }
+  },
   LM358: {
     packageType: "8-Pin SOIC",
     source: "page 3, Table 4-1 Pin Functions, SOIC column",
