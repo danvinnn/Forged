@@ -1197,8 +1197,43 @@ function claimedByDevice(figures: PinFigure[], partNumber: string | undefined): 
  * TSSOP, so the TSSOP figure is the answer and the SOIC one is a different
  * package's pinout.
  */
+/**
+ * A package name with its punctuation removed, so the same package spelled two
+ * ways compares equal.
+ *
+ * `LQFP-64` and `LQFP64` are one package, and a document uses both: an
+ * STM32G071RB's front matter lists `LQFP-64` while the figure it needs is
+ * captioned `LQFP64 pinout`.
+ */
+function normalizePackage(text: string): string {
+  return text.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/** The package-shaped words in a caption, normalised for comparison. */
+function captionPackages(caption: string): string[] {
+  return (caption.toUpperCase().match(/[A-Z][A-Z0-9-]*/g) ?? []).map(normalizePackage);
+}
+
 function claimedByPackage(figures: PinFigure[], packageType: string | undefined): PinFigure[] {
   if (!packageType) return [];
+
+  // The exact package first, spelled either way.
+  //
+  // Family matching alone could not do this, and the failure was silent. The
+  // family of `LQFP-64` is `LQFP`, and `\bLQFP\b` does not match a caption
+  // reading `LQFP64` because the digit after it is a word character, so there is
+  // no boundary to match at. An STM32G071RB therefore resolved its figure when
+  // asked for `LQFP64` and refused when asked for `LQFP-64`, which is the
+  // spelling its own front matter uses and so the spelling any package chooser
+  // would offer. The caller's click has to work whichever way the document
+  // spells it.
+  const wanted = normalizePackage(packageType);
+  const exact = figures.filter((figure) => captionPackages(figure.caption).includes(wanted));
+  if (exact.length > 0) return exact;
+
+  // Otherwise the family, which is what answers a caller who named one without a
+  // lead count. Several figures matching is not a resolution and the caller is
+  // asked again; see `agree`.
   const families = packageFamilies(packageType);
   if (families.length === 0) return [];
 

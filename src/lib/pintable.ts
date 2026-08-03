@@ -2272,8 +2272,28 @@ function readOneTable(
  * and never captions the table, so nothing here could see it. The header row says
  * what a caption says, and says it more precisely: it also gives the x of each
  * column, so the name and description do not have to be guessed at from gaps.
+ *
+ * The VOCABULARY is wider than that one document, because the words vary and the
+ * structure does not. A LIS3DH heads exactly the same table `Pin# | Name |
+ * Function`, which is the same three columns in the same order under different
+ * words, and matching only ISL71001M's phrasing refused a table this reader was
+ * built to handle.
+ *
+ * `#` and a bare `Name` are loose on their own, which is why two things are still
+ * required. At least one heading must say PIN, so the row is about a pinout
+ * rather than about any other three-column table. And all three must appear on
+ * ONE line in left-to-right order. That pair is what a table of contents cannot
+ * produce: a geometric reader without it read a contents page and reported that
+ * pin 1 was called `Features`.
  */
-const NUMBER_FIRST_HEADER = /\bpin\s*(?:numbers?|no\.?)\b.*\bpin\s*names?\b/i;
+/** The number column's heading, in the forms vendors actually print. */
+const NUMBER_FIRST_NUMBER_HEADING = /^(?:pin\s*)?(?:numbers?|nos?\.?|#)$|^pin\s*#$/i;
+
+/** The name column's heading. `Symbol` and `Signal` are the common synonyms. */
+const NUMBER_FIRST_NAME_HEADING = /^(?:pin\s*)?(?:names?|symbols?|signals?)$/i;
+
+/** The description column's heading, which also closes the name band. */
+const NUMBER_FIRST_DESCRIPTION_HEADING = /^(?:pin\s*)?(?:descriptions?|functions?)$/i;
 
 /** A cell holding pin numbers, allowing the trailing comma of a wrapped cell. */
 const NUMBER_LIST_CELL = /^\d{1,3}(?:\s*,\s*\d{1,3})*\s*,?$/;
@@ -2287,15 +2307,28 @@ interface NumberFirstHeader {
 }
 
 function numberFirstHeader(items: TextItem[]): NumberFirstHeader | null {
+  // Every line is tried. There is no cheap text pre-filter, deliberately: one was
+  // written as `\bpin\s*#\b` and never fired, because `#` to a space is not a word
+  // boundary. The three item checks below are strictly stronger than any such
+  // filter anyway, since they test the heading text, the left-to-right order and
+  // the presence of the word PIN.
   for (const line of pageLines(items)) {
-    if (!NUMBER_FIRST_HEADER.test(line.text)) continue;
     const onLine = items.filter((item) => Math.abs(item.y - line.y) <= LINE_TOLERANCE);
     const at = (pattern: RegExp) => onLine.find((item) => pattern.test(clean(item.str)))?.x;
 
-    const numberX = at(/^pin\s*(?:number|no\.?)$/i);
-    const nameX = at(/^pin\s*name$/i);
-    const descriptionX = at(/^(?:description|function)s?$/i);
-    if (numberX === undefined || nameX === undefined || descriptionX === undefined) continue;
+    const number = onLine.find((item) => NUMBER_FIRST_NUMBER_HEADING.test(clean(item.str)));
+    const name = onLine.find((item) => NUMBER_FIRST_NAME_HEADING.test(clean(item.str)));
+    const description = onLine.find((item) => NUMBER_FIRST_DESCRIPTION_HEADING.test(clean(item.str)));
+    if (!number || !name || !description) continue;
+
+    // At least one heading has to say PIN. Without it `# | Name | Function` is
+    // any three-column table, and this reader would be judging a table it cannot
+    // see the subject of.
+    if (![number, name, description].some((item) => /\bpin\b/i.test(clean(item.str)))) continue;
+
+    const numberX = number.x;
+    const nameX = name.x;
+    const descriptionX = description.x;
     if (!(numberX < nameX && nameX < descriptionX)) continue;
 
     return { y: line.y, numberX, nameX, descriptionX };
@@ -2602,11 +2635,18 @@ function readDeviceColumnTable(doc: DatasheetText, partNumber?: string): Geometr
   };
 }
 
+/** One page carrying a number-first header, and what was read off it. */
+interface NumberFirstPage {
+  page: PageText;
+  header: NumberFirstHeader;
+  cells: NumberCell[];
+}
+
 function readNumberFirstTable(
   doc: DatasheetText,
   declaredCount?: number | null
 ): GeometryPinTable | null {
-  const pages: { page: PageText; header: NumberFirstHeader; cells: NumberCell[] }[] = [];
+  const pages: NumberFirstPage[] = [];
 
   for (const page of doc.pages) {
     const header = numberFirstHeader(page.items);
@@ -2616,6 +2656,53 @@ function readNumberFirstTable(
   }
 
   if (pages.length === 0) return null;
+
+  // Each page is tried ALONE before the pages are joined, because a document
+  // that heads two DIFFERENT tables the same way is common and joining them is
+  // wrong. A LIS3DH prints `Pin# | Name | Function` over its pin description on
+  // one page and again over `Internal pin status` twenty pages later. Joined,
+  // the two tables claim the same numbers, and the run recovered from `8CS` is
+  // claimed twice, which refused a document that carries its pinout twice over.
+  //
+  // A page whose own numbering spells 1..N is a whole table and needs no other.
+  // Several such pages must AGREE, pin for pin and name for name: they are the
+  // same pinout printed twice, and if they are not then this cannot tell which
+  // one the caller wants and does not choose.
+  const singles = pages
+    .map((entry) => readNumberFirstFrom([entry], declaredCount))
+    .filter((table): table is GeometryPinTable => table !== null);
+
+  if (singles.length > 0) {
+    const first = singles[0];
+
+    // The NUMBERING has to agree across them, because that is the statement
+    // about which device and which package this is. Disagreeing numbers mean the
+    // pages are not the same pinout and nothing here can say which is wanted.
+    const sameNumbering = (other: GeometryPinTable) =>
+      other.pins.length === first.pins.length &&
+      other.pins.every((pin, index) => pin.number === first.pins[index].number);
+    if (!singles.every(sameNumbering)) return null;
+
+    // The NAMES are not required to agree, and requiring them refused a document
+    // that reads correctly. A LIS3DH prints its pinout twice: once as `Pin
+    // description` and once as `Internal pin status`, whose extra column runs the
+    // name into the text beside it so the same pin comes back as `Vdd_IOPower`.
+    // Both readings are of the same pins; one is simply cleaner. The FIRST is
+    // taken, because a datasheet states its pinout before elaborating on it, and
+    // the names are checked against the hand-read oracle rather than against the
+    // document's own second telling.
+    return first;
+  }
+
+  // No single page is a whole table, so this is one table continued across
+  // pages, which is the shape ISL71001M has and the union proof is for.
+  return readNumberFirstFrom(pages, declaredCount);
+}
+
+function readNumberFirstFrom(
+  pages: NumberFirstPage[],
+  declaredCount?: number | null
+): GeometryPinTable | null {
 
   const seen = new Set(pages.flatMap((entry) => entry.cells.flatMap((cell) => cell.numbers)));
   const max = Math.max(...seen);

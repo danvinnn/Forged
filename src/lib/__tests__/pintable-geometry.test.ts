@@ -1630,3 +1630,79 @@ test("a device-column table is refused when the caller's device is not one of th
     "naming neither column is not a licence to pick one"
   );
 });
+
+/**
+ * A number-first table headed in words other than ISL71001M's.
+ *
+ * The header reader was written against `Pin Number | Pin Name | Description`
+ * and matched only that phrasing. A LIS3DH heads the identical three columns
+ * `Pin# | Name | Function`, which is the same table under different words, and
+ * got nothing. The structure is what identifies the table; the wording varies by
+ * vendor and carries no information.
+ *
+ * What keeps the looser vocabulary safe is not the words but the two structural
+ * requirements: all three headings on ONE line in left-to-right order, and at
+ * least one of them saying PIN. A table of contents satisfies neither, and an
+ * earlier reader without them read a contents page and reported pin 1 as
+ * `Features`.
+ */
+function numberFirstPage(pageNumber: number, heads: [string, string, string], rows: [string, string][]): PageText {
+  const items: TextItem[] = [
+    item(heads[0], 60, 700),
+    item(heads[1], 120, 700),
+    item(heads[2], 300, 700)
+  ];
+  let y = 680;
+  for (const [number, name] of rows) {
+    items.push(item(number, 62, y));
+    items.push(item(name, 125, y));
+    items.push(item("some description of the pin", 305, y));
+    y -= 16;
+  }
+  return { ...page(items), page: pageNumber };
+}
+
+test("a number-first table headed `Pin# | Name | Function` is read", () => {
+  const doc = {
+    text: "",
+    pages: [numberFirstPage(3, ["Pin#", "Name", "Function"], [["1", "Vdd_IO"], ["2", "NC"], ["3", "SCL"], ["4", "GND"]])],
+    pageCount: 1,
+    truncated: false
+  };
+
+  const table = extractPinTableByGeometry(doc as never, "LIS3DH");
+  assert.ok(table, "the same three columns, in different words");
+  assert.deepEqual(
+    table.pins.map((pin) => `${pin.number}:${pin.name}`),
+    ["1:Vdd_IO", "2:NC", "3:SCL", "4:GND"]
+  );
+});
+
+test("a three-column table that never says PIN is refused", () => {
+  // `# | Name | Function` is any table. Without the word PIN there is nothing
+  // saying this one is a pinout, and reading it is how a contents page becomes a
+  // netlist.
+  const doc = {
+    text: "",
+    pages: [numberFirstPage(3, ["#", "Name", "Function"], [["1", "Features"], ["2", "Applications"], ["3", "Description"], ["4", "Specifications"]])],
+    pageCount: 1,
+    truncated: false
+  };
+
+  assert.equal(extractPinTableByGeometry(doc as never, "X"), null, "no PIN heading, no pinout");
+});
+
+test("two different tables headed the same way are not joined into one", () => {
+  // A LIS3DH prints `Pin# | Name | Function` over its pin description and again
+  // over `Internal pin status` twenty pages later. Joined, the two claim the same
+  // numbers and the document is refused. Each page is a whole table on its own,
+  // and the first is the pinout.
+  const first = numberFirstPage(9, ["Pin#", "Name", "Function"], [["1", "Vdd_IO"], ["2", "NC"], ["3", "SCL"], ["4", "GND"]]);
+  const second = numberFirstPage(21, ["Pin#", "Name", "Function"], [["1", "Vdd_IOPower"], ["2", "NC"], ["3", "SCL"], ["4", "GND"]]);
+  const doc = { text: "", pages: [first, second], pageCount: 2, truncated: false };
+
+  const table = extractPinTableByGeometry(doc as never, "LIS3DH");
+  assert.ok(table, "two tellings of one pinout are not an ambiguity");
+  assert.equal(table.pins.length, 4, "and not eight");
+  assert.equal(table.pins[0].name, "Vdd_IO", "the first table's cleaner reading is the one kept");
+});

@@ -101,10 +101,14 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   { partNumber: "ST1S10", manufacturer: "STMicroelectronics", kind: "power" },
   { partNumber: "VIPER22A", manufacturer: "STMicroelectronics", kind: "power" },
   { partNumber: "M24C02", manufacturer: "STMicroelectronics", kind: "interface" },
-  { partNumber: "LIS3DH", manufacturer: "STMicroelectronics", kind: "sensor" },
+  // LIS3DH and STM32G071RB were PROMOTED into BENCH_CORPUS on 2026-08-02, one for
+  // each of the two gates that account for 16 of the 18 unreadable parts. LPS22HB
+  // and STM32F411RE replace them, chosen by part number alone with their
+  // datasheets unopened. Fourth and fifth promotions; see the header rule.
+  { partNumber: "LPS22HB", manufacturer: "STMicroelectronics", kind: "sensor" },
   { partNumber: "LSM6DSO", manufacturer: "STMicroelectronics", kind: "sensor" },
   { partNumber: "STM32L476RG", manufacturer: "STMicroelectronics", kind: "mcu" },
-  { partNumber: "STM32G071RB", manufacturer: "STMicroelectronics", kind: "mcu" },
+  { partNumber: "STM32F411RE", manufacturer: "STMicroelectronics", kind: "mcu" },
   { partNumber: "STM32F030C8", manufacturer: "STMicroelectronics", kind: "mcu" },
 
   // Analog Devices

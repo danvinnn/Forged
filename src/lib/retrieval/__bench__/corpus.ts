@@ -68,6 +68,20 @@ export const BENCH_CORPUS: BenchPart[] = [
   { partNumber: "INA240", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "ADS1115", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   {
+    partNumber: "LIS3DH",
+    manufacturer: "STMicroelectronics",
+    category: "analog",
+    expect: "hit",
+    note: "Promoted out of the hold-out on 2026-08-02, replaced there by LPS22HB. Representative of the gate that refuses 9 parts: a number column is found and no name column is found beside it."
+  },
+  {
+    partNumber: "STM32G071RB",
+    manufacturer: "STMicroelectronics",
+    category: "mcu",
+    expect: "hit",
+    note: "Promoted out of the hold-out on 2026-08-02, replaced there by STM32F411RE. Representative of the type gate, and of the MCU category, which failed 4 out of 4."
+  },
+  {
     partNumber: "ADS8688",
     manufacturer: "Texas Instruments",
     category: "analog",

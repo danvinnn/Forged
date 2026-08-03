@@ -71,6 +71,18 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
       "37": "SCLK", "38": "CS"
     }
   },
+  LIS3DH: {
+    packageType: "LGA-16",
+    source:
+      "page 9, Table 2. Pin description. Pins 4, 6 and 7 carry SEVERAL names each, one per interface mode (SCL/SPC, SDA/SDI/SDO, SDO/SA0), so they are deliberately left out rather than guessed at: the document does not say which is primary and this entry is not the place to decide.",
+    pins: {
+      "1": "Vdd_IO", "2": "NC", "3": "NC",
+      "5": "GND",
+      "8": "CS",
+      "9": "INT2", "10": "RES", "11": "INT1", "12": "GND",
+      "13": "ADC3", "14": "Vdd", "15": "ADC2", "16": "ADC1"
+    }
+  },
   LM358: {
     packageType: "8-Pin SOIC",
     source: "page 3, Table 4-1 Pin Functions, SOIC column",

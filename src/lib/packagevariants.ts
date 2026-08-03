@@ -66,7 +66,19 @@ const PACKAGE_FAMILIES = [
   "TSSOP", "HTQFP", "CQFP", "PQFP", "TQFP", "LQFP", "VQFN", "WQFN", "UQFN",
   "CDIP", "PDIP", "GDIP", "LCCC", "CLCC", "PLCC", "FBGA", "CBGA", "TBGA",
   "WCSP", "MSOP", "SSOP", "TSOT", "USON", "VSON", "WSON", "SOIC", "FLAT",
-  "QFN", "QFP", "DFN", "BGA", "SON", "SOP", "DIP", "CFP", "GFP", "LCC",
+  // `LGA` is the land grid array, and it was the second family the corpus prints
+  // that this list did not have. Every MEMS sensor ships in one: a LIS3DH is an
+  // LGA-16, an LSM6DSO an LGA-14, an ADXL345 an LGA-14. Missing it, those parts
+  // named NO package at all, so nothing declared a lead count, so a pin table
+  // that read perfectly had no second signal to corroborate it and the pin count
+  // was refused. The list already carries BGA, CBGA, FBGA and TBGA; the land grid
+  // array is the one array package it did not.
+  //
+  // Same rule as `HTSSOP` above, and it matters as much here: recognising a
+  // family and CHARACTERISING it are separate acts. This entry lets a part say it
+  // is an LGA-16. It hands LGA no land pattern, and it must not, because no LGA
+  // drawing in this corpus has been read.
+  "QFN", "QFP", "DFN", "BGA", "LGA", "SON", "SOP", "DIP", "CFP", "GFP", "LCC",
   "SOT", "SOD", "DPAK", "SO", "TO", "SC", "DO"
 ];
 
