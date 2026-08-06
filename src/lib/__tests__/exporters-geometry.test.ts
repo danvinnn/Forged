@@ -32,7 +32,7 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       pitchMm: null,
       leadLengthMm: null,
       leadCount: 8,
-      leadWidthMm: null
+      leadWidthMm: null, leadSpanMm: null, leadContactMm: null
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "ACME27524.pdf",
@@ -361,7 +361,7 @@ test("a drawn pitch that contradicts the family refuses rather than placing pads
 
 test("a drawn lead width is used in place of the family's", async () => {
   const narrower = await createExportZip(
-    soicPart({ dimensions: { ...soicPart().dimensions, leadWidthMm: { minMm: 0.2, maxMm: 0.3 } } }),
+    soicPart({ dimensions: { ...soicPart().dimensions, leadWidthMm: { minMm: 0.2, maxMm: 0.3 }, leadSpanMm: null, leadContactMm: null } }),
     "kicad"
   );
   const family = await createExportZip(soicPart(), "kicad");
@@ -432,7 +432,7 @@ function lqfpPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       pitchMm: null,
       leadLengthMm: null,
       leadCount: 80,
-      leadWidthMm: null
+      leadWidthMm: null, leadSpanMm: null, leadContactMm: null
     },
     sourceFileName: "ACME430F5529.pdf",
     ...overrides

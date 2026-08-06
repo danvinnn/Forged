@@ -1,3 +1,4 @@
+import { renderPages, type RenderLimits } from "../pagerender";
 import type { DatasheetText } from "../pdftext";
 import type { PartRecord } from "../types";
 import type { ExtractionRequest } from "./contracts";
@@ -40,13 +41,54 @@ export function buildExtractionRequest(
   const fields = unresolvedFields(part);
   if (fields.length === 0) return null;
 
-  const selection = selectPages(doc.pages, fields, {
-    maxPages: MAX_PAGES_TO_MODEL,
-    maxCharsPerPage: MAX_CHARS_PER_PAGE,
-    maxTotalChars: MAX_TOTAL_CHARS
-  });
+  const selection = selectPages(
+    doc.pages,
+    fields,
+    {
+      maxPages: MAX_PAGES_TO_MODEL,
+      maxCharsPerPage: MAX_CHARS_PER_PAGE,
+      maxTotalChars: MAX_TOTAL_CHARS
+    },
+    // What the deterministic pass already settled. On a family datasheet this is
+    // what separates this part's package drawing from a sibling's.
+    { packageType: part.packageType.value, pinCount: part.pinCount.value }
+  );
 
   if (selection.pages.length === 0) return null;
 
-  return { pages: selection.pages, fileName, partNumber, fields, selection };
+  return {
+    pages: selection.pages,
+    images: [],
+    fileName,
+    partNumber,
+    packageType: part.packageType.value,
+    fields,
+    selection
+  };
+}
+
+/**
+ * The same request, with the selected pages rendered.
+ *
+ * Separate from `buildExtractionRequest` rather than folded into it because
+ * rendering needs the original PDF bytes, which `DatasheetText` does not carry,
+ * and because it is the one part of building a request that can be slow. A
+ * caller that has the bytes should use this; one that does not still gets a
+ * valid text-only request from the function above.
+ *
+ * Failure to render is not failure to extract. `renderPages` returns fewer
+ * pages rather than throwing, so a host with no working renderer produces
+ * exactly the request it produced before images existed.
+ */
+export async function withRenderedPages(
+  request: ExtractionRequest,
+  pdfBytes: ArrayBuffer,
+  limits: Partial<RenderLimits> = {}
+): Promise<ExtractionRequest> {
+  const images = await renderPages(
+    pdfBytes,
+    request.pages.map((page) => page.page),
+    { maxPages: MAX_PAGES_TO_MODEL, ...limits }
+  );
+  return { ...request, images };
 }

@@ -114,7 +114,7 @@ export async function POST(request: Request) {
         ...resolved.part,
         packageType: requestedPackage.slice(0, 64),
         packageOutlineCode: null,
-        dimensions: { ...resolved.part.dimensions, pitchMm: null, leadWidthMm: null }
+        dimensions: { ...resolved.part.dimensions, pitchMm: null, leadWidthMm: null, leadSpanMm: null, leadContactMm: null }
       }
     : resolved.part;
 

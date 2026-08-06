@@ -1,5 +1,5 @@
 import type { DatasheetText } from "../pdftext";
-import { pinElectricalTypes, type Citation, type Extracted, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
+import { pinElectricalTypes, type Citation, type Extracted, type ExtractionMethod, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
 import { extractionFields, type ExtractionField, type ExtractionResult, type ModelValue } from "./contracts";
 
 /**
@@ -152,8 +152,37 @@ function searchableText(value: ModelValue["value"]): string | null {
   if (value === null) return null;
   if (typeof value === "number") return String(value);
   if (typeof value === "string") return value.trim() || null;
-  // Arrays are verified structurally instead, see verifyPinTable.
+  // Arrays and ranges are verified structurally instead; see verifyPinTable and
+  // verifyRange.
   return null;
+}
+
+/** A min/max pair the model returned for a lead span or lead width. */
+function asRange(value: ModelValue["value"]): { minMm: number; maxMm: number } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const { minMm, maxMm } = value as { minMm?: unknown; maxMm?: unknown };
+  if (typeof minMm !== "number" || typeof maxMm !== "number") return null;
+  if (!Number.isFinite(minMm) || !Number.isFinite(maxMm)) return null;
+  // A dimension is positive and a range runs the right way round. Both are
+  // cheap and both catch a model that has transposed or hallucinated a pair.
+  if (minMm <= 0 || maxMm < minMm) return null;
+  return { minMm, maxMm };
+}
+
+/**
+ * A range citation, when BOTH endpoints are quotable on the page it cites.
+ *
+ * A drawing normally prints these as labels the text layer does not carry, in
+ * which case this fails and the value falls to the weaker drawing citation.
+ * That is the intended path, not a shortfall: on a document that DOES tabulate
+ * the span, the stronger quotable citation is available and should be used.
+ */
+function verifyRange(pageText: string, range: { minMm: number; maxMm: number }): boolean {
+  const haystack = normalize(pageText);
+  return (
+    haystack.includes(normalize(String(range.minMm))) &&
+    haystack.includes(normalize(String(range.maxMm)))
+  );
 }
 
 function normalize(text: string): string {
@@ -214,6 +243,12 @@ export function verifyCitation(doc: DatasheetText, claimed: ModelValue): Citatio
     return { page: page.page, snippet: `${pins.length}-row pin table`, region: null };
   }
 
+  const range = asRange(claimed.value);
+  if (range) {
+    if (!verifyRange(page.text, range)) return null;
+    return { page: page.page, snippet: `${range.minMm}-${range.maxMm} mm`, region: null };
+  }
+
   const needle = searchableText(claimed.value);
   if (needle === null) return null;
 
@@ -221,6 +256,60 @@ export function verifyCitation(doc: DatasheetText, claimed: ModelValue): Citatio
   if (!haystack.includes(normalize(needle))) return null;
 
   return { page: page.page, snippet: needle, region: null };
+}
+
+/**
+ * Phrases that mark a page as carrying a mechanical drawing.
+ *
+ * Used only to describe a page in a citation, never to find one, so this list
+ * being incomplete costs a sentence of provenance rather than a value.
+ */
+const DRAWING_CONTEXT = [
+  /\b(?:package|mechanical)\s+(?:outline|drawing|information|description|dimensions?)\b/i,
+  /\bpackage\s+outline\b/i,
+  /\ball\s+dimensions\s+are\s+in\s+(?:millimeters|millimetres|inches)\b/i,
+  /\bdimensions?\s+are\s+in\s+(?:millimeters|millimetres|inches)\b/i,
+  /\b[A-Z]{1,4}\d{4}[A-Z]\b/,
+  /\b(?:JEDEC|MO|MS)-\d{3}\b/i
+];
+
+/**
+ * A citation for a value read off a RENDERED page rather than out of the text.
+ *
+ * This exists because the check above cannot be applied to a drawing, and the
+ * reason is not a limitation to route around: a dimension printed beside a
+ * dimension line genuinely is not in the text layer, so requiring the value to
+ * appear there would reject every correct drawing read. That was the measured
+ * behaviour of the text-only pass, which reached 0 of 83 parts for body height
+ * and lead length.
+ *
+ * What can still be established, and what this records:
+ *  - the page was one WE SENT, so the model cannot cite a page it never saw
+ *  - the page was rendered, so a reviewer can be shown exactly what the model saw
+ *  - what identifies the page as a drawing, quoted from its own text
+ *
+ * What it deliberately does NOT do is claim the value was confirmed. A
+ * `vlm-drawing` value is an unconfirmed reading with a verifiable location,
+ * and the record says so rather than dressing it as a checked one.
+ */
+export function citeRenderedPage(
+  doc: DatasheetText,
+  claimed: ModelValue,
+  sentPages: readonly number[]
+): Citation | null {
+  if (claimed.page === null) return null;
+  if (!sentPages.includes(claimed.page)) return null;
+  const page = doc.pages.find((candidate) => candidate.page === claimed.page);
+  if (!page) return null;
+
+  const marker = DRAWING_CONTEXT.map((pattern) => pattern.exec(page.text)?.[0]).find(Boolean);
+  return {
+    page: page.page,
+    snippet: marker
+      ? `read from the rendered page (page identifies as "${marker.trim().slice(0, 60)}")`
+      : "read from the rendered page",
+    region: null
+  };
 }
 
 export interface MergeOutcome {
@@ -250,7 +339,13 @@ export function mergeModelValues(
   part: PartRecord,
   doc: DatasheetText,
   result: ExtractionResult,
-  modelName: string
+  modelName: string,
+  /**
+   * Pages that were RENDERED and sent as images. Empty means text-only, in
+   * which case nothing can earn a drawing citation and this behaves exactly as
+   * it did before images existed.
+   */
+  renderedPages: readonly number[] = []
 ): MergeOutcome {
   const merged: PartRecord = JSON.parse(JSON.stringify(part)) as PartRecord;
   const filled: ExtractionField[] = [];
@@ -270,6 +365,23 @@ export function mergeModelValues(
     // is what pads are built from, and the record is better off reporting the
     // gap the deterministic pass already found.
     let value = claimed.value;
+
+    // A range field is validated before anything else looks at it. An
+    // ill-formed pair is DROPPED rather than stored uncited, for the same
+    // reason a bad pin table is: these two feed the land pattern directly.
+    if (
+      field === "dimensions.leadWidthMm" ||
+      field === "dimensions.leadSpanMm" ||
+      field === "dimensions.leadContactMm"
+    ) {
+      const range = asRange(value);
+      if (!range) {
+        rejected.push({ field, reason: "the value was not a positive min/max pair in millimetres" });
+        continue;
+      }
+      value = range;
+    }
+
     if (field === "pins") {
       const normalized = normalizeModelPins(claimed.value);
       if (!normalized.ok) {
@@ -286,16 +398,33 @@ export function mergeModelValues(
       value = normalized.pins;
     }
 
-    const citation = verifyCitation(doc, { ...claimed, value });
+    // Text first. A value quoted from the page is the strongest evidence
+    // available and the only one a reviewer can check by searching.
+    let citation = verifyCitation(doc, { ...claimed, value });
+    let method: ExtractionMethod = "vlm";
+
+    // Then the drawing path, and ONLY for a scalar on a page we actually
+    // rendered. A pin table is excluded deliberately: `verifyPinTable` is the
+    // check that stops a fabricated table entering the record, and a table is
+    // what pads are built from, so it does not get the weaker evidence.
+    if (!citation && renderedPages.length > 0 && !Array.isArray(value)) {
+      const drawn = citeRenderedPage(doc, { ...claimed, value }, renderedPages);
+      if (drawn) {
+        citation = drawn;
+        method = "vlm-drawing";
+      }
+    }
+
     if (!citation) uncited.push(field);
 
     setFieldAt(merged, field, {
       value,
-      // No calibrated confidence exists for a model answer. A verified citation
-      // is the only corroboration available, so it is the only thing that
-      // separates the two levels, and neither claims to be a probability.
-      confidence: citation ? 0.5 : null,
-      method: "vlm",
+      // No calibrated confidence exists for a model answer. Evidence is the only
+      // thing that separates these levels, and none of them claims to be a
+      // probability: 0.5 for a value quoted from the page, 0.4 for one read off
+      // a render we can show but cannot grep, null for one we could not place.
+      confidence: citation ? (method === "vlm-drawing" ? 0.4 : 0.5) : null,
+      method,
       citation
     });
     filled.push(field);

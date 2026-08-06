@@ -164,3 +164,113 @@ test("on a real datasheet the prompt shrinks and still contains the answers", as
 
   assert.ok(after < before / 3, `prompt should shrink by well over half: ${before} -> ${after}`);
 });
+
+// --- selecting the page a DRAWING is on -------------------------------------
+//
+// These guard the three defects that kept the package drawing out of the model's
+// hands. All three were invisible until pages started being rendered, because a
+// text-only model could not have used the drawing anyway.
+
+const DRAWING_FIELDS: ExtractionField[] = ["dimensions.pitchMm", "dimensions.bodyHeightMm"];
+const DRAWING_LIMITS = { maxPages: 6, maxCharsPerPage: 6000, maxTotalChars: 24_000 };
+
+test("the dimension table beats the notes page facing it", () => {
+  // ST prints the drawing's notes on the NEXT page. Those notes are prose about
+  // a drawing and used to outscore the drawing, so the model was shown a page
+  // carrying no dimension at all.
+  const pages = [
+    { page: 1, text: "STM32G071 Datasheet Features" },
+    { page: 131, text: "Package information Table 84. LQFP64 - Mechanical data millimeters Symbol Min Typ Max A - - 1.60" },
+    { page: 132, text: "Package information Notes: 1. Dimensioning and tolerancing conform to ASME Y14.5M-1994. Seating plane. Dimensions are in millimeters." }
+  ];
+  const chosen = selectPages(pages, DRAWING_FIELDS, DRAWING_LIMITS, { packageType: "LQFP64", pinCount: 64 })
+    .pages.map((page) => page.page);
+  assert.ok(chosen.includes(131), "the page with the actual Min/Typ/Max columns must be sent");
+});
+
+test("this part's package table beats a sibling's on the same document", () => {
+  // A family datasheet prints mechanical data for every package it offers. They
+  // are indistinguishable to a vocabulary scan, and the resolved designator is
+  // the only thing that separates them.
+  const pages = [
+    { page: 1, text: "STM32G071 Datasheet" },
+    { page: 131, text: "Package information Table 84. LQFP64 - Mechanical data millimeters Symbol Min Typ Max" },
+    { page: 134, text: "Package information Table 85. UFBGA64 - Mechanical data millimeters Symbol Min Typ Max seating plane ASME Y14.5" }
+  ];
+  const chosen = selectPages(pages, DRAWING_FIELDS, DRAWING_LIMITS, { packageType: "LQFP64", pinCount: 64 })
+    .pages.map((page) => page.page);
+  assert.ok(chosen.includes(131), "the package this part is in must be preferred");
+});
+
+test("a page repeating a package name does not outrank the drawing", () => {
+  // Ordering tables list every orderable package and so repeat the family name.
+  // Counting frequency made them the top-scoring pages in the document; an
+  // STM32F407VG's two ordering pages scored 24 and 21 against the LQFP100
+  // drawing's 10. A structural marker is not more true for being repeated.
+  const pages = [
+    { page: 1, text: "Datasheet" },
+    { page: 173, text: "Package information Table 93. LQFP100 - Mechanical data millimeters Symbol Min Typ Max" },
+    { page: 202, text: "Ordering information LQFP100 LQFP100 LQFP100 LQFP100 LQFP100 LQFP100 LQFP100 LQFP100" }
+  ];
+  const chosen = selectPages(pages, DRAWING_FIELDS, DRAWING_LIMITS, { packageType: "LQFP100", pinCount: 100 })
+    .pages.map((page) => page.page);
+  assert.ok(chosen.includes(173), "the drawing must outrank a page that merely repeats the name");
+});
+
+test("a concern still gets pages when another concern matches far more of them", () => {
+  // Fields used to be summed into one ranking, so on a long document the
+  // concern matching forty pages consumed the budget and the concern matching
+  // one page was cut. Reserving per concern is what stops that.
+  const pins = Array.from({ length: 20 }, (_value, index) => ({
+    page: index + 2,
+    text: "Pin Functions PIN NO. NAME DESCRIPTION terminal functions"
+  }));
+  const pages = [
+    { page: 1, text: "Datasheet" },
+    ...pins,
+    { page: 99, text: "Package outline DGK0008A mechanical data 8X 0.65 seating plane" }
+  ];
+  const chosen = selectPages(
+    pages,
+    ["pins", "pinCount", "dimensions.pitchMm"] as ExtractionField[],
+    DRAWING_LIMITS,
+    { packageType: "VSSOP", pinCount: 8 }
+  ).pages.map((page) => page.page);
+  assert.ok(chosen.includes(99), "the one dimension page must survive twenty pin pages");
+});
+
+test("a part with no resolved package selects exactly as it did before", () => {
+  // The package cues are additive. A record that could not settle its package
+  // must not select worse than one that never had the hint.
+  const pages = [
+    { page: 1, text: "Datasheet" },
+    { page: 30, text: "PACKAGE OUTLINE PWP0028C mechanical data 26X 0.65 seating plane millimeters" },
+    { page: 31, text: "Electrical characteristics Symbol Min Typ Max" }
+  ];
+  const withHint = selectPages(pages, DRAWING_FIELDS, DRAWING_LIMITS, { packageType: null, pinCount: null });
+  assert.ok(withHint.pages.map((page) => page.page).includes(30));
+});
+
+test("a document with five package drawings sends the one this part is in", () => {
+  // The generic drawing cues score every package page equally: they all say
+  // PACKAGE OUTLINE, all carry an outline code, all tag a pitch. An LM358 prints
+  // five and the record resolves it to the SOIC. Ranked merely strong, the right
+  // drawing tied with four wrong ones and lost on incidental density, so the
+  // model was shown TSSOP, VSSOP and SOT-23 drawings, correctly answered null
+  // for every dimension, and said why: no package variant was specified.
+  const drawing = (code: string, family: string) =>
+    `PACKAGE OUTLINE ${code} ${family} SCALE 2.800 mechanical data seating plane 8X 0.65 millimeters`;
+  const pages = [
+    { page: 1, text: "LM358 Dual Operational Amplifier" },
+    { page: 51, text: drawing("PW0008A", "TSSOP") },
+    { page: 54, text: drawing("JG0008A", "CDIP") },
+    { page: 56, text: drawing("DGK0008A", "VSSOP") },
+    { page: 60, text: drawing("DDF0008A", "SOT-23-THIN") },
+    { page: 63, text: drawing("D0008A", "SOIC") }
+  ];
+  const chosen = selectPages(pages, DRAWING_FIELDS, DRAWING_LIMITS, {
+    packageType: "8-Pin SOIC",
+    pinCount: 8
+  }).pages.map((page) => page.page);
+  assert.ok(chosen.includes(63), "the SOIC drawing must be sent to a part resolved as a SOIC");
+});

@@ -165,7 +165,13 @@ const CERAMIC_FLATPACK: PackageDefinition = {
  * It was refused today only by luck: the pin counts that reach it happen to sit
  * above CFP's 48 lead ceiling. A 44 lead one would have gone straight through.
  */
-const QUAD_FLAT_PACK = /\bQUAD\s+FLAT|\b[LTCPVWU]?QF[PN]\b|\bQFP\b|\bQFN\b/i;
+// The trailing `\d*` is load-bearing. A lead count glued to the family name is
+// how ST writes these (`LQFP64`, `LQFP144`), and `\bLQFP\b` cannot match it,
+// because the digit after the P is a word character and leaves no boundary. A
+// glued designator was therefore not RECOGNISED AS QUAD at all, so it fell past
+// this guard to the dual-row families below, which is the exact substitution
+// this constant exists to prevent.
+const QUAD_FLAT_PACK = /\bQUAD\s+FLAT|\b[LTCPVWU]?QF[PN]\d*\b|\bQFP\d*\b|\bQFN\d*\b/i;
 
 /**
  * Wide-body SOIC, JEDEC MS-013.
@@ -312,23 +318,72 @@ const VSSOP_8: PackageDefinition = {
  * LQFP-100 is 14 mm square and an LQFP-144 is 20 mm. Their spans are different
  * numbers off different drawings, not something to interpolate.
  */
-const LQFP_80: PackageDefinition = {
-  family: "LQFP-80",
-  arrangement: "quad",
-  pitchMm: 0.5,
-  pinCounts: { min: 80, max: 80 },
-  source:
-    "JEDEC MS-026, read off the TI PN0080A package drawing in the MSP430F5529 datasheet (span 13.8-14.2, body 11.8-12.2 square, pitch 0.5, lead width 0.17-0.27, foot 0.45-0.75). The land pattern target is the one TI prints on the facing page: 80 lands of 1.5 x 0.3 on a 13.4 mm centre span, both axes.",
-  lead: {
-    form: "gullwing",
-    span: { minMm: 13.8, maxMm: 14.2 },
-    // Fitted, as every entry's contact is; see LeadDimensions. Reproduces TI's
-    // printed 13.4 centre span to within 0.001 mm.
-    contact: { minMm: 0.45, maxMm: 0.6 },
-    width: { minMm: 0.17, maxMm: 0.27 }
-  },
-  match: /\bLQFP\b/i
-};
+/**
+ * The MS-026 lead, which is ONE lead form across the whole family of bodies.
+ *
+ * Read off four drawings rather than assumed: TI's PN0080A in the MSP430F5529,
+ * and ST's LQFP48, LQFP64, LQFP100 and LQFP144 mechanical tables. All five print
+ * the SAME lead: pitch 0.50, `b` 0.17-0.22-0.27, `L` 0.45-0.60-0.75, standoff
+ * `A2` 1.35-1.40-1.45. Only the body and the overall span change with the lead
+ * count, which is exactly what the note on the old single entry predicted.
+ *
+ * `contact` is fitted rather than read, as every entry's is. The fit was done
+ * against TI's own printed land pattern for the 80-lead body, where 0.45-0.60
+ * reproduces TI's 13.4 mm centre span to 0.001 mm and its 1.5 mm land length to
+ * 0.003 mm. Since the lead is the same across the family, the same fitted range
+ * carries to the other bodies; refitting per body would be tuning to whichever
+ * vendor's example footprint happened to be at hand.
+ */
+const MS026_LEAD = {
+  form: "gullwing",
+  contact: { minMm: 0.45, maxMm: 0.6 },
+  width: { minMm: 0.17, maxMm: 0.27 }
+} as const;
+
+/**
+ * One LQFP body.
+ *
+ * `spanNominalMm` is the drawing's `D`/`E`, which ST states as BASIC (`12.00
+ * BSC`) and TI states already toleranced (`13.8-14.2` about a 14.00 nominal).
+ * The +/-0.20 applied here is read off that TI drawing rather than assumed, and
+ * it agrees with the `aaa` profile tolerance of 0.20 that every one of these
+ * tables prints.
+ *
+ * Each entry is ONE lead count, for the reason the original entry gave: the
+ * bodies grow with the count and their spans are different numbers off different
+ * drawings, not something to interpolate. A count with no entry is refused.
+ *
+ * The body dimension is recorded in the source string and not used in the
+ * calculation, which works off the lead span; it is there so the next person can
+ * confirm an entry against a drawing without opening this file's history.
+ */
+function lqfpBody(
+  leads: number,
+  spanNominalMm: number,
+  bodyMm: number,
+  source: string
+): PackageDefinition {
+  return {
+    family: `LQFP-${leads}`,
+    arrangement: "quad",
+    pitchMm: 0.5,
+    pinCounts: { min: leads, max: leads },
+    source: `JEDEC MS-026, ${source}. Span ${spanNominalMm.toFixed(2)} BSC (${(spanNominalMm - 0.2).toFixed(2)}-${(spanNominalMm + 0.2).toFixed(2)}), body ${bodyMm.toFixed(2)} square, pitch 0.50, lead width 0.17-0.27, foot 0.45-0.75, ${leads} leads.`,
+    lead: {
+      ...MS026_LEAD,
+      span: { minMm: spanNominalMm - 0.2, maxMm: spanNominalMm + 0.2 }
+    },
+    // Trailing digits allowed: ST writes `LQFP64`, and `\bLQFP\b` cannot match
+    // that. See QUAD_FLAT_PACK, which had the same defect.
+    match: /\bLQFP\d*\b/i
+  };
+}
+
+const LQFP_48 = lqfpBody(48, 9.0, 7.0, "read off Table 62 on page 99 of the STM32F103C8 datasheet (DS5319 Rev 20)");
+const LQFP_64 = lqfpBody(64, 12.0, 10.0, "read off Table 84 on page 131 of the STM32G071RB datasheet (DS12232 Rev 5)");
+const LQFP_80 = lqfpBody(80, 14.0, 12.0, "read off the TI PN0080A drawing in the MSP430F5529 datasheet, whose land pattern on the facing page is the calibration target for MS026_LEAD: 80 lands of 1.5 x 0.3 on a 13.4 mm centre span");
+const LQFP_100 = lqfpBody(100, 16.0, 14.0, "read off Table 93 on page 173 of the STM32F407VG datasheet (DS8626 Rev 12)");
+const LQFP_144 = lqfpBody(144, 22.0, 20.0, "read off Table 94 on page 176 of the STM32F407VG datasheet (DS8626 Rev 12)");
 
 const PACKAGE_DEFINITIONS: PackageDefinition[] = [
   SOIC_NARROW,
@@ -337,7 +392,11 @@ const PACKAGE_DEFINITIONS: PackageDefinition[] = [
   VSSOP_8,
   VSSOP_10,
   CERAMIC_FLATPACK,
-  LQFP_80
+  LQFP_48,
+  LQFP_64,
+  LQFP_80,
+  LQFP_100,
+  LQFP_144
 ];
 
 /**
@@ -576,6 +635,139 @@ export interface DrawnPackageEvidence {
   pitchMm?: number | null;
   /** Lead width read off the drawing, used in place of the family's. */
   leadWidthMm?: LeadWidth | null;
+  /** Lead span tip to tip, read off the drawing. */
+  leadSpanMm?: LeadWidth | null;
+  /** Lead contact length, drawing dimension L, nominal. Fallback for the range. */
+  leadLengthMm?: number | null;
+  /** Lead contact length as the drawing prints it, min to max. Preferred. */
+  leadContactMm?: LeadWidth | null;
+}
+
+/**
+ * Families whose leads are GULL-WING, and therefore the only ones a land
+ * pattern can be derived for without entering a new fillet-goal table.
+ *
+ * `FILLET_GOALS` in ipc7351.ts carries gull-wing only, and says why: a no-lead
+ * package (QFN, DFN, SON, LGA), a J-lead, a BGA ball and a through-hole pin
+ * each have their own published goals, and inventing them to widen coverage is
+ * the exact failure that module exists to prevent. So this list is not a
+ * preference, it is the boundary of what the maths in this repo can honestly do.
+ *
+ * Written as an allow-list rather than a deny-list on purpose. An unrecognised
+ * family gets no footprint, which is the safe direction; a deny-list would hand
+ * gull-wing geometry to whatever new package nobody thought to exclude.
+ */
+const GULLWING_FAMILY =
+  /\b(?:SOIC|SOP|SSOP|TSSOP|HTSSOP|VSSOP|HVSSOP|MSOP|MINISO|TSOT|SOT|LQFP|TQFP|PQFP|HTQFP|QFP|CFP|GFP|FLATPACK|FLAT)\b/i;
+
+/**
+ * A land pattern derived from THIS part's own drawing, when no family entry
+ * covers it.
+ *
+ * ## Why this is allowed to exist
+ *
+ * Every entry in the table above was read off one vendor drawing by hand and
+ * applied to a whole family, and there are nine of them. That is why 22 parts
+ * across both corpora parse completely and still produce nothing: their family
+ * has never been characterised, and characterising one means a person reading a
+ * drawing. Coverage was therefore bounded by hand-transcription, not by what
+ * the documents contain.
+ *
+ * A drawing states every input IPC-7351B needs. Reading them off the rendered
+ * page is the same act as reading them by hand, done by a different reader, and
+ * the arithmetic downstream is unchanged and still deterministic. What must not
+ * happen, and does not happen here, is a model producing GEOMETRY: it supplies
+ * four measured numbers and `computeLandPattern` does the rest.
+ *
+ * ## Why the guards are what they are
+ *
+ * A family entry carries a JEDEC outline behind it, so it can be trusted on
+ * thin evidence. This has no such backing, so it demands all four dimensions,
+ * refuses any family whose lead form has no published fillet goals, and checks
+ * that the numbers describe a physically possible package before believing
+ * them. A single missing or implausible value means no footprint, which is the
+ * same answer the caller got before this existed.
+ */
+function packageFromDrawing(
+  packageType: string,
+  pinCount: number,
+  drawn: DrawnPackageEvidence
+): PackageDefinition | null {
+  const span = drawn.leadSpanMm;
+  const width = drawn.leadWidthMm;
+  const pitch = drawn.pitchMm;
+
+  // The single nominal, NOT the drawing's printed L range, and this is a
+  // measured decision rather than a simplification.
+  //
+  // A drawing's `L` and IPC-7351B's contact length are different dimensions
+  // wearing the same letter. IPC wants the SEATED FOOT, the part that lies flat
+  // on the land; a gull-wing drawing's L is the whole lead including the
+  // vertical run. Read off the real drawings on 2026-08-05, an LM358's D0008A
+  // prints L as 0.41-1.27 against a seated contact of about 0.4-0.625, and an
+  // INA240's PW0008A prints 0.5-0.75 against 0.5-0.6.
+  //
+  // Feeding the printed range in put the land 0.649 mm from the hand-calibrated
+  // entry on the SOIC and 0.150 mm out on the TSSOP. The nominal alone is
+  // within 0.079 mm. So `leadContactMm` is RECORDED, because it is a real
+  // dimension a reviewer may want, and it is deliberately not used here.
+  const contact: LeadWidth | null =
+    drawn.leadLengthMm && drawn.leadLengthMm > 0
+      ? { minMm: drawn.leadLengthMm, maxMm: drawn.leadLengthMm }
+      : null;
+
+  if (!span || !width || !contact || !pitch) return null;
+  if (!GULLWING_FAMILY.test(packageType)) return null;
+
+  // Ranges must be positive and run the right way round.
+  if (span.minMm <= 0 || span.maxMm < span.minMm) return null;
+  if (width.minMm <= 0 || width.maxMm < width.minMm) return null;
+  if (pitch <= 0) return null;
+
+  const quad = QUAD_FLAT_PACK.test(packageType);
+  const perSide = quad ? pinCount / 4 : Math.ceil(pinCount / 2);
+  if (!Number.isInteger(perSide) || perSide < 2) return null;
+
+  // Physical plausibility, and each of these has a specific failure it prevents.
+  //
+  // A lead cannot be wider than the pitch that separates it from its neighbour,
+  // or adjacent leads would touch.
+  if (width.maxMm >= pitch) return null;
+  // Two feet cannot be longer than the span they both sit inside; if they were,
+  // the inner gap would be negative and opposing lands would overlap at the
+  // centre of the package.
+  if (2 * contact.maxMm >= span.minMm) return null;
+  //
+  // There is deliberately NO check that the lead row fits inside the span.
+  // Those two are PERPENDICULAR on a dual package: the row runs along the body
+  // length and the span is measured across the width. A 28-lead HTSSOP has
+  // fourteen leads on a 0.65 pitch, so its rows are 8.45 mm long across a 6.2 to
+  // 6.6 mm span, and the check refused a part whose numbers were all correct.
+  // Constraining the row would need the body LENGTH, which is a different
+  // dimension and not required here.
+
+  return {
+    family: `${packageType} (from drawing)`,
+    arrangement: quad ? "quad" : "dual",
+    pitchMm: pitch,
+    pinCounts: { min: pinCount, max: pinCount },
+    source: `Derived from this part's own package drawing rather than from a characterised family: lead span ${span.minMm}-${span.maxMm} mm, lead width ${width.minMm}-${width.maxMm} mm, contact length ${contact.minMm}-${contact.maxMm} mm, pitch ${pitch} mm. IPC-7351B density level applied to those dimensions unchanged.`,
+    lead: {
+      form: "gullwing",
+      span: { minMm: span.minMm, maxMm: span.maxMm },
+      // The drawing's own min and max where it printed them. Where only a
+      // single figure was available this is a zero-width range, which is the
+      // honest translation: widening it would invent a tolerance the document
+      // does not state.
+      contact: { minMm: contact.minMm, maxMm: contact.maxMm },
+      width: { minMm: width.minMm, maxMm: width.maxMm }
+    },
+    // Never used: this definition is built FOR one already-known designator
+    // rather than selected by matching text. A pattern that matched anything
+    // would let a derived entry be picked up as if it were a characterised
+    // family, so it is deliberately one that matches nothing.
+    match: /(?!)/
+  };
 }
 
 /**
@@ -597,7 +789,15 @@ export function resolvePackageDefinition(
   drawn: DrawnPackageEvidence = {}
 ): PackageLookup {
   const lookup = findPackageDefinition(packageType, pinCount, drawn.outlineCode ?? undefined);
-  if (!lookup.ok) return lookup;
+  if (!lookup.ok) {
+    // No characterised family. Fall back to this part's own drawing, if it
+    // stated everything the standard needs. Deliberately AFTER the table, never
+    // instead of it: a hand-read JEDEC entry carries a whole family's outline
+    // behind it and is the better answer wherever one exists.
+    const derived = packageFromDrawing(packageType, pinCount, drawn);
+    if (derived) return { ok: true, definition: derived };
+    return lookup;
+  }
 
   let definition = lookup.definition;
 

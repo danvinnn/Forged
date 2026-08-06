@@ -350,7 +350,10 @@ function buildFootprintGeometry(
   const lookup = resolvePackageDefinition(part.packageType, part.pinCount, {
     outlineCode: part.packageOutlineCode,
     pitchMm: part.dimensions.pitchMm,
-    leadWidthMm: part.dimensions.leadWidthMm
+    leadWidthMm: part.dimensions.leadWidthMm,
+    leadSpanMm: part.dimensions.leadSpanMm,
+    leadLengthMm: part.dimensions.leadLengthMm,
+    leadContactMm: part.dimensions.leadContactMm
   });
   if (!lookup.ok) throw new FootprintUnavailableError(lookup.failure.reason, lookup.failure.supported);
 

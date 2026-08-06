@@ -93,6 +93,59 @@ export function findVendorLandPattern(doc: DatasheetText, family?: string): Vend
   return null;
 }
 
+/**
+ * A vendor footprint drawing this reader can SEE but cannot READ.
+ *
+ * The callout reader above is built on TI's conventions: a heading reading
+ * `LAND PATTERN EXAMPLE` and reference dimensions in parentheses (`80X (0.3)`).
+ * ST prints the same information as `Figure 48. LQFP64 - Footprint example`
+ * with bare numbers, which this cannot parse.
+ *
+ * That distinction has to reach the user, because the alternative message is
+ * false: saying a datasheet "does not print a land pattern" about a document
+ * that prints one on a numbered page is worse than saying nothing. It sends
+ * somebody looking for a comparison that is sitting in front of them.
+ *
+ * Deliberately NOT extended into a bare-number reader. Every number on a page
+ * would be a candidate, and a coincidental match reporting `agrees` is a worse
+ * failure than reporting nothing at all: it would claim the vendor endorses a
+ * pattern they do not print.
+ */
+const UNREADABLE_FOOTPRINT_HEADING = /\bfootprint example\b/i;
+
+/** Dotted leaders, the signature of a table-of-contents entry. */
+const TOC_LEADER = /\.{4,}|(?:\.\s){4,}/;
+
+/** Page of a footprint drawing for this family that cannot be parsed, if any. */
+export function findUnreadableFootprint(doc: DatasheetText, family?: string): number | null {
+  const wanted = family?.trim().split(/\s+/)[0]?.toUpperCase();
+  const headings = [...doc.text.matchAll(new RegExp(UNREADABLE_FOOTPRINT_HEADING.source, "gi"))];
+
+  for (const heading of headings) {
+    // The CONTENTS names every figure before the document draws any of them, so
+    // the first match is routinely a contents line pointing at a page number
+    // rather than the drawing itself. Dotted leaders are what distinguish the
+    // two, the same signature `findPinSection` uses for the same reason: without
+    // this the reported page is the contents page, which sends the user to a
+    // list of figures instead of the figure.
+    const after = doc.text.slice(heading.index, heading.index + 80);
+    if (TOC_LEADER.test(after)) continue;
+
+    // The caption names the package immediately before the phrase, as in
+    // `LQFP64 - Footprint example`. Punctuation is stripped so `LQFP-64`,
+    // `LQFP64` and `LQFP 64` all compare equal to the family's first word.
+    const caption = doc.text.slice(Math.max(0, heading.index - 60), heading.index);
+    if (wanted) {
+      const bare = wanted.replace(/[^A-Z0-9]/g, "");
+      const seen = caption.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!seen.includes(bare)) continue;
+    }
+    return doc.pages.find((candidate) => heading.index < candidate.end)?.page ?? null;
+  }
+
+  return null;
+}
+
 export type LandAgreement = "agrees" | "differs" | "unavailable";
 
 export interface LandCrossCheck {
@@ -123,6 +176,17 @@ export function crossCheckLandPattern(
 ): LandCrossCheck {
   const vendor = findVendorLandPattern(doc, family);
   if (!vendor) {
+    // A drawing that is present but unparseable is a different answer from no
+    // drawing at all, and the user can act on it: the page number is where to
+    // check this footprint by hand.
+    const unreadable = findUnreadableFootprint(doc, family);
+    if (unreadable !== null) {
+      return {
+        agreement: "unavailable",
+        page: unreadable,
+        detail: `This datasheet prints a ${family ?? "package"} footprint example on page ${unreadable}, but its dimensions are not in a form this check can read, so no comparison was made. The generated land pattern follows IPC-7351B; compare it against that page before committing to fabrication.`
+      };
+    }
     return {
       agreement: "unavailable",
       detail: family

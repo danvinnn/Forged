@@ -450,3 +450,226 @@ test("a stray two-number line does not veto a real figure", () => {
     ["ENA", "INA", "GND", "INB", "OUTB", "VDD", "OUTA", "ENB"]
   );
 });
+
+// ---------------------------------------------------------------------------
+// A package the CALLER named
+//
+// The one question a datasheet genuinely cannot answer for itself. Every pin
+// reader takes the package as an argument and uses it to choose among a
+// document's per-package pinouts, so supplying it is worth five parts of
+// thirty-eight on unseen datasheets. These lock in what that supply may and may
+// not do: it may replace the designator search and silence a count read off a
+// DIFFERENT package, and it may never be paired with a count that is not known
+// to be about it.
+// ---------------------------------------------------------------------------
+
+/**
+ * The OPA192 shape: a front matter describing the eight-pin SOIC, and a
+ * five-pin pinout for the SOT-23 the caller actually holds.
+ *
+ * A TABLE rather than a figure on purpose. A figure that proves itself already
+ * outranks a disagreeing declared count, so it would pass these whatever the
+ * hint did; an unproven table is the case where the declared count still
+ * decides, and so the case that isolates what naming a package changes.
+ */
+const twoPackages = datasheetTextFromPages([
+  ["ACME192 Precision Op Amp", "Available in an 8-Pin SOIC package"].join("\n"),
+  [
+    // A second package with a DIFFERENT count, so no single count is common to
+    // everything the document names. Without it `soleDeclaredLeadCount` answers
+    // 8 and the front-matter regex under test is never reached, which is not
+    // the shape being modelled: a real OPA192 takes its variants from an
+    // ordering table whose designators carry outline codes and no counts at all.
+    "The 14-Pin TSSOP is described in the quad datasheet.",
+    "Pin Functions",
+    "NAME NO. TYPE DESCRIPTION",
+    "OUT 1 Output Amplifier output",
+    "V- 2 Power Negative supply",
+    "IN+ 3 Input Noninverting input",
+    "IN- 4 Input Inverting input",
+    "V+ 5 Power Positive supply"
+  ].join("\n")
+]);
+
+test("a package the caller names replaces the designator search and says so", () => {
+  const part = buildPartRecord(twoPackages, "ACME192.pdf", undefined, {
+    packageType: "SOT-23 (DBV)"
+  });
+
+  assert.equal(part.packageType.value, "SOT-23 (DBV)");
+  assert.equal(part.packageType.method, "user", "a package the user chose is not a deterministic read");
+  assert.equal(
+    part.packageType.citation,
+    null,
+    "a value the user supplied must never carry a citation claiming the document said it"
+  );
+});
+
+test("a count from a package the caller did NOT pick cannot veto the one they did", () => {
+  // Unaided, the front-matter `8-Pin SOIC` is the declared count, the table
+  // reads five, and the disagreement throws the count away. That is right when
+  // nobody has said which package this is. Once someone has, the two numbers are
+  // about DIFFERENT packages, so the disagreement is not a corroboration failure
+  // and refusing on it defeats the point of having asked.
+  const unaided = buildPartRecord(twoPackages, "ACME192.pdf");
+  assert.equal(unaided.pinCount.value, null, "unaided, the conflict still resolves to unknown");
+
+  const chosen = buildPartRecord(twoPackages, "ACME192.pdf", undefined, {
+    packageType: "SOT-23"
+  });
+
+  assert.equal(chosen.pins.value?.length, 5, "the pinout is read either way");
+  assert.equal(chosen.pinCount.value, 5, "a count about another package may not veto it");
+});
+
+test("naming a package the datasheet draws no pinout for yields no count, not another package's", () => {
+  // The hazard this closes: the front-matter scan still answers `8`, and pairing
+  // that with the package the user named builds an eight-pad land pattern for a
+  // package that may have any number of leads. `packageContradicts` cannot catch
+  // it either, because a designator like `VSSOP (DGK)` declares no count of its
+  // own to contradict. A record with no pins has no symbol to export anyway, so
+  // failing closed here costs nothing that was working.
+  // `misleadingDatasheet` has no pin table at all and a front matter declaring a
+  // 32-pin QFN, which is exactly the pairing to refuse.
+  const unaided = buildPartRecord(misleadingDatasheet, "VA10820.pdf");
+  assert.equal(unaided.pinCount.value, 32, "unaided, the front matter is the best source there is");
+
+  const noSuchPinout = buildPartRecord(misleadingDatasheet, "VA10820.pdf", undefined, {
+    packageType: "VSSOP (DGK)"
+  });
+
+  assert.equal(noSuchPinout.pins.value, null, "no pinout is drawn for that package");
+  assert.equal(
+    noSuchPinout.pinCount.value,
+    null,
+    "the front-matter count belongs to a different package and may not be paired with this one"
+  );
+});
+
+test("an absurdly long package hint is not treated as a choice", () => {
+  const part = buildPartRecord(twoPackages, "ACME192.pdf", undefined, {
+    packageType: "X".repeat(200)
+  });
+
+  assert.notEqual(part.packageType.method, "user", "a designator is a short printed token");
+});
+
+test("no hint at all leaves every existing record untouched", () => {
+  const withHint = buildPartRecord(twoPackages, "ACME192.pdf", undefined, {});
+  const without = buildPartRecord(twoPackages, "ACME192.pdf");
+
+  assert.deepEqual(withHint.packageType, without.packageType);
+  assert.deepEqual(withHint.pinCount, without.pinCount);
+});
+
+// ---------------------------------------------------------------------------
+// Per-PACKAGE values on a family datasheet
+//
+// Pitch and package name are properties of ONE package, and a family datasheet
+// describes several. Reading either with a document-wide scan answers with a
+// sibling's, and for pitch that is not merely a wrong field: it VETOES a correct
+// land pattern, because the resolver refuses when the extracted pitch disagrees
+// with the family's definitional one.
+// ---------------------------------------------------------------------------
+
+test("a pitch is unknown when the document states several", () => {
+  // The STM32 shape: a 0.5 mm LQFP part whose own document also describes a
+  // 0.4 mm chip-scale package. Taking the first match made it a 0.4 mm part and
+  // its correct LQFP land pattern was then refused for disagreeing.
+  const family = datasheetTextFromPages([
+    ["ACME407 Microcontroller", "Available in LQFP64 and WLCSP64 packages"].join("\n"),
+    ["LQFP64: pitch 0.5 mm", "WLCSP64: pitch 0.4 mm"].join("\n")
+  ]);
+  const part = buildPartRecord(family, "ACME407.pdf");
+
+  assert.equal(part.dimensions.pitchMm.value, null, "two pitches means neither is known to be this one");
+});
+
+test("a pitch is still read when the document states only one", () => {
+  const single = datasheetTextFromPages([
+    ["ACME123 Op Amp", "Available in an 8-Pin SOIC package"].join("\n"),
+    ["The pitch is 1.27 mm."].join("\n")
+  ]);
+  const part = buildPartRecord(single, "ACME123.pdf");
+
+  assert.equal(part.dimensions.pitchMm.value, 1.27);
+  assert.ok(part.dimensions.pitchMm.citation, "a value read off the page cites it");
+});
+
+test("the settled pin count names the package when exactly one designator fits", () => {
+  // `findPackageType` runs before the count exists, so on a family datasheet it
+  // sees every package and answers with none. Once the pinout settles at 64,
+  // only one of the offered designators declares 64.
+  const family = datasheetTextFromPages([
+    ["ACME71 Microcontroller", "Available in LQFP32, LQFP48 and LQFP64 packages"].join("\n"),
+    [
+      "Pin Functions",
+      "NAME NO. TYPE DESCRIPTION",
+      ...Array.from({ length: 64 }, (_, index) => `P${index + 1} ${index + 1} I/O General purpose`)
+    ].join("\n")
+  ]);
+  const part = buildPartRecord(family, "ACME71.pdf");
+
+  assert.equal(part.pinCount.value, 64);
+  assert.equal(part.packageType.value, "LQFP64", "the only designator declaring 64 is this part's");
+  assert.ok(part.packageType.citation, "it was located on the page, so it cites it");
+});
+
+test("several designators of the same lead count stay unknown", () => {
+  // An STM32F103C8 is 48 pins and its document offers LQFP48, VQFN48 and UQFN48.
+  // All three declare 48 and they have entirely different land patterns, so this
+  // is a question for the user rather than something to deduce.
+  const ambiguous = datasheetTextFromPages([
+    ["ACME103 Microcontroller", "Available in LQFP48, VQFN48 and UQFN48 packages"].join("\n"),
+    [
+      "Pin Functions",
+      "NAME NO. TYPE DESCRIPTION",
+      ...Array.from({ length: 48 }, (_, index) => `P${index + 1} ${index + 1} I/O General purpose`)
+    ].join("\n")
+  ]);
+  const part = buildPartRecord(ambiguous, "ACME103.pdf");
+
+  assert.equal(part.pinCount.value, 48);
+  assert.equal(part.packageType.value, null, "three packages of 48 leads is a choice, not a deduction");
+});
+
+test("a millimetre pair in a certification clause is not a package body", () => {
+  // The ISO7841 defect, and it shipped: `CSA Component Acceptance Notice 5A,
+  // IEC 10.30mm x 10.30mm` gave a sixteen-pin SOIC a SQUARE body, which no SOIC
+  // is. A pair of millimetre figures means nothing on its own; something nearby
+  // has to say it is a package.
+  const certified = datasheetTextFromPages([
+    ["ACME7841 Digital Isolator", "Available in a 16-pin SOIC package"].join("\n"),
+    [
+      "Safety and regulatory approvals",
+      "CSA Component Acceptance Notice 5A, IEC 10.30mm × 10.30mm creepage"
+    ].join("\n")
+  ]);
+  const part = buildPartRecord(certified, "ACME7841.pdf");
+
+  assert.notEqual(part.dimensions.bodyLengthMm.value, 10.3, "a certification clause is not a body");
+});
+
+test("a body stated once, beside its package, is still read", () => {
+  const stated = datasheetTextFromPages([
+    ["ACME345 Accelerometer", "Small and thin: 3 mm × 5 mm × 1 mm LGA package"].join("\n")
+  ]);
+  const part = buildPartRecord(stated, "ACME345.pdf");
+
+  assert.equal(part.dimensions.bodyLengthMm.value, 3);
+  assert.equal(part.dimensions.bodyWidthMm.value, 5);
+  assert.ok(part.dimensions.bodyLengthMm.citation, "a value read off the page cites it");
+});
+
+test("a document stating several body sizes reports none of them", () => {
+  // A family datasheet states its LQFP, its WLCSP and its BGA body, and they are
+  // different sizes. Taking the first is answering with whichever package the
+  // document happens to mention first.
+  const family = datasheetTextFromPages([
+    ["ACME407 Microcontroller"].join("\n"),
+    ["LQFP64 package 10 mm × 10 mm", "WLCSP64 package 4 mm × 4 mm"].join("\n")
+  ]);
+  const part = buildPartRecord(family, "ACME407.pdf");
+
+  assert.equal(part.dimensions.bodyLengthMm.value, null, "several bodies means none is known to be this one");
+});

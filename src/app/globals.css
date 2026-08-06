@@ -526,3 +526,82 @@ tbody td {
   opacity: 1;
   font-weight: 600;
 }
+
+/*
+ * The export asking for a value no datasheet carries.
+ *
+ * Sits under the download button because that is where it is raised: the user
+ * pressed Download, the footprint needs one number, and the answer belongs next
+ * to the action it unblocks rather than in a dialog away from it.
+ */
+.need-prompt {
+  margin-top: 0.75rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+  opacity: 0.95;
+}
+
+.need-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.need-why {
+  margin: 0.3rem 0 0.5rem;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
+.need-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.need-row input {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+  min-width: 7rem;
+  flex: 1 1 7rem;
+}
+
+.need-submit {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.28rem 0.7rem;
+  border-radius: 0.4rem;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.need-submit:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+.need-submit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.need-scope {
+  margin: 0.45rem 0 0;
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+.need-clear {
+  font: inherit;
+  font-size: 0.7rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}

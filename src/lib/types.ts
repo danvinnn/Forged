@@ -22,7 +22,21 @@ export const pinElectricalTypes = [
  * vision-language model, "user" is a human edit in the UI. null means the
  * value was never determined.
  */
-export const extractionMethods = ["deterministic", "vlm", "user"] as const;
+/**
+ * How a value got into the record.
+ *
+ * `vlm` and `vlm-drawing` are both model answers and are kept apart because
+ * they carry different EVIDENCE, which is what an auditor is really asking
+ * about. A `vlm` value was found in the page's text layer, so the citation
+ * quotes it and anyone can grep the document for the same string. A
+ * `vlm-drawing` value was read off the rendered page and is not in the text at
+ * all, which is the only way to reach a dimension printed beside a dimension
+ * line; its citation names the page and what was identified on it, and checking
+ * it means looking at the drawing.
+ *
+ * Collapsing the two would let a value nobody can grep pass as one they can.
+ */
+export const extractionMethods = ["deterministic", "vlm", "vlm-drawing", "user"] as const;
 
 export const textRegionSchema = z.object({
   x: z.number(),
@@ -81,6 +95,48 @@ export const packageDimensionsSchema = z.object({
   // Defaulted rather than required so a record produced before this field
   // existed still validates as what it is: a record with no lead width read.
   leadWidthMm: extracted(leadWidthSchema).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * Lead span, tip to tip across the package, as printed on the drawing.
+   *
+   * The one land-pattern input nothing in this project could read. The
+   * deterministic drawing reader says so in its own notes: a vendor tags the
+   * span on a flat pack (`2X 7.62`) and leaves it untagged on a SOIC or TSSOP,
+   * where it is a plain max/min pair among several others, so it was left
+   * absent rather than approximated. Every span in `packages.ts` was therefore
+   * read by hand off one drawing and applied to a whole family.
+   *
+   * A model reading the rendered drawing does not have that problem: it can see
+   * which pair of numbers the dimension line points at. Measured on 2026-08-03
+   * against the hand-read values, it returned 6.2-6.6 for an INA240's PW0008A
+   * and 4.75-5.05 for an LM358's DGK0008A, both exact.
+   *
+   * Same min/max shape as `leadWidthMm`, because that is how a drawing prints
+   * it, and defaulted for the same backward-compatibility reason.
+   */
+  leadSpanMm: extracted(leadWidthSchema).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * Lead contact length, drawing dimension L: the length of the foot that sits
+   * on the land. Distinct from `leadLengthMm`, which is a single prose figure.
+   *
+   * A range because that is how a drawing prints it, and because the RANGE is
+   * the part IPC-7351B needs. Measured on 2026-08-04, deriving a land pattern
+   * from a single nominal instead cost up to 0.079 mm against the hand-read
+   * family entry, always in the same direction: a shorter land on a wider span,
+   * which is slightly less heel fillet. The spread is what the standard's RSS
+   * term consumes, so dropping it is not a rounding difference, it is throwing
+   * away one of the two tolerance inputs.
+   */
+  leadContactMm: extracted(leadWidthSchema).default({
     value: null,
     confidence: null,
     method: null,
@@ -173,6 +229,8 @@ export type PackageDimensions = {
   leadLengthMm: Extracted<number>;
   leadCount: Extracted<number>;
   leadWidthMm: Extracted<LeadWidth>;
+  leadSpanMm: Extracted<LeadWidth>;
+  leadContactMm: Extracted<LeadWidth>;
 };
 
 export type RadiationData = {
@@ -240,6 +298,8 @@ export interface ResolvedPart {
     leadLengthMm: number | null;
     leadCount: number | null;
     leadWidthMm: LeadWidth | null;
+    leadSpanMm: LeadWidth | null;
+    leadContactMm: LeadWidth | null;
   };
   radiation: {
     tid: string | null;
@@ -277,7 +337,12 @@ const GEOMETRY_DIMENSIONS = [
   "pitchMm",
   "leadLengthMm",
   "leadCount",
-  "leadWidthMm"
+  "leadWidthMm",
+  // Gated like every other dimension, and these matter more than most: they are
+  // the numbers a drawing-derived land pattern is built from, so an uncited one
+  // would put pads on the board from a value nobody can check.
+  "leadSpanMm",
+  "leadContactMm"
 ] as const;
 
 export interface ResolveOptions {
@@ -342,7 +407,9 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
         pitchMm: part.dimensions.pitchMm.value,
         leadLengthMm: part.dimensions.leadLengthMm.value,
         leadCount: part.dimensions.leadCount.value,
-        leadWidthMm: part.dimensions.leadWidthMm.value
+        leadWidthMm: part.dimensions.leadWidthMm.value,
+        leadSpanMm: part.dimensions.leadSpanMm.value,
+        leadContactMm: part.dimensions.leadContactMm.value
       },
       radiation: {
         tid: part.radiation.tid.value,

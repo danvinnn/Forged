@@ -15,7 +15,7 @@ import { PdfExtractionError } from "../../../lib/pdftext";
 // The extraction layer's public surface deliberately excludes the concrete
 // models, so importing it cannot pull a networked model into the air-gapped
 // module graph. makeExtractionModel reaches those by dynamic import.
-import { buildExtractionRequest, makeExtractionModel, mergeModelValues } from "../../../lib/extraction";
+import { buildExtractionRequest, makeExtractionModel, mergeModelValues, withRenderedPages } from "../../../lib/extraction";
 import {
   ModelDeadlineError,
   modelBudgetMs,
@@ -39,6 +39,9 @@ export const maxDuration = 30;
  * record that had already succeeded.
  */
 const ROUTE_BUDGET_MS = maxDuration * 1000;
+
+/** A package designator is a short printed token; anything longer is not one. */
+const MAX_PACKAGE_HINT_LENGTH = 64;
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
@@ -95,6 +98,21 @@ export async function POST(request: Request) {
     );
   }
 
+  // The package the caller picked, where they have. A datasheet offering several
+  // packages does say what they are and cannot say which one the user is
+  // holding, so the readers below take it as an argument and use it to choose
+  // among per-package pinouts. Measured on the hold-out: five parts of
+  // thirty-eight read NOTHING unaided and read completely once it is supplied.
+  //
+  // Length-bounded like every other string this route accepts. A package
+  // designator is a short printed token; anything longer is not one, and this
+  // value reaches regex construction downstream.
+  const chosenPackage = formData.get("packageType");
+  const packageHint =
+    typeof chosenPackage === "string" && chosenPackage.trim().length > 0
+      ? chosenPackage.trim().slice(0, MAX_PACKAGE_HINT_LENGTH)
+      : undefined;
+
   let ref;
   try {
     ref = ingestUpload({ fileName: file.name, bytes: await file.arrayBuffer() });
@@ -113,7 +131,9 @@ export async function POST(request: Request) {
   let doc;
   let part;
   try {
-    const extracted = await extractPartRecord(ref.fileName, ref.bytes);
+    const extracted = await extractPartRecord(ref.fileName, ref.bytes, undefined, {
+      packageType: packageHint
+    });
     doc = extracted.doc;
     part = extracted.part;
   } catch (error) {
@@ -147,8 +167,17 @@ export async function POST(request: Request) {
       };
     } else if (request) {
       try {
-        const result = await withDeadline(model.extract(request), budgetMs);
-        const outcome = mergeModelValues(part, doc, result, model.name);
+        // Rendered inside the try: a renderer failure is a model-pass failure,
+        // and both must leave the deterministic record untouched.
+        const withImages = await withRenderedPages(request, ref.bytes);
+        const result = await withDeadline(model.extract(withImages), budgetMs);
+        const outcome = mergeModelValues(
+          part,
+          doc,
+          result,
+          model.name,
+          withImages.images.map((image) => image.page)
+        );
         part = outcome.part;
         if (outcome.filled.length > 0) method = `deterministic+${model.name}`;
       } catch (error) {

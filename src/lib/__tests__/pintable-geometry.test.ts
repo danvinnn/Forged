@@ -1706,3 +1706,32 @@ test("two different tables headed the same way are not joined into one", () => {
   assert.equal(table.pins.length, 4, "and not eight");
   assert.equal(table.pins[0].name, "Vdd_IO", "the first table's cleaner reading is the one kept");
 });
+
+test("a space the vendor typeset inside one run is part of the name", () => {
+  // An ADXL345 pin 12 arrives as the SINGLE run `SDO/ALT ADDRESS`, and pin 1 as
+  // `VDD I/O`. Stripping whitespace within a run turned them into
+  // `SDO/ALTADDRESS` and `VDDI/O`, neither of which is a net anybody can
+  // connect. Separate runs still join bare, because a name split into runs is
+  // one token; see the `V` + `ref` case.
+  const table = readPinTableFromPage(
+    page([
+      // Widths given explicitly so a long name stays inside its own column; the
+      // helper's default would run it under the number column.
+      item("VDD I/O", 57, 480, 30),
+      item("1", 107, 480, 5),
+      item("I", 149, 480, 5),
+      item("Digital interface supply voltage", 173, 480),
+      item("SDO/ALT ADDRESS", 57, 458, 45),
+      item("2", 107, 458, 5),
+      item("GND", 141, 458, 15),
+      item("Serial data output", 173, 458)
+    ])
+  );
+
+  assert.ok(table, "a two-row table is enough");
+  assert.deepEqual(
+    table.pins.map((pin) => pin.name),
+    ["VDD I/O", "SDO/ALT ADDRESS"],
+    "the vendor's own spacing survives"
+  );
+});

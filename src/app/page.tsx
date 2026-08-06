@@ -6,6 +6,8 @@ import type { Extracted, ExportFormat, LeadWidth, PartRecord, PinRecord } from "
 // Type-only import: erased at compile time, so no retrieval-layer runtime code (node:crypto,
 // the resolvers, etc.) is pulled into the client bundle.
 import type { DeploymentMode } from "../lib/retrieval";
+// Type-only for the same reason: `exporters.ts` reaches the CAD generators.
+import type { RequiredInput } from "../lib/exporters";
 
 interface AppConfig {
   mode: DeploymentMode;
@@ -55,7 +57,8 @@ const defaultPart: PartRecord = {
     pitchMm: nothing<number>(),
     leadLengthMm: nothing<number>(),
     leadCount: nothing<number>(),
-    leadWidthMm: nothing<LeadWidth>()
+    leadWidthMm: nothing<LeadWidth>(),
+    leadSpanMm: nothing<LeadWidth>(), leadContactMm: nothing<LeadWidth>()
   },
   radiation: {
     tid: nothing<string>(),
@@ -152,11 +155,83 @@ function formatSourceUrl(sourceUrl?: string) {
   }
 }
 
+/**
+ * Where an `install`-scoped answer is remembered.
+ *
+ * Deliberately survives the session. Asking an assembler for their formed lead
+ * span once a week is a different product from asking them once per part, and
+ * the route already marks which answers are which.
+ */
+const INSTALL_LEAD_SPAN_KEY = "forge.install.formedLeadSpanMm";
+
+/** Largest span the export route accepts, mirrored so the UI refuses it first. */
+const MAX_LEAD_SPAN_MM = 200;
+
+/**
+ * What a package choice actually produced, said plainly.
+ *
+ * A choice that resolves a pinout and a choice that changes nothing look
+ * identical in the record unless the difference is stated, and the second is a
+ * real outcome: the document may simply not draw a pinout for that package. The
+ * user needs to know which happened so they can try another chip rather than
+ * assume the tool is broken.
+ */
+function describeChoice(record: PartRecord, designator: string): string {
+  const pins = record.pins.value?.length ?? 0;
+  if (pins > 0 && record.pinCount.value !== null) {
+    return `Read ${pins} pins for ${designator}. Review fields before export.`;
+  }
+  if (pins > 0) {
+    return `Found ${pins} pins for ${designator}, but nothing in the datasheet confirms the count, so it is left unknown.`;
+  }
+  return `No pinout found for ${designator} in this datasheet. Try another package, or enter the pins by hand.`;
+}
+
 export default function HomePage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [partPrompt, setPartPrompt] = useState("");
   const [manufacturerHint, setManufacturerHint] = useState("");
   const [part, setPart] = useState<PartRecord>(defaultPart);
+
+  // How the current record was produced, so a package choice can be answered by
+  // PARSING AGAIN with that package rather than by writing it into the record.
+  //
+  // The distinction is the whole point. Every pin reader takes the package as an
+  // argument and uses it to choose among a document's per-package pinouts, so a
+  // package that arrives after the parse arrives too late to be used: the record
+  // gains a package name and keeps the empty pinout it already had. Measured on
+  // unseen datasheets, re-parsing turns five refusals into complete records.
+  const [origin, setOrigin] = useState<
+    { kind: "upload"; file: File } | { kind: "lookup"; partNumber: string; manufacturer: string } | null
+  >(null);
+
+  // The packages the document offered, held separately from the record because
+  // the record's own list is filtered against the pin count it settled on. Once
+  // a choice resolves that count, the alternatives would disappear from the
+  // record and the user could not change their mind.
+  const [offeredVariants, setOfferedVariants] = useState<PartRecord["packageVariants"]>([]);
+
+  // Values the export asked for that no datasheet carries. Empty unless the last
+  // export came back 422 INPUT_REQUIRED.
+  const [pendingNeeds, setPendingNeeds] = useState<RequiredInput[]>([]);
+  const [needValue, setNeedValue] = useState("");
+
+  // An `install`-scoped answer is a property of the assembly line, not of the
+  // part: the trim an assembler forms leads to is the same for an op-amp and a
+  // microcontroller. So it is asked ONCE and remembered, which is what makes it
+  // a one-time cost rather than a per-part tax. A `part`-scoped answer is never
+  // stored, because reusing one across parts would be a guess.
+  const [installLeadSpan, setInstallLeadSpan] = useState<number | null>(null);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(INSTALL_LEAD_SPAN_KEY);
+      const parsed = saved === null ? NaN : Number(saved);
+      if (Number.isFinite(parsed) && parsed > 0) setInstallLeadSpan(parsed);
+    } catch {
+      // A blocked or full localStorage costs the user one re-entry, not the export.
+    }
+  }, []);
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("kicad");
   const [status, setStatus] = useState("Loading workspace...");
   const [busy, setBusy] = useState(false);
@@ -205,21 +280,33 @@ export default function HomePage() {
   );
 
   const sourceUrl = formatSourceUrl(part.sourceUrl);
+
+  // The packages to offer: those the first read found, falling back to the
+  // record's own list so a record that arrived some other way still gets a
+  // chooser. Held apart from the record because choosing narrows the record's
+  // copy, and a user who picks wrong has to be able to pick again.
+  const packageChoices =
+    offeredVariants.length > 0 ? offeredVariants : part.packageVariants;
   // Flattened from the families the server says it can build, so the list can
   // never drift from what export actually accepts.
   const supportedPackages = (config?.packageFamilies ?? []).flatMap(
     (family) => PACKAGE_SUGGESTIONS[family] ?? []
   );
 
-  async function handleLookup() {
-    const trimmedPart = partPrompt.trim();
+  async function handleLookup(options?: { partNumber?: string; manufacturer?: string; packageType?: string }) {
+    const trimmedPart = (options?.partNumber ?? partPrompt).trim();
     if (!trimmedPart) {
       setStatus("Enter a part number first.");
       return;
     }
+    const trimmedManufacturer = (options?.manufacturer ?? manufacturerHint).trim();
 
     setBusy(true);
-    setStatus(`Resolving the datasheet for ${trimmedPart}...`);
+    setStatus(
+      options?.packageType
+        ? `Re-reading the datasheet for ${trimmedPart} as ${options.packageType}...`
+        : `Resolving the datasheet for ${trimmedPart}...`
+    );
 
     try {
       const response = await fetch("/api/lookup", {
@@ -227,9 +314,14 @@ export default function HomePage() {
         headers: {
           "Content-Type": "application/json"
         },
+        // Optional fields are OMITTED when blank rather than sent empty. The
+        // schema requires a non-empty string when the key is present, so sending
+        // `manufacturer: ""` failed the whole request and came back as
+        // "Part number is required" on every lookup made without a hint.
         body: JSON.stringify({
           partNumber: trimmedPart,
-          manufacturer: manufacturerHint.trim()
+          ...(trimmedManufacturer ? { manufacturer: trimmedManufacturer } : {}),
+          ...(options?.packageType ? { packageType: options.packageType } : {})
         })
       });
 
@@ -238,9 +330,17 @@ export default function HomePage() {
         throw new Error(payload.error || "Failed to find the datasheet.");
       }
 
-      setPart(payload.part as PartRecord);
+      const record = payload.part as PartRecord;
+      setPart(record);
       setSelectedFile(null);
-      setStatus(`Found the datasheet PDF for ${trimmedPart}. Review the record before export.`);
+      setOrigin({ kind: "lookup", partNumber: trimmedPart, manufacturer: trimmedManufacturer });
+      // A re-read keeps the packages the first read offered; see `offeredVariants`.
+      if (!options?.packageType) setOfferedVariants(record.packageVariants);
+      setStatus(
+        options?.packageType
+          ? describeChoice(record, options.packageType)
+          : `Found the datasheet PDF for ${trimmedPart}. Review the record before export.`
+      );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Unexpected lookup failure.");
       setPart(defaultPart);
@@ -254,16 +354,17 @@ export default function HomePage() {
     await handleLookup();
   }
 
-  async function handleFile(file: File | null) {
+  async function handleFile(file: File | null, packageType?: string) {
     setSelectedFile(file);
     if (!file) return;
 
     setBusy(true);
-    setStatus(`Parsing ${file.name}...`);
+    setStatus(packageType ? `Re-reading ${file.name} as ${packageType}...` : `Parsing ${file.name}...`);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
+      if (packageType) formData.append("packageType", packageType);
 
       const response = await fetch("/api/parse", { method: "POST", body: formData });
       const payload = await response.json();
@@ -272,8 +373,16 @@ export default function HomePage() {
         throw new Error(payload.error || "Failed to parse datasheet.");
       }
 
-      setPart(payload.part as PartRecord);
-      setStatus(`Parsed ${payload.part.partNumber}. Review fields before export.`);
+      const record = payload.part as PartRecord;
+      setPart(record);
+      setOrigin({ kind: "upload", file });
+      // A re-read keeps the packages the first read offered; see `offeredVariants`.
+      if (!packageType) setOfferedVariants(record.packageVariants);
+      setStatus(
+        packageType
+          ? describeChoice(record, packageType)
+          : `Parsed ${record.partNumber.value ?? file.name}. Review fields before export.`
+      );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Unexpected parse failure.");
       setPart(defaultPart);
@@ -282,7 +391,54 @@ export default function HomePage() {
     }
   }
 
-  async function handleExport() {
+  /**
+   * Answers a package choice by reading the datasheet AGAIN with that package.
+   *
+   * Two cases do NOT re-read.
+   *
+   * The source document is no longer to hand, which is the pre-existing
+   * behaviour and all that is possible then: the readers cannot re-run without
+   * the bytes.
+   *
+   * Or the record is already complete, meaning it has pins AND a settled count.
+   * A re-read can only take that away, since the readers may find nothing for
+   * the newly named package, and losing a working pinout is a worse outcome than
+   * any it could win. A complete record is one the user can already export, so
+   * the click means "label it this" and is honoured as written. The incomplete
+   * case is the one worth re-reading, and it is also the only one measured to
+   * gain: all five hold-out parts a choice rescues have no pinout at all.
+   */
+  async function handlePackageChoice(designator: string) {
+    const alreadyComplete = (part.pins.value?.length ?? 0) > 0 && part.pinCount.value !== null;
+    if (alreadyComplete) {
+      setPart({ ...part, packageType: userEdited(designator) });
+      setStatus(`Package set to ${designator}. The pinout already read, so it was left as it is.`);
+      return;
+    }
+
+    if (origin?.kind === "upload") {
+      await handleFile(origin.file, designator);
+      return;
+    }
+    if (origin?.kind === "lookup") {
+      await handleLookup({
+        partNumber: origin.partNumber,
+        manufacturer: origin.manufacturer,
+        packageType: designator
+      });
+      return;
+    }
+    setPart({ ...part, packageType: userEdited(designator) });
+  }
+
+  /**
+   * Builds the bundle, supplying any value the datasheet cannot carry.
+   *
+   * `formedLeadSpan` is passed explicitly rather than read from state because a
+   * React state update is not visible to the handler that queued it, and the
+   * whole point of the flow is to answer the 422 and immediately retry.
+   */
+  async function handleExport(formedLeadSpan?: number) {
     setBusy(true);
     setStatus(`Building ${selectedFormat.toUpperCase()} export bundle...`);
 
@@ -292,13 +448,32 @@ export default function HomePage() {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ part, format: selectedFormat })
+        body: JSON.stringify({
+          part,
+          format: selectedFormat,
+          ...(formedLeadSpan !== undefined ? { formedLeadSpanMm: formedLeadSpan } : {})
+        })
       });
 
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
+
+        // A refusal the user can ANSWER, which is a different thing from a
+        // refusal they cannot. `needs` populated means the footprint is one
+        // number away and that number is a property of their assembly line, not
+        // of the datasheet; the route has always said so and the UI used to
+        // flatten it into an error string, which left the value unreachable and
+        // the parts unexportable. Empty `needs` is a package Forge has not
+        // characterised, which is ours to fix and not something to prompt about.
+        if (payload?.code === "INPUT_REQUIRED" && Array.isArray(payload.needs) && payload.needs.length > 0) {
+          setPendingNeeds(payload.needs as RequiredInput[]);
+          setStatus(payload.error || "One more value is needed to build the footprint.");
+          return;
+        }
         throw new Error(payload?.error || "Export failed.");
       }
+
+      setPendingNeeds([]);
 
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
@@ -317,6 +492,34 @@ export default function HomePage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Answers the export's outstanding request and retries immediately.
+   *
+   * The retry is the point. Handing back a value and then making the user find
+   * the download button again is the same friction the prompt was added to
+   * remove.
+   */
+  async function handleSupplyNeed(need: RequiredInput, raw: string) {
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0 || value > MAX_LEAD_SPAN_MM) {
+      setStatus(`Enter a ${need.label.toLowerCase()} in ${need.unit}, greater than 0.`);
+      return;
+    }
+
+    if (need.scope === "install") {
+      setInstallLeadSpan(value);
+      try {
+        window.localStorage.setItem(INSTALL_LEAD_SPAN_KEY, String(value));
+      } catch {
+        // Remembering is a convenience; failing to remember must not block the export.
+      }
+    }
+
+    setPendingNeeds([]);
+    setNeedValue("");
+    await handleExport(value);
   }
 
   const jsonPreview = JSON.stringify(part, null, 2);
@@ -439,9 +642,86 @@ export default function HomePage() {
               </button>
             ))}
           </div>
-          <button className="export-button" type="button" onClick={handleExport} disabled={busy || !part.partNumber.value}>
+          {/*
+            A remembered install-scoped answer is sent WITHOUT being asked for.
+            That is what makes it a one-time cost: the first ceramic flat pack
+            prompts, and every one after it exports straight through.
+          */}
+          <button
+            className="export-button"
+            type="button"
+            onClick={() => handleExport(installLeadSpan ?? undefined)}
+            disabled={busy || !part.partNumber.value}
+          >
             Download ZIP
           </button>
+
+          {/*
+            The export asked for a value no datasheet carries. Shown here rather
+            than as an error string, because it is answerable: three parts in the
+            bench corpus are exactly this one number away from a bundle, and the
+            route has been able to accept it all along.
+          */}
+          {pendingNeeds.map((need) => (
+            <div key={need.field} className="need-prompt">
+              <label className="need-label" htmlFor={`need-${need.field}`}>
+                {need.label} ({need.unit})
+              </label>
+              <p className="need-why">{need.why}</p>
+              <div className="need-row">
+                <input
+                  id={`need-${need.field}`}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  max={MAX_LEAD_SPAN_MM}
+                  value={needValue}
+                  placeholder={`e.g. 10.16`}
+                  onChange={(event) => setNeedValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void handleSupplyNeed(need, needValue);
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="need-submit"
+                  disabled={busy}
+                  onClick={() => handleSupplyNeed(need, needValue)}
+                >
+                  Build with this
+                </button>
+              </div>
+              {need.scope === "install" && (
+                <p className="need-scope">
+                  Asked once. This is a property of your assembly line, not of this part, so Forge
+                  remembers it for every part after this one.
+                </p>
+              )}
+            </div>
+          ))}
+
+          {installLeadSpan !== null && pendingNeeds.length === 0 && (
+            <p className="need-scope">
+              Formed lead span: {installLeadSpan} mm (remembered).{" "}
+              <button
+                type="button"
+                className="need-clear"
+                onClick={() => {
+                  setInstallLeadSpan(null);
+                  try {
+                    window.localStorage.removeItem(INSTALL_LEAD_SPAN_KEY);
+                  } catch {
+                    // Clearing is best-effort; the in-memory value is already gone.
+                  }
+                }}
+              >
+                Change
+              </button>
+            </p>
+          )}
         </div>
 
         <div className="mini-panel panel">
@@ -492,22 +772,24 @@ export default function HomePage() {
                 does say what the packages are and does not say which one the user
                 is holding. So it is asked, once, with the answers pre-filled.
               */}
-              {part.packageVariants.length > 1 && (
+              {packageChoices.length > 1 && (
                 <span className="package-picker">
                   <span className="package-picker-label">
-                    This datasheet describes {part.packageVariants.length} packages. Which one are you
+                    This datasheet describes {packageChoices.length} packages. Which one are you
                     building?
+                    {origin !== null && " Picking one re-reads the datasheet for that package."}
                   </span>
-                  {part.packageVariants.map((variant) => (
+                  {packageChoices.map((variant) => (
                     <button
                       key={variant.designator}
                       type="button"
+                      disabled={busy}
                       className={
                         part.packageType.value === variant.designator
                           ? "package-chip active"
                           : "package-chip"
                       }
-                      onClick={() => setPart({ ...part, packageType: userEdited(variant.designator) })}
+                      onClick={() => handlePackageChoice(variant.designator)}
                     >
                       {variant.designator}
                     </button>
@@ -523,12 +805,13 @@ export default function HomePage() {
                     <button
                       key={suggestion}
                       type="button"
+                      disabled={busy}
                       className={
                         part.packageType.value === suggestion
                           ? "package-chip active"
                           : "package-chip"
                       }
-                      onClick={() => setPart({ ...part, packageType: userEdited(suggestion) })}
+                      onClick={() => handlePackageChoice(suggestion)}
                     >
                       {suggestion}
                     </button>

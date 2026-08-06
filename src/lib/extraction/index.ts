@@ -16,5 +16,5 @@ export {
 } from "./contracts";
 
 export { makeExtractionModel } from "./factory";
-export { mergeModelValues, unresolvedFields, verifyCitation, type MergeOutcome } from "./merge";
-export { buildExtractionRequest } from "./request";
+export { citeRenderedPage, mergeModelValues, unresolvedFields, verifyCitation, type MergeOutcome } from "./merge";
+export { buildExtractionRequest, withRenderedPages } from "./request";

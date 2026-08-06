@@ -63,6 +63,34 @@ function modelName(): string {
 }
 
 /**
+ * The message content, in the OpenAI chat shape every local server speaks.
+ *
+ * A request with no renders stays a PLAIN STRING rather than a one-element
+ * array. Both are valid in the specification, but text-only servers and older
+ * llama.cpp builds accept only the string form, and this is the path an
+ * air-gapped deployment runs on. Sending the richer shape when there is nothing
+ * richer to send would break those hosts for no gain.
+ *
+ * The architecture names Qwen3-VL as the open-weight candidate precisely
+ * because the air-gapped path needs the same pixels the cloud path gets; a
+ * text-only local model still works and simply answers fewer fields.
+ */
+function openAiContent(
+  request: ExtractionRequest
+): string | Array<Record<string, unknown>> {
+  const prompt = buildPrompt(request);
+  if (request.images.length === 0) return prompt;
+
+  return [
+    { type: "text", text: prompt },
+    ...request.images.map((image) => ({
+      type: "image_url",
+      image_url: { url: `data:${image.mimeType};base64,${image.base64}` }
+    }))
+  ];
+}
+
+/**
  * True for addresses inside the customer's own network.
  *
  * This is deliberately the INVERSE of the SSRF guard in the retrieval layer.
@@ -194,7 +222,7 @@ export class LocalExtractionModel implements ExtractionModel {
         body: JSON.stringify({
           model: modelName(),
           temperature: 0,
-          messages: [{ role: "user", content: buildPrompt(request) }]
+          messages: [{ role: "user", content: openAiContent(request) }]
         }),
         ...(agent ? { dispatcher: agent } : {})
       } as RequestInit);

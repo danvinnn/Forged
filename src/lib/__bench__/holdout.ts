@@ -29,6 +29,7 @@
 // Usage:
 //   npm run bench:holdout              measure what is cached
 //   npm run bench:holdout -- --fetch   fetch anything missing first (network)
+//   npm run bench:holdout -- --model   run the extraction model too (spends money)
 //
 // PDFs cache under `.holdout-cache/` and are gitignored for the same reason
 // `.bench-cache/` is: no vendor datasheet is ever committed to this repo.
@@ -36,6 +37,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { extractPartRecord } from "../datasheet";
+import { buildExtractionRequest, makeExtractionModel, mergeModelValues, withRenderedPages } from "../extraction";
 import { resolveForExport, type PartRecord } from "../types";
 import { createExportZip, FootprintUnavailableError } from "../exporters";
 
@@ -43,6 +45,18 @@ if (!process.env.FORGE_LOG_LEVEL) process.env.FORGE_LOG_LEVEL = "error";
 
 const FETCH = process.argv.includes("--fetch");
 const VERBOSE = process.argv.includes("--verbose");
+/**
+ * Run the extraction MODEL as well as the parser. Off by default, exactly as in
+ * the tuned bench: it spends money and needs the network, and a default run has
+ * to stay comparable with every hold-out number recorded so far.
+ *
+ * This does not weaken the hold-out rule at the top of this file. Measuring a
+ * model against unseen documents is the point of the corpus; what is forbidden
+ * is looking at one of these datasheets and then fitting a rule to it.
+ */
+const MODEL = process.argv.includes("--model");
+/** Spacing between model calls. Free-tier limits are per minute. */
+const MODEL_DELAY_MS = 4000;
 const CACHE_DIR = join(process.cwd(), ".holdout-cache");
 const FETCH_DELAY_MS = 1200;
 
@@ -190,6 +204,10 @@ async function main(): Promise<void> {
   let read = 0;
   let ships = 0;
   const shipRefusals = new Map<string, string[]>();
+  /** Which fields the model filled that the parser could not, per part. */
+  const modelFilled = new Map<string, string[]>();
+  /** Fields the model answered in a shape or with a citation that failed the check. */
+  const modelRejected = new Map<string, string[]>();
 
   for (const part of HOLDOUT_CORPUS) {
     const path = cachePath(part.partNumber);
@@ -204,10 +222,42 @@ async function main(): Promise<void> {
     const bytes = readFileSync(path);
     let record: PartRecord;
     try {
-      ({ part: record } = await extractPartRecord(
+      const { doc, part: deterministic } = await extractPartRecord(
         `${part.partNumber}.pdf`,
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-      ));
+      );
+      record = deterministic;
+
+      if (MODEL) {
+        const built = buildExtractionRequest(deterministic, doc, `${part.partNumber}.pdf`);
+        const model = await makeExtractionModel("commercial");
+        if (built && model) {
+          const request = await withRenderedPages(
+            built,
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+          );
+          try {
+            const outcome = mergeModelValues(
+              deterministic,
+              doc,
+              await model.extract(request),
+              model.name,
+              request.images.map((image) => image.page)
+            );
+            record = outcome.part;
+            if (outcome.filled.length > 0) modelFilled.set(part.partNumber, outcome.filled);
+            if (outcome.rejected.length > 0) {
+              modelRejected.set(part.partNumber, outcome.rejected.map((entry) => entry.field));
+            }
+          } catch (error) {
+            // A model failure must not cost the deterministic row, exactly as in
+            // the parse route. Recorded so the run is not silently partial.
+            modelRejected.set(part.partNumber, [`ERROR:${error instanceof Error ? error.name : "unknown"}`]);
+          }
+          // Free-tier rate limits are per minute; without this the run 429s.
+          await new Promise((resolve) => setTimeout(resolve, MODEL_DELAY_MS));
+        }
+      }
     } catch (error) {
       const reason = `parse threw: ${(error as Error).message.slice(0, 40)}`;
       reasons.set(reason, [...(reasons.get(reason) ?? []), part.partNumber]);
@@ -260,6 +310,26 @@ async function main(): Promise<void> {
   for (const [kind, counts] of [...byKind].sort()) {
     if (counts.total === 0) continue;
     console.log(`  ${kind.padEnd(11)} ${counts.read}/${counts.total}`);
+  }
+
+  if (MODEL) {
+    // Which FIELDS the model reached is the number that decides whether it leads
+    // or follows, so it is reported per field rather than only per part.
+    const byField = new Map<string, number>();
+    for (const fields of modelFilled.values()) {
+      for (const field of fields) byField.set(field, (byField.get(field) ?? 0) + 1);
+    }
+    console.log(`\nMODEL: filled a field on ${modelFilled.size}/${cached} parts`);
+    for (const [field, count] of [...byField].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${String(count).padStart(3)}  ${field}`);
+    }
+    if (VERBOSE) {
+      for (const [partNumber, fields] of modelFilled) console.log(`       ${partNumber}: ${fields.join(", ")}`);
+    }
+    if (modelRejected.size > 0) {
+      console.log(`\nMODEL REJECTED on ${modelRejected.size} parts (bad shape or unverifiable citation)`);
+      for (const [partNumber, fields] of modelRejected) console.log(`  ${partNumber}: ${fields.join(", ")}`);
+    }
   }
 }
 

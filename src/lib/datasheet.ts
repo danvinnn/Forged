@@ -418,6 +418,18 @@ function findDeclaredPinCount(doc: DatasheetText): Extracted<number> {
   // looked at.
   const patterns: RegExp[] = [
     /\b(\d{1,3})-(?:pin|lead)\s+[A-Z]{2,8}\b/i,
+    // The count and the family are not always adjacent. An ADXL345 writes
+    // `14-lead, plastic package` in one place and `3 mm x 5 mm x 1 mm LGA
+    // package` in another, so no form pairing a count WITH a family sees either,
+    // and a correctly read fourteen-row pin table had nothing to corroborate it.
+    //
+    // Requiring the word `package` is what makes this safe, and it is a stronger
+    // constraint than the form above rather than a weaker one: that form accepts
+    // any two-to-eight letter word after the count, so it would read `128-pin
+    // FPGA companion` in a reference design as a declaration about this part.
+    // This one only fires where the document says the thing being counted IS a
+    // package. The span is bounded and may not cross a sentence.
+    /\b(\d{1,3})-(?:pin|lead)s?\b[^.]{0,24}\bpackage\b/i,
     /\b([A-Z]{2,6})-(\d{1,3})\b/,
     /\b([A-Z]{2,6})\s+\((\d{1,3})\)/
   ];
@@ -471,7 +483,27 @@ function findDeclaredPinCount(doc: DatasheetText): Extracted<number> {
  * the document says which one the caller is holding.
  */
 const ORDERING_PIN_COUNT_HEADING = /^pin\s+count$/i;
-const ORDERING_CODE_LINE = /^([A-Z])\s*=\s*(\d{1,3})\s*pins?\b/i;
+
+/**
+ * One entry of the pin-count list.
+ *
+ * The unit word is OPTIONAL, because ST does not always print it: an
+ * STM32G071RB's scheme reads `C = 48` and `R = 64` with no `pins` anywhere,
+ * while an STM32F030C8's reads `C = 48 pins`. Requiring the word cost the whole
+ * list on the documents that omit it.
+ *
+ * Dropping it entirely would be unsafe, since the list that FOLLOWS this one is
+ * flash sizes and `B = 128 Kbytes` has exactly this shape. So the entry must end
+ * either in a unit word or at the end of the line, which `B = 128 Kbytes` does
+ * neither of. The section heading between the two lists stops the scan anyway;
+ * this is the second guard, not the first.
+ *
+ * `balls` counts as a unit because a BGA is written that way, and a slashed
+ * second figure is allowed because ST writes `V = 100/99 pins` where a variant
+ * drops a pin, and `I = 176 pins/176+25 balls` for a part sold both ways. The
+ * first number is the one that names the package this scheme is indexing.
+ */
+const ORDERING_CODE_LINE = /^([A-Z])\s*=\s*(\d{1,3})(?:\/\d{1,3})?(?:\s*(?:pins?|balls?)\b|\s*$)/i;
 const ORDERING_PART_NUMBER = /^(STM32[A-Z])(\d+)([A-Z])/i;
 
 function findOrderingSchemePinCount(doc: DatasheetText, partNumber: string | null): number | null {
@@ -960,6 +992,20 @@ function extractPins(
     // flatpack, an AD8628 draws an eight-pin SOIC and a five-pin TSOT. So the
     // pins are reported and the count waits for the declared count to agree,
     // which is the same rule the geometry TABLE follows and for the same reason.
+    //
+    // UNLESS the figure's own caption names the package that was asked for, which
+    // is `packageClaimed`. That is the objection above answered in the document's
+    // own words: the doubt is never that the figure is incomplete, it is that a
+    // complete figure does not say WHICH package it draws, and a caption naming
+    // the requested package says exactly that. It does not apply to the AD590,
+    // whose lone SOIC figure is captioned nothing like its flatpack, and it
+    // cannot be satisfied by two captioned figures of different lengths, because
+    // `agree` still has to hold across everything the caption selected.
+    //
+    // This is what makes a package choice worth making. An OPA192 user who picks
+    // `SOT-23 (DBV)` gets a five-pin figure captioned for that package and
+    // nothing else in the document to corroborate it with, since the front matter
+    // describes the eight-pin SOIC.
     const figure = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount);
     if (figure) {
       return {
@@ -971,7 +1017,7 @@ function extractPins(
         citation: citationAt(doc, figure.start, 40),
         confidence: 0.85,
         selfVerified: false,
-        needsCorroboration: true
+        needsCorroboration: figure.packageClaimed !== true
       };
     }
 
@@ -1013,12 +1059,42 @@ function extractPins(
   return { ...diagram, confidence: 0.9, selfVerified: true };
 }
 
+/**
+ * A dimension the document states, and ONLY where it states one.
+ *
+ * Every dimension here is a property of ONE PACKAGE, and this reads the whole
+ * document, so on a family datasheet taking the first match answers with
+ * whichever package the document happens to mention first. That was measured on
+ * the lead pitch, where an STM32G071RB came back as a 0.4 mm part off a WLCSP
+ * entry in its own package list and an STM32H743ZI as 1.00 mm off a ball grid
+ * array. Both are 0.5 mm parts, and the wrong value did not merely sit in the
+ * record: it VETOED a correct land pattern, because the resolver refuses when
+ * the extracted pitch disagrees with the family's.
+ *
+ * Body length and width are the same kind of value read the same way, and they
+ * reach the emitted body outline and the 3D model.
+ *
+ * So the rule is the one `soleDeclaredLeadCount` already applies to lead counts:
+ * where a document states several values, none of them is known to be THIS
+ * package's, and unknown is the honest answer. A document describing one package
+ * still answers, which is the common case and the one these were useful for.
+ *
+ * The drawing reader is unaffected and still outranks this, because it confirms
+ * the drawing is this part's before reading anything off it. See
+ * `withDrawnDimensions`.
+ */
 function findDimension(doc: DatasheetText, pattern: RegExp, confidence = 0.7): Extracted<number> {
-  const match = firstMatch(doc.text, pattern);
-  const raw = match?.groups[0];
-  if (!match || !raw) return unknown<number>();
-  const value = Number(raw);
-  if (!Number.isFinite(value)) return unknown<number>();
+  const seen = new Map<number, RawMatch>();
+  for (const match of allMatches(doc.text, pattern)) {
+    const raw = match.groups[0];
+    if (!raw) continue;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) continue;
+    if (!seen.has(value)) seen.set(value, match);
+  }
+
+  if (seen.size !== 1) return unknown<number>();
+  const [[value, match]] = [...seen];
   return extractedValue(value, confidence, cite(doc, match));
 }
 
@@ -1050,32 +1126,94 @@ function withDrawnDimensions(
   return { ...dimensions, pitchMm: pitch, leadWidthMm: leadWidth };
 }
 
+/**
+ * How far either side of a millimetre pair a package family name may sit before
+ * the pair stops being evidence about a body. Wide enough to span a device
+ * information row (`TSSOP (38) 9.70 mm x 4.40 mm`), tight enough that a family
+ * named in a different sentence does not vouch for it.
+ */
+const BODY_CONTEXT_REACH = 60;
+
+/** A body written as `3 mm x 5 mm`, which is how most front matter states one. */
+const BODY_PAIR = /\b(\d+(?:\.\d+)?)\s*mm\s*[×x]\s*(\d+(?:\.\d+)?)\s*mm\b/i;
+
+/**
+ * The body size, and ONLY where the document states one.
+ *
+ * The same rule as `findDimension`, applied to the two-number form. This is the
+ * source for most parts that have a body at all, and taking the first match on a
+ * family datasheet returns whichever package the document mentions first. A body
+ * is per-package: an STM32 document states its LQFP, its WLCSP and its BGA
+ * bodies, and they are different sizes.
+ */
+function findSoleBodyPair(doc: DatasheetText): { lengthMm: number; widthMm: number; citation: Citation | null } | null {
+  const seen = new Map<string, RawMatch>();
+  for (const match of allMatches(doc.text, BODY_PAIR)) {
+    const lengthMm = Number(match.groups[0]);
+    const widthMm = Number(match.groups[1]);
+    if (!Number.isFinite(lengthMm) || !Number.isFinite(widthMm)) continue;
+    if (lengthMm <= 0 || widthMm <= 0) continue;
+
+    // A pair of millimetre figures is not a body unless something nearby says it
+    // is a PACKAGE, which is the same test `findPackageType` applies to a
+    // designator and for the same reason: the shape alone means nothing. An
+    // ISO7841 was reporting a 10.30 x 10.30 body for a sixteen-pin SOIC, which
+    // is square and no SOIC is, off a line reading `CSA Component Acceptance
+    // Notice 5A, IEC 10.30mm x 10.30mm`. That is a certification clause, and the
+    // part ships, so it was shipping a wrong body outline.
+    const context = doc.text.slice(
+      Math.max(0, match.index - BODY_CONTEXT_REACH),
+      match.index + match.length + BODY_CONTEXT_REACH
+    );
+    // A family name OR the word `package`. The second is what an LSM6DSO needs,
+    // whose front matter reads `2.5 x 3 x 0.83 mm package` and names its LGA
+    // somewhere else entirely; requiring the family alone threw away a correct
+    // body. It is the same guard the declared pin count uses, and it is what the
+    // certification clause above lacks.
+    if (!namesPackageFamily(context) && !/\bpackage\b/i.test(context)) continue;
+
+    const key = `${lengthMm}x${widthMm}`;
+    if (!seen.has(key)) seen.set(key, match);
+  }
+
+  if (seen.size !== 1) return null;
+  const [[key, match]] = [...seen];
+  const [lengthMm, widthMm] = key.split("x").map(Number);
+  return { lengthMm, widthMm, citation: cite(doc, match) };
+}
+
 function parseDimensions(doc: DatasheetText, leadCount: Extracted<number>): PackageDimensions {
-  const pair = firstMatch(doc.text, /\b(\d+(?:\.\d+)?)\s*mm\s*[×x]\s*(\d+(?:\.\d+)?)\s*mm\b/i);
+  const pair = findSoleBodyPair(doc);
 
   const bodyLength = findDimension(doc, /body\s*length[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i);
   const bodyWidth = findDimension(doc, /body\s*width[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i);
 
   return {
-    leadWidthMm: unknown<LeadWidth>(),
     bodyLengthMm:
       bodyLength.value !== null
         ? bodyLength
-        : pair && pair.groups[0]
-          ? extractedValue(Number(pair.groups[0]), 0.5, cite(doc, pair))
+        : pair
+          ? extractedValue(pair.lengthMm, 0.5, pair.citation)
           : unknown<number>(),
     bodyWidthMm:
       bodyWidth.value !== null
         ? bodyWidth
-        : pair && pair.groups[1]
-          ? extractedValue(Number(pair.groups[1]), 0.5, cite(doc, pair))
+        : pair
+          ? extractedValue(pair.widthMm, 0.5, pair.citation)
           : unknown<number>(),
     bodyHeightMm: findDimension(doc, /body\s*height[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i),
-    pitchMm: findDimension(doc, /(?:lead\s+pitch|pitch)[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i),
+    pitchMm: findDimension(doc, PROSE_PITCH, 0.6),
     leadLengthMm: findDimension(doc, /lead\s*length[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i),
+    // No deterministic reader. The drawing reader can supply a lead width and
+    // explicitly cannot supply a span; see `leadSpanMm` in types.ts.
+    leadWidthMm: unknown<LeadWidth>(),
+    leadSpanMm: unknown<LeadWidth>(),
+    leadContactMm: unknown<LeadWidth>(),
     leadCount
   };
 }
+
+const PROSE_PITCH = /(?:lead\s+pitch|pitch)[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i;
 
 /**
  * Tries each pattern in order and takes the first that matches. Patterns are
@@ -1203,12 +1341,43 @@ function findQmlClass(doc: DatasheetText): Extracted<string> {
 // ---------------------------------------------------------------------------
 
 /**
+ * What the caller already knows, which the readers must not have to guess.
+ *
+ * Only the package so far, and it is the one that matters: a document offering
+ * several packages does say what they are and cannot say which one the user is
+ * holding. See `buildPartRecord`.
+ */
+export interface ExtractionHints {
+  /**
+   * The package the user picked, as printed in the document. Replaces the
+   * designator search outright rather than competing with it.
+   */
+  packageType?: string | null;
+}
+
+/** A package designator is a short printed token; anything longer is not one. */
+const MAX_PACKAGE_HINT_LENGTH = 64;
+
+/**
  * The deterministic pass over already-extracted text. Split from the PDF read
  * so it can be exercised against synthetic documents, which is how the
  * "unknown stays unknown" behavior is tested without committing a fixture PDF
  * for every failure shape.
+ *
+ * `hints.packageType` is the answer to the one question the document genuinely
+ * cannot answer for itself. Measured on the hold-out: nine parts of thirty-eight
+ * read NOTHING unaided and read completely once a package is named, because
+ * every reader below takes the package as an argument and uses it to choose
+ * among per-package pinouts. That is the difference between 20 of 38 and 29 of
+ * 38, and it is a click, not a lookup: the candidates are the ones this document
+ * printed.
  */
-export function buildPartRecord(doc: DatasheetText, fileName: string, sourceUrl?: string): PartRecord {
+export function buildPartRecord(
+  doc: DatasheetText,
+  fileName: string,
+  sourceUrl?: string,
+  hints?: ExtractionHints
+): PartRecord {
   const partNumber = findPartNumber(doc, fileName);
   const manufacturer = findManufacturer(doc);
 
@@ -1230,7 +1399,26 @@ export function buildPartRecord(doc: DatasheetText, fileName: string, sourceUrl?
   const orderable = findOrderablePackages(doc.text, partNumber.value ?? "");
   const packageVariants =
     orderable.length > 0 ? orderable : findPackageVariants(doc.text, frontMatterEnd(doc));
-  const packageType = findPackageType(doc, packageVariants);
+
+  // A supplied package REPLACES the search rather than being reconciled with it.
+  // The search exists to guess what the user is holding; when the user has said,
+  // there is nothing left to guess, and letting a lower-confidence designator
+  // argue with them would be the same disagreement-means-unknown rule turned
+  // against its own user.
+  //
+  // Carries `method: "user"` and NO citation, the same way the lookup route
+  // marks a part number the requester supplied. It is not on the page in the
+  // sense a citation claims, and a value the user chose must never be dressed as
+  // a value the document stated.
+  const hinted = hints?.packageType?.trim();
+  const packageType =
+    hinted && hinted.length > 0 && hinted.length <= MAX_PACKAGE_HINT_LENGTH
+      ? { value: hinted, confidence: 1, method: "user" as const, citation: null }
+      : findPackageType(doc, packageVariants);
+
+  // Derived from the SETTLED value, not from the hint, so the two can never
+  // drift: a hint that failed the length check above is not a choice.
+  const userChosePackage = packageType.method === "user";
   const declaredPinCount = findDeclaredPinCount(doc);
 
   // The lead count the RESOLVED designator declares is a second source for this,
@@ -1260,9 +1448,24 @@ export function buildPartRecord(doc: DatasheetText, fileName: string, sourceUrl?
   // designator says `SOIC (8)`, and the pin table reads 8. Taking 14 made the
   // table look like a misread and the pin count was thrown away, on a part where
   // two of the three signals already agreed.
+  //
+  // The front-matter scan is SKIPPED entirely when the user named the package.
+  // It is the one source here that is about a package rather than about the
+  // document, and once a package has been chosen it is routinely about the wrong
+  // one: an OPA192 user who picks `SOT-23 (DBV)` gets a correctly read five-pin
+  // figure vetoed by an `8-Pin SOIC` in the front matter, which is a sentence
+  // about the package they did not pick. Weighing evidence for package A against
+  // evidence for package B is not a corroboration, and refusing on it defeats the
+  // entire point of having asked.
+  //
+  // The other two sources survive the choice because they are about the document
+  // as a whole and so are about the chosen package too: `soleDeclaredLeadCount`
+  // only answers when EVERY package named agrees on one count, and the ordering
+  // scheme decodes the count out of the part number. An SN74HC595 keeps its
+  // sole-count of 16 and keeps refusing the 15-pin table that misreads it.
   const declared =
     (packageType.value !== null ? declaredLeadCount(packageType.value) : null) ??
-    declaredPinCount.value ??
+    (userChosePackage ? null : declaredPinCount.value) ??
     // A family datasheet may declare no count anywhere while printing the scheme
     // that decodes one out of the ordering code.
     findOrderingSchemePinCount(doc, partNumber.value) ??
@@ -1334,6 +1537,19 @@ export function buildPartRecord(doc: DatasheetText, fileName: string, sourceUrl?
   } else if (pins.length > 0) {
     const confidence = declared === pins.length ? 0.95 : selfVerified || figureBacksTable ? 0.9 : 0.7;
     pinCount = extractedValue(pins.length, confidence, pinCitation);
+  } else if (userChosePackage) {
+    // No pinout read for the package the user named, so there is no count that
+    // is known to be ABOUT that package. The front-matter scan below would still
+    // answer, and pairing its number with the user's package is how a wrong
+    // footprint gets built silently: a document whose front matter says `14-Pin
+    // SOIC` would give a user who picked the eight-lead VSSOP a fourteen-pad
+    // land pattern, with nothing in the record marking the mismatch. The
+    // `packageContradicts` guard below cannot catch it either, because a
+    // designator like `VSSOP (DGK)` declares no count of its own to contradict.
+    //
+    // Failing closed here costs nothing that was working: a record with no pins
+    // has no symbol to export regardless.
+    pinCount = unknown<number>();
   } else {
     pinCount = declaredPinCount;
   }
@@ -1349,7 +1565,39 @@ export function buildPartRecord(doc: DatasheetText, fileName: string, sourceUrl?
   const declaredLeads = packageType.value !== null ? declaredLeadCount(packageType.value) : null;
   const packageContradicts =
     declaredLeads !== null && pinCount.value !== null && declaredLeads !== pinCount.value;
-  const resolvedPackageType = packageContradicts ? unknown<string>() : packageType;
+  const survivingPackageType = packageContradicts ? unknown<string>() : packageType;
+
+  // The pin count, once settled, can name the package the designator search
+  // could not.
+  //
+  // `findPackageType` runs BEFORE the count exists, so on a family datasheet it
+  // sees every package the document offers and answers with none of them: an
+  // STM32G071RB's document names LQFP32, LQFP48, LQFP64 and more, and nothing at
+  // that point says which is this part's. Once the pinout has been read and the
+  // count settled at 64, exactly one of those declares 64, and it is no longer a
+  // guess between candidates but the only candidate left.
+  //
+  // Requiring EXACTLY ONE survivor is what keeps it honest. An STM32F103C8 is 48
+  // pins and its document offers LQFP48, VQFN48 and UQFN48, all of which declare
+  // 48 and have entirely different land patterns; that stays unknown and is a
+  // question for the user, which is what the package chooser is for.
+  //
+  // Only ever fills a BLANK. A designator already read off the page outranks
+  // this, because it was read rather than deduced.
+  const uniquelyCounted =
+    survivingPackageType.value === null && pinCount.value !== null
+      ? packageVariants.filter((variant) => variant.leadCount === pinCount.value)
+      : [];
+  const resolvedPackageType =
+    uniquelyCounted.length === 1
+      ? extractedValue(
+          uniquelyCounted[0].designator.slice(0, 64),
+          // Below every read designator. This is an inference from two things the
+          // document does state, not a sentence the document contains.
+          0.55,
+          citationAt(doc, uniquelyCounted[0].index, 40)
+        )
+      : survivingPackageType;
 
   // Read AFTER the pin count is settled, because settling it is what lets the
   // drawing be confirmed as this part's: the outline code's lead count has to
@@ -1438,13 +1686,14 @@ export function buildPartRecord(doc: DatasheetText, fileName: string, sourceUrl?
 export async function extractPartRecord(
   fileName: string,
   pdfBuffer: ArrayBuffer,
-  sourceUrl?: string
+  sourceUrl?: string,
+  hints?: ExtractionHints
 ): Promise<{ doc: DatasheetText; part: PartRecord }> {
   const doc = await extractDatasheetText(pdfBuffer, {
     maxPages: MAX_PAGES,
     budgetMs: parseBudgetMs()
   });
-  return { doc, part: buildPartRecord(doc, fileName, sourceUrl) };
+  return { doc, part: buildPartRecord(doc, fileName, sourceUrl, hints) };
 }
 
 export async function parseDatasheetPdf(

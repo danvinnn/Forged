@@ -84,3 +84,52 @@ test("a real disagreement is reported rather than hidden", () => {
   assert.equal(check.agreement, "differs");
   assert.match(check.detail, /land length/, "the report names which dimension disagrees");
 });
+
+test("a footprint drawing that cannot be parsed is reported as present, not absent", () => {
+  // ST prints `Figure 48. LQFP64 - Footprint example` with bare numbers, which
+  // the callout reader cannot parse; it is built on TI's parenthesised form.
+  // Saying the datasheet "does not print a land pattern" about a document that
+  // prints one on a numbered page sends the user looking for something that is
+  // in front of them.
+  const doc = datasheetTextFromPages([
+    ["ACME071 Microcontroller"].join("\n"),
+    ["Figure 48. LQFP64 - Footprint example", "12.70", "10.30", "1.20", "0.30"].join("\n")
+  ]);
+  const lookup = findPackageDefinition("LQFP64", 64);
+  assert.ok(lookup.ok);
+  const check = crossCheckLandPattern(doc, computeLandPattern(lookup.definition.lead), lookup.definition.family);
+
+  assert.equal(check.agreement, "unavailable", "unreadable is not a disagreement");
+  assert.equal(check.page, 2, "the page is where the drawing is");
+  assert.match(check.detail, /prints a LQFP-64 footprint example on page 2/);
+  assert.doesNotMatch(check.detail, /does not print/, "the false claim must be gone");
+});
+
+test("a contents entry is not mistaken for the drawing it lists", () => {
+  // A datasheet names every figure in its contents before drawing any of them,
+  // so the first match is routinely a contents line pointing elsewhere. Dotted
+  // leaders are what tell the two apart.
+  const doc = datasheetTextFromPages([
+    ["Contents", "Figure 48. LQFP64 - Footprint example . . . . . . . . . . . . . 132"].join("\n"),
+    ["filler"].join("\n"),
+    ["Figure 48. LQFP64 - Footprint example", "12.70", "10.30"].join("\n")
+  ]);
+  const lookup = findPackageDefinition("LQFP64", 64);
+  assert.ok(lookup.ok);
+  const check = crossCheckLandPattern(doc, computeLandPattern(lookup.definition.lead), lookup.definition.family);
+
+  assert.equal(check.page, 3, "the contents entry on page 1 is not the drawing");
+});
+
+test("a footprint example for ANOTHER package is not offered as this one's", () => {
+  const doc = datasheetTextFromPages([
+    ["ACME071 Microcontroller"].join("\n"),
+    ["Figure 40. LQFP32 - Footprint example", "8.70", "6.30"].join("\n")
+  ]);
+  const lookup = findPackageDefinition("LQFP64", 64);
+  assert.ok(lookup.ok);
+  const check = crossCheckLandPattern(doc, computeLandPattern(lookup.definition.lead), lookup.definition.family);
+
+  assert.equal(check.agreement, "unavailable");
+  assert.match(check.detail, /does not print/, "a different package's drawing is not this one's");
+});

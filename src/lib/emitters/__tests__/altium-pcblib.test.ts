@@ -100,7 +100,7 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       pitchMm: null,
       leadLengthMm: null,
       leadCount: 8,
-      leadWidthMm: null
+      leadWidthMm: null, leadSpanMm: null, leadContactMm: null
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "ACME27524.pdf",

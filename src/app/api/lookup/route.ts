@@ -13,7 +13,7 @@ import {
 } from "../../../lib/retrieval";
 import { extractPartRecord } from "../../../lib/datasheet";
 import { PdfExtractionError } from "../../../lib/pdftext";
-import { buildExtractionRequest, makeExtractionModel, mergeModelValues } from "../../../lib/extraction";
+import { buildExtractionRequest, makeExtractionModel, mergeModelValues, withRenderedPages } from "../../../lib/extraction";
 import { type PartRecord } from "../../../lib/types";
 
 export const runtime = "nodejs";
@@ -26,9 +26,17 @@ export const maxDuration = 30;
 const MAX_PART_NUMBER_LENGTH = 64;
 const MAX_MANUFACTURER_LENGTH = 64;
 
+// A package designator is a short printed token; anything longer is not one.
+const MAX_PACKAGE_LENGTH = 64;
+
 const lookupSchema = z.object({
   partNumber: z.string().trim().min(1).max(MAX_PART_NUMBER_LENGTH),
-  manufacturer: z.string().trim().min(1).max(MAX_MANUFACTURER_LENGTH).optional()
+  manufacturer: z.string().trim().min(1).max(MAX_MANUFACTURER_LENGTH).optional(),
+  // The package the caller picked, on a second lookup made because the first
+  // could not tell which of the document's packages they hold. See
+  // `buildPartRecord`; this is the argument the pin readers use to choose among
+  // per-package pinouts.
+  packageType: z.string().trim().min(1).max(MAX_PACKAGE_LENGTH).optional()
 });
 
 function fail(code: RetrievalErrorCode, error: string, mode: DeploymentMode, status: number) {
@@ -46,20 +54,34 @@ function normalizePartNumber(value: string): string {
 async function extractPart(
   ref: { fileName: string; bytes: ArrayBuffer; pdfUrl?: string },
   mode: DeploymentMode,
-  partNumberHint?: string
+  partNumberHint?: string,
+  packageHint?: string
 ): Promise<{ part: PartRecord; method: string }> {
   // Deterministic pass first, always. A model only fills what it could not read.
-  const { doc, part } = await extractPartRecord(ref.fileName, ref.bytes, ref.pdfUrl);
+  const { doc, part } = await extractPartRecord(ref.fileName, ref.bytes, ref.pdfUrl, {
+    packageType: packageHint
+  });
 
   const model = await makeExtractionModel(mode);
   if (!model) return { part, method: "deterministic" };
 
-  const request = buildExtractionRequest(part, doc, ref.fileName, partNumberHint);
-  if (!request) return { part, method: "deterministic" };
+  const built = buildExtractionRequest(part, doc, ref.fileName, partNumberHint);
+  if (!built) return { part, method: "deterministic" };
+
+  // Render the selected pages. A drawing's dimensions are not in the text layer,
+  // so without this the model cannot answer the fields it is best at. Rendering
+  // degrades to an empty list rather than throwing.
+  const request = await withRenderedPages(built, ref.bytes);
 
   try {
     const result = await model.extract(request);
-    const outcome = mergeModelValues(part, doc, result, model.name);
+    const outcome = mergeModelValues(
+      part,
+      doc,
+      result,
+      model.name,
+      request.images.map((image) => image.page)
+    );
     return {
       part: outcome.part,
       method: outcome.filled.length > 0 ? `deterministic+${model.name}` : "deterministic"
@@ -93,7 +115,7 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return fail("PART_NUMBER_REQUIRED", "Part number is required.", mode, 400);
   }
-  const { partNumber, manufacturer } = parsed.data;
+  const { partNumber, manufacturer, packageType } = parsed.data;
 
   // Air-gap gate. In air-gapped mode makeResolver returns null after failing closed, so no network
   // code is even loaded. Part-number lookup is a network operation and is unavailable here.
@@ -141,7 +163,7 @@ export async function POST(request: Request) {
   let part;
   let method;
   try {
-    ({ part, method } = await extractPart(ref, mode, partNumber));
+    ({ part, method } = await extractPart(ref, mode, partNumber, packageType));
   } catch (error) {
     // The resolver found a real PDF, but it is too large or complex to parse.
     // That is a property of the document, not a server fault.

@@ -1277,6 +1277,11 @@ function splitRow(row: TextItem[], numberX: number): { name: string; type: strin
 
   // A name is one token even when it arrives as several runs ("V" then "ref"),
   // so it is joined without spaces; a description is prose and keeps them.
+  //
+  // Whitespace WITHIN a run is kept, because that is the vendor's own spacing
+  // rather than an artefact of the split: an ADXL345 pin 12 arrives as the
+  // single run `SDO/ALT ADDRESS` and stripping its space produced
+  // `SDO/ALTADDRESS`, which is not a net anybody can connect.
   const name = left
     .filter((item) => !FOOTNOTE_MARKER.test(clean(item.str)))
     .map((item) => clean(item.str))
@@ -1456,7 +1461,7 @@ function readGroupedTable(
             clean(item.str).length > 0
         )
         .sort((a, b) => a.x - b.x || b.y - a.y);
-      return { cell, parts, name: parts.map((item) => clean(item.str).replace(/\s+/g, "")).join("") };
+      return { cell, parts, name: parts.map((item) => clean(item.str)).join("") };
     });
 
     if (named.some((entry) => entry.name.length === 0 || entry.name.length > MAX_NAME_LENGTH)) continue;
@@ -2101,7 +2106,12 @@ function readOneTable(
           // column's wrap: `PC15-` sits at x=244 above `OSC32_OUT` at x=226, and
           // by x that reads `OSC32_OUTPC15-`.
           .sort((left, right) => right.y - left.y || left.x - right.x)
-          .map((item) => clean(item.str).replace(/\s+/g, ""))
+          // Separate runs join bare, because a name split into runs is one token
+          // ("V" then "ref"). Whitespace WITHIN a run is the vendor's own and is
+          // kept: an ADXL345 pin 12 arrives as the single run `SDO/ALT ADDRESS`,
+          // and stripping its space produced `SDO/ALTADDRESS`, which is not a
+          // net anybody can connect.
+          .map((item) => clean(item.str))
           .join(""),
         type: "",
         description: clean(
@@ -2135,7 +2145,7 @@ function readOneTable(
         // as the single run `O PA M P` and is called OPAMP.
         name: between
           .filter((item) => !FOOTNOTE_MARKER.test(clean(item.str)))
-          .map((item) => clean(item.str).replace(/\s+/g, ""))
+          .map((item) => clean(item.str))
           .join(""),
         type: "",
         description: clean(rest.map((item) => item.str).join(" "))
@@ -3157,7 +3167,7 @@ function readGroupedFragment(items: TextItem[], column: TextItem[]): GeometryPin
     const name = entry.parts
       .filter((item) => !FOOTNOTE_MARKER.test(clean(item.str)))
       .sort((first, second) => second.y - first.y || first.x - second.x)
-      .map((item) => clean(item.str).replace(/\s+/g, ""))
+      .map((item) => clean(item.str))
       .join("");
 
     if (name.length === 0 || name.length > MAX_CAPTIONED_NAME_LENGTH) return null;

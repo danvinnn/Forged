@@ -32,7 +32,7 @@ function partWith(partNumber: string): ResolvedPart {
       pitchMm: 1.27,
       leadLengthMm: 0.6,
       leadCount: 8,
-      leadWidthMm: null
+      leadWidthMm: null, leadSpanMm: null, leadContactMm: null
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "test.pdf",

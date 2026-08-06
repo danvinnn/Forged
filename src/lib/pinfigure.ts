@@ -1,5 +1,6 @@
 import { hasPrintedOrder, type DatasheetText, type PageText, type TextItem } from "./pdftext";
 import { packageFamilies, splitSpacedRun } from "./pintable";
+import { namesPackageFamily } from "./packagevariants";
 
 /**
  * Pinout figures, read from the page's geometry rather than from its text.
@@ -152,6 +153,18 @@ export interface PinFigure {
    * the figure carries none.
    */
   caption: string;
+  /**
+   * This figure's own caption names the package that was asked for.
+   *
+   * Set only when the package claim is what SEPARATED this figure from the
+   * others, which makes it evidence about the figure's subject rather than just
+   * about its completeness. Callers use it to decide whether a figure still
+   * needs a declared count to vouch for it: the usual objection to a lone
+   * figure is that a datasheet draws several packages and a complete pinout does
+   * not say which one it is, and a caption naming the requested package answers
+   * exactly that objection. See `extractPinFigureByGeometry`.
+   */
+  packageClaimed?: boolean;
 }
 
 function clean(text: string): string {
@@ -359,8 +372,23 @@ const FIGURE_CAPTION = /\bpackage\b|\b\d{1,3}[-\s]?(?:pin|lead)\b|\b(?:pin|ball)
 /**
  * A device named in a caption. Anything with a digit in it, which is what
  * separates `OPA2333` from the `DRB` and `SOIC` beside it.
+ *
+ * Lowercase letters are allowed AFTER the first character, because a vendor
+ * writes a family with a lowercase wildcard: `STM32F40xxx`, `STM32L476Vx`,
+ * `STM32F103xx`. Uppercase-only, this pattern could not match those at all,
+ * since there is no word boundary between `STM32F40` and the `xxx` for it to
+ * stop at. The token it captured instead was `LQFP64` from the same caption,
+ * which is a PACKAGE, so every figure on a family datasheet looked like it named
+ * a device that was not the one asked about. That is why package families are
+ * excluded below: a caption reading `Figure 12. STM32F40xxx LQFP64 pinout`
+ * names one device and one package, and confusing the two makes the caption
+ * useless in both directions.
+ *
+ * Ordinary caption words like `Figure` and `package` match this pattern too and
+ * are removed by the digit test at the call sites, which they were always
+ * subject to.
  */
-const CAPTION_DEVICE = /\b[A-Z][A-Z0-9]{2,}(?:-[A-Z0-9]+)*\b/g;
+const CAPTION_DEVICE = /\b[A-Z][A-Za-z0-9]{2,}(?:-[A-Za-z0-9]+)*\b/g;
 
 /** Groups a page's items into printed lines. */
 function pageLines(items: TextItem[]): { y: number; items: TextItem[] }[] {
@@ -1114,18 +1142,34 @@ export function extractPinFigureByGeometry(
   for (const page of doc.pages) found.push(...readFiguresFromPage(page));
   if (found.length === 0) return null;
 
-  if (agree(found)) return found[0];
-
-  // They disagree, so they are different devices or different packages, and the
-  // caption is what says which. Device first: an OPA333 datasheet draws the
-  // OPA2333's eight-pin figures too, and those are answers to a question nobody
-  // asked. Then package: an INA240 draws its PW and its D, which have genuinely
-  // different pinouts, and only the designator separates them.
+  // The DEVICE filter runs before anything else, including before asking whether
+  // the figures already agree.
+  //
+  // Agreement was the first question here once, and it is the wrong one to ask
+  // first: a document holding a single figure agrees with itself trivially, and
+  // that says nothing about whose pinout it is. A family datasheet drawing one
+  // sibling's package therefore answered for every part in the family. Whether
+  // this document draws a pinout for THIS part has to be settled before whether
+  // its pinouts agree, because a figure belonging to another device is not
+  // evidence that gets outvoted, it is evidence about something else.
+  //
+  // A figure whose caption names no device at all is kept by `claimedByDevice`,
+  // which is the common case, so the fast path survives for the documents that
+  // had it.
   const ours = claimedByDevice(found, partNumber);
+
+  // They may still disagree, in which case they are different packages, and the
+  // caption is what says which: an INA240 draws its PW and its D, which have
+  // genuinely different pinouts, and only the designator separates them.
   if (agree(ours)) return ours[0];
 
+  // `claimedByPackage` never returns a figure whose caption does not name the
+  // requested package, so surviving here means this figure says what it draws
+  // and says it is the one asked for. That is a stronger thing than the
+  // constant-sum proof, which only says the figure is complete, and the flag
+  // carries the difference out to the caller.
   const mine = claimedByPackage(ours, packageType);
-  if (agree(mine)) return mine[0];
+  if (agree(mine)) return { ...mine[0], packageClaimed: true };
 
   // Last, the count the document declares for this part. An STM32F407 draws its
   // LQFP64, LQFP100, LQFP144 and LQFP176 as four complete figures and captions
@@ -1179,13 +1223,84 @@ function claimedByDevice(figures: PinFigure[], partNumber: string | undefined): 
 
   const kept = figures.filter((figure) => {
     const devices = (figure.caption.match(CAPTION_DEVICE) ?? [])
-      .filter((token) => /\d/.test(token))
+      // A digit, so `SOIC` and `Top` are not devices, and not a package, so
+      // `LQFP64` is not one either. Both sit in the same caption as the real
+      // device name and only the second test tells them apart.
+      .filter((token) => /\d/.test(token) && !isPackageToken(token))
       .map(normalizeDevice);
     if (devices.length === 0) return true;
-    return devices.some((device) => device === wanted || wanted.startsWith(device));
+    return devices.some((device) => deviceMatches(device, wanted));
   });
 
-  return kept.length > 0 ? kept : figures;
+  // Nothing survived, and since a figure naming NO device is always kept above,
+  // that means every figure here names one and none of them names this part or a
+  // family it belongs to. The honest answer is that this document draws no
+  // pinout for this part, not all the pinouts it draws for other parts.
+  //
+  // Falling back to the full set is how a family datasheet hands back a
+  // SIBLING'S pinout. An STM32L476RG is a 64-pin part, its family document draws
+  // the 100-pin STM32L476Vx, and that was the figure returned: complete,
+  // self-consistent, captioned for another device, and wrong by 36 pins. An
+  // STM32F030C8 is a 48-pin part and was handed the 20-pin TSSOP figure
+  // belonging to the F030F4 the same way. Both are the shape a package chooser
+  // makes worse, because a wrong figure that a click appears to confirm reads as
+  // an answer rather than as a refusal.
+  return kept;
+}
+
+/**
+ * Whether a caption token is a PACKAGE rather than a device.
+ *
+ * The lead count has to come off before the family can be recognised, for the
+ * same reason that bit `claimedByPackage`: `\bLQFP\b` cannot match `LQFP32`,
+ * because the digit after it is a word character and leaves no boundary to match
+ * at. Untrimmed, `LQFP32` and `TSSOP20` read as device names, and a figure
+ * captioned only `Figure 9. TSSOP20 20-pin package pinout` was dropped for
+ * naming a device that is not this part. That caption names no device at all,
+ * which is the commonest case there is: most figures are captioned by package
+ * alone and the document covers one part.
+ */
+function isPackageToken(token: string): boolean {
+  return namesPackageFamily(token) || namesPackageFamily(token.replace(/\d+$/, ""));
+}
+
+/**
+ * Whether a caption's device token names the part asked about.
+ *
+ * `x` is a WILDCARD in a vendor's caption, and telling that apart from a
+ * different device is the whole job here. Both `STM32F40xxx` and `STM32L476Vx`
+ * fail an exact comparison against `STM32F407VG` and `STM32L476RG`
+ * respectively, and they are opposite cases: the first is the family this part
+ * belongs to, the second is the 100-pin sibling of a 64-pin part.
+ *
+ * Matching position by position and letting `X` stand for anything separates
+ * them. `STM32F40xxx` matches `STM32F407VG` because every fixed character
+ * agrees; `STM32L476Vx` does not match `STM32L476RG`, because the `V` is fixed
+ * and this part has an `R` there. That `V` is precisely the character that
+ * encodes the pin count, which is why the wrong figure was 36 pins out.
+ *
+ * A shorter token still matches as a prefix, which is the `STM32F4` case and the
+ * behaviour this replaced.
+ *
+ * The comparison runs over the OVERLAP, so a caption may name more of the
+ * vendor's scheme than the part number does. ST's scheme is
+ * `STM32 | type | subfamily | pin count | flash | package | temperature`, and a
+ * caption routinely spells one field further than a part number does: an
+ * STM32G071RB's own LQFP64 figure is captioned `STM32G071RxT`, which adds the
+ * package letter `T`. Requiring equal lengths dropped a part's own figure.
+ *
+ * This does not weaken the sibling check, because the fields that DO overlap
+ * still have to agree and the pin-count letter is one of them. `STM32G071KxT`
+ * is the 32-pin sibling and is still refused for an `...RB`, on the `K`.
+ */
+function deviceMatches(device: string, wanted: string): boolean {
+  if (device === wanted) return true;
+
+  const shared = Math.min(device.length, wanted.length);
+  for (let index = 0; index < shared; index += 1) {
+    if (device[index] !== "X" && device[index] !== wanted[index]) return false;
+  }
+  return true;
 }
 
 /**

@@ -573,3 +573,157 @@ test("a name whose run was drawn in an order its string does not describe is ref
 
   assert.deepEqual(readFiguresFromPage(page(items)), []);
 });
+
+// ---------------------------------------------------------------------------
+// `packageClaimed`: whether the figure says WHICH package it draws
+//
+// The standing objection to a lone geometric figure is not that it might be
+// incomplete, since the constant-sum proof settles that, but that a datasheet
+// draws several packages and a complete pinout does not say which one it is. So
+// the caller holds the count back until something else vouches for it. A caption
+// naming the package that was ASKED for answers that objection in the
+// document's own words, and this flag is how the caller learns it was answered.
+// ---------------------------------------------------------------------------
+
+test("a figure separated by its package caption says so", () => {
+  const doc = { text: "", pages: [twoPackagePage()], pageCount: 1, truncated: false };
+
+  const tssop = extractPinFigureByGeometry(doc as never, "INA240", "8-pin TSSOP");
+  assert.ok(tssop);
+  assert.equal(tssop.packageClaimed, true, "the caption named the package that was asked for");
+});
+
+test("a figure that nothing had to separate makes no such claim", () => {
+  // One figure, no ambiguity to resolve, so the package claim was never
+  // consulted. This is the AD590 shape: its document draws a single eight-pin
+  // SOIC while the part is a two-lead flatpack, and nothing about that lone
+  // figure says it is the package the caller holds.
+  const doc = {
+    text: "",
+    pages: [page(captioned(80, ["NC", "IN+", "IN-", "GND"], ["OUT", "REF1", "REF2", "VS"],
+      "Figure 1. Top View"))],
+    pageCount: 1,
+    truncated: false
+  };
+
+  const only = extractPinFigureByGeometry(doc as never, "ACME590", "2-lead FLATPACK");
+  assert.ok(only, "a lone agreeing figure is still returned");
+  assert.notEqual(only.packageClaimed, true, "but it does not claim to be the requested package");
+});
+
+test("a figure picked by the declared COUNT makes no package claim either", () => {
+  // Two figures the caption cannot separate, resolved by the declared count.
+  // That proves which figure has the right number of pins, which is the very
+  // thing the count was being held back to check, so it may not double as its
+  // own corroboration.
+  const doc = {
+    text: "",
+    pages: [
+      page([
+        ...captioned(80, ["NC", "IN+", "IN-", "GND"], ["OUT", "REF1", "REF2", "VS"],
+          "Figure 1. ACME40xxx Top View"),
+        ...captioned(360, ["A", "B", "C"], ["D", "E", "F"], "Figure 2. ACME40xxx Top View")
+      ])
+    ],
+    pageCount: 1,
+    truncated: false
+  };
+
+  const byCount = extractPinFigureByGeometry(doc as never, "ACME40100", undefined, 6);
+  assert.ok(byCount, "the count selects among figures that each proved themselves");
+  assert.equal(byCount.pins.length, 6);
+  assert.notEqual(byCount.packageClaimed, true, "the count is not a package claim");
+});
+
+// ---------------------------------------------------------------------------
+// A family caption, and a SIBLING's caption, which look alike and are opposite
+//
+// Both fail an exact comparison against the part number, and treating them the
+// same way is how a family datasheet hands back another device's pinout. The
+// figure that comes back is complete, self-consistent, and wrong by 36 pins,
+// which is the worst shape a defect can have here: nothing downstream can tell.
+// ---------------------------------------------------------------------------
+
+test("a caption naming the FAMILY with a wildcard still belongs to this part", () => {
+  // An STM32F407VG's document captions all four of its figures `STM32F40xxx`,
+  // so nothing but the declared count can separate them. Dropping them for not
+  // saying `STM32F407VG` would lose the part entirely.
+  const doc = {
+    text: "",
+    pages: [
+      page([
+        ...captioned(80, ["NC", "IN+", "IN-", "GND"], ["OUT", "REF1", "REF2", "VS"],
+          "Figure 12. STM32F40xxx LQFP8 pinout"),
+        ...captioned(360, ["A", "B", "C"], ["D", "E", "F"], "Figure 13. STM32F40xxx LQFP6 pinout")
+      ])
+    ],
+    pageCount: 1,
+    truncated: false
+  };
+
+  const byCount = extractPinFigureByGeometry(doc as never, "STM32F407VG", undefined, 6);
+  assert.ok(byCount, "a wildcard family caption is this part's");
+  assert.equal(byCount.pins.length, 6);
+});
+
+test("a caption naming a SIBLING device is not this part's, and nothing falls back to it", () => {
+  // The STM32L476RG shape: a 64-pin part whose family document draws the 100-pin
+  // STM32L476Vx. The `V` is fixed, not a wildcard, and it is exactly the
+  // character that encodes the pin count.
+  const doc = {
+    text: "",
+    pages: [
+      page(captioned(80, ["NC", "IN+", "IN-", "GND"], ["OUT", "REF1", "REF2", "VS"],
+        "Figure 11. STM32L476Vx LQFP8 pinout"))
+    ],
+    pageCount: 1,
+    truncated: false
+  };
+
+  assert.equal(
+    extractPinFigureByGeometry(doc as never, "STM32L476RG", "LQFP8"),
+    null,
+    "a sibling's complete figure is not an answer for this part"
+  );
+});
+
+test("a package named in a caption is not read as the device that owns the figure", () => {
+  // `Figure 12. STM32F40xxx LQFP64 pinout` names one device and one package. The
+  // device token was invisible for being mixed-case, so `LQFP64` was taken as the
+  // device, matched nothing, and every figure on the document looked like another
+  // part's.
+  const doc = {
+    text: "",
+    pages: [
+      page(captioned(80, ["NC", "IN+", "IN-", "GND"], ["OUT", "REF1", "REF2", "VS"],
+        "Figure 3. ACME192 LQFP8 pinout"))
+    ],
+    pageCount: 1,
+    truncated: false
+  };
+
+  const found = extractPinFigureByGeometry(doc as never, "ACME192", "LQFP8");
+  assert.ok(found, "the caption names this device and a package, not another device");
+  assert.equal(found.pins.length, 8);
+});
+
+test("a caption naming ONLY a glued package still names no device", () => {
+  // `Figure 9. TSSOP20 20-pin package pinout` names a package and nothing else,
+  // which is how most figures on a single-part datasheet are captioned. Reading
+  // `TSSOP20` as a device name drops the only pinout the document has. The lead
+  // count has to come off before the family is recognisable, because `\bTSSOP\b`
+  // does not match `TSSOP20`.
+  const doc = {
+    text: "",
+    pages: [
+      page(captioned(80, ["NC", "IN+", "IN-", "GND"], ["OUT", "REF1", "REF2", "VS"],
+        "Figure 9. TSSOP8 8-pin package pinout"))
+    ],
+    pageCount: 1,
+    truncated: false
+  };
+
+  const found = extractPinFigureByGeometry(doc as never, "ACME192", "TSSOP8");
+  assert.ok(found, "a caption naming only a package belongs to whatever part the document is about");
+  assert.equal(found.pins.length, 8);
+});

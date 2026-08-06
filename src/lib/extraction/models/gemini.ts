@@ -47,6 +47,48 @@ const GENERATION_CONFIG = {
  */
 const MODEL_TIMEOUT_MS = 60_000;
 
+/**
+ * Transient upstream failures, retried; everything else is surfaced at once.
+ *
+ * Sending page images made this necessary rather than nice. A text-only request
+ * is a few kilobytes and failed on 5 of 44 parts; the same corpus with renders
+ * attached is one to two megabytes per call and failed on 13 of 44, and both
+ * parts sampled from that set succeeded first time when retried by hand. So the
+ * discards were upstream capacity, not the model declining to answer, and
+ * without a retry the bench measures Google's queue instead of our extractor.
+ *
+ * A quota error is NOT retried here. Backing off inside one call cannot fix a
+ * per-minute budget, and burning the caller's remaining time to discover that
+ * is worse than reporting it.
+ */
+const RETRY_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 2_000;
+
+/**
+ * Failures that no amount of waiting fixes, checked BEFORE the transient test.
+ *
+ * A 429 means two completely different things and they need opposite handling.
+ * "Rate limit exceeded" is a pace problem and backing off is exactly right.
+ * "Your prepayment credits are depleted" is a billing problem, and retrying it
+ * is pure waste: the account will not refill in four seconds.
+ *
+ * This list is what it is because the first version only excluded the word
+ * "quota", and Google's billing message does not contain it. On 2026-08-05 the
+ * account ran dry mid-run and all 59 failing parts were retried three times
+ * each, which turned a clean stop into a slow, noisy one and made the cause
+ * harder to see, not easier.
+ */
+const PERMANENT_FAILURE =
+  /\b(?:quota|credits?\s+(?:are\s+)?(?:depleted|exhausted)|billing|payment|insufficient|suspended|disabled|unauthorized|forbidden|invalid\s+api\s+key|API key)\b/i;
+
+function isTransient(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (PERMANENT_FAILURE.test(message)) return false;
+  return /\b(?:429|500|502|503|504)\b|overload|unavailable|internal error|fetch failed|socket hang up|ECONNRESET|ETIMEDOUT/i.test(
+    message
+  );
+}
+
 function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -74,24 +116,39 @@ export class GeminiExtractionModel implements ExtractionModel {
     const client = new GoogleGenerativeAI(apiKey);
     const model = client.getGenerativeModel({ model: MODEL_ID, generationConfig: GENERATION_CONFIG });
 
-    let text: string;
-    try {
-      const response = await withTimeout(
-        model.generateContent({
-          contents: [{ role: "user", parts: [{ text: buildPrompt(request) }] }]
-        }),
-        MODEL_TIMEOUT_MS,
-        "Gemini extraction"
-      );
-      text = response.response.text();
-    } catch (error) {
-      if (error instanceof ExtractionModelError) throw error;
-      throw new ExtractionModelError(
-        "transport",
-        error instanceof Error ? error.message : "Gemini request failed."
-      );
+    // Text first, then the renders in page order. The prompt names the pages
+    // and says they are attached in that order, so the two must not diverge.
+    const parts = [
+      { text: buildPrompt(request) },
+      ...request.images.map((image) => ({
+        inlineData: { mimeType: image.mimeType, data: image.base64 }
+      }))
+    ];
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await withTimeout(
+          model.generateContent({ contents: [{ role: "user", parts }] }),
+          MODEL_TIMEOUT_MS,
+          "Gemini extraction"
+        );
+        return parseModelResponse(response.response.text());
+      } catch (error) {
+        lastError = error;
+        // A timeout is ours, not theirs. Retrying a call that already burned the
+        // full backstop would triple the worst case for no new information.
+        const timedOut =
+          error instanceof ExtractionModelError && /timed out after/.test(error.message);
+        if (timedOut || !isTransient(error) || attempt === RETRY_ATTEMPTS - 1) break;
+        await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** attempt));
+      }
     }
 
-    return parseModelResponse(text);
+    if (lastError instanceof ExtractionModelError) throw lastError;
+    throw new ExtractionModelError(
+      "transport",
+      lastError instanceof Error ? lastError.message : "Gemini request failed."
+    );
   }
 }

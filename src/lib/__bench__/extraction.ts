@@ -25,7 +25,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { join } from "node:path";
 import { BENCH_CORPUS, type BenchCategory, type BenchPart } from "../retrieval/__bench__/corpus";
 import { extractPartRecord } from "../datasheet";
-import { buildExtractionRequest, makeExtractionModel, mergeModelValues } from "../extraction";
+import { buildExtractionRequest, makeExtractionModel, mergeModelValues, withRenderedPages } from "../extraction";
 import { resolveForExport, type Extracted, type PartRecord } from "../types";
 import { createExportZip, FootprintUnavailableError } from "../exporters";
 import {
@@ -295,11 +295,21 @@ async function scoreRow(part: BenchPart): Promise<Row> {
     let modelFilled: string[] = [];
     let modelRejected: string[] = [];
     if (MODEL) {
-      const request = buildExtractionRequest(deterministic, doc, `${part.partNumber}.pdf`);
+      const built = buildExtractionRequest(deterministic, doc, `${part.partNumber}.pdf`);
       const model = await makeExtractionModel("commercial");
-      if (request && model) {
+      if (built && model) {
+        const request = await withRenderedPages(
+          built,
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+        );
         try {
-          const outcome = mergeModelValues(deterministic, doc, await model.extract(request), model.name);
+          const outcome = mergeModelValues(
+            deterministic,
+            doc,
+            await model.extract(request),
+            model.name,
+            request.images.map((image) => image.page)
+          );
           record = outcome.part;
           modelFilled = outcome.filled;
           modelRejected = outcome.rejected.map((entry) => entry.field);

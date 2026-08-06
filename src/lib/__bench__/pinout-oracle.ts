@@ -322,6 +322,50 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
       "5": "NC", "6": "OUT", "7": "+VCC", "8": "NC"
     }
   },
+  ADXL345: {
+    packageType: "LGA-14",
+    // Read off a RENDER of page 7: Figure 3 (Pin Configuration, top view) and
+    // Table 5 (Pin Function Descriptions), which agree. All fourteen were
+    // checked; these are the ones that would catch a real misread.
+    //
+    // Pins 1 and 12 are why this entry exists. Both are printed with a SPACE
+    // inside a single text run, `VDD I/O` and `SDO/ALT ADDRESS`, and the table
+    // readers used to strip whitespace within a run, which turned them into
+    // `VDDI/O` and `SDO/ALTADDRESS`. Neither is a net anybody can connect.
+    source: "page 7, Figure 3 and Table 5 (rendered)",
+    pins: {
+      "1": "VDD I/O", "2": "GND", "3": "RESERVED", "6": "VS", "7": "CS",
+      "8": "INT1", "9": "INT2", "10": "NC", "11": "RESERVED",
+      "12": "SDO/ALT ADDRESS", "13": "SDA/SDI/SDIO", "14": "SCL/SCLK"
+    }
+  },
+  STM32G071RB: {
+    packageType: "LQFP64",
+    // Read off a RENDER of Figure 9. Four-sided: 1..16 down the left, 17..32
+    // across the bottom, 33..48 up the right and 49..64 back across the top,
+    // with both horizontal rows set ROTATED.
+    //
+    // Every one of the 64 was checked against the render, not just these. The
+    // entries kept are the ones that would catch a real misread: the four names
+    // carrying a hyphenated second function, the two slashed supply rails, and
+    // the two REMAP annotations. Pin 43 prints as `PA11 [PA9]` and pin 44 as
+    // `PA12 [PA10]`, with the bracketed alternative part of the printed name, so
+    // a reader that drops the bracket or splits the run reports a different pin
+    // than the one on the page.
+    //
+    // Pin 12 is the STM32G0-specific one worth keeping: NRST is shared with PF2
+    // on this family, so `PF2-NRST` is right and a bare `NRST` is not.
+    source: "page 41, Figure 9 STM32G071RxT LQFP64 pinout (rendered)",
+    pins: {
+      "1": "PC11", "3": "PC13", "4": "PC14-OSC32_IN", "5": "PC15-OSC32_OUT",
+      "6": "VBAT", "7": "VREF+", "8": "VDD/VDDA", "9": "VSS/VSSA",
+      "10": "PF0-OSC_IN", "11": "PF1-OSC_OUT", "12": "PF2-NRST", "16": "PC3",
+      "17": "PA0", "24": "PA7", "25": "PC4", "30": "PB10", "32": "PB12",
+      "33": "PB13", "36": "PA8", "40": "PD8", "42": "PA10",
+      "43": "PA11 [PA9]", "44": "PA12 [PA10]", "46": "PA14-BOOT0",
+      "48": "PC8", "49": "PC9", "56": "PD6", "57": "PB3", "64": "PC10"
+    }
+  },
   STM32F407VG: {
     packageType: "LQFP100",
     // Read off a RENDER of Figure 13, which is a FOUR-SIDED figure: 1..25 down

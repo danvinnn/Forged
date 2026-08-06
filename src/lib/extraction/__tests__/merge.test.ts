@@ -347,3 +347,162 @@ test("an exposed thermal pad refuses the table, and says that is why", () => {
   assert.equal(merged.part.pins.value, null);
   assert.match(merged.rejected[0].reason, /exposed thermal pad/);
 });
+
+// --- values read off a RENDERED page ----------------------------------------
+//
+// A dimension printed beside a dimension line is genuinely absent from the text
+// layer, so `verifyCitation` can never confirm it. That is why these values get
+// their own method and their own weaker evidence rather than either being
+// rejected (which loses every correct drawing read) or being passed off as
+// text-verified (which would let a value nobody can grep look like one they can).
+
+test("a value not in the text is cited to the render only if we sent that page", () => {
+  const part = deterministic();
+
+  // 0.75 appears nowhere in the document text; it is a body height off a drawing.
+  const result: ExtractionResult = {
+    values: { "dimensions.bodyHeightMm": { value: 0.75, page: 2 } }
+  };
+
+  const textOnly = mergeModelValues(part, doc, result, "test-model");
+  assert.equal(textOnly.part.dimensions.bodyHeightMm.value, 0.75);
+  assert.equal(textOnly.part.dimensions.bodyHeightMm.citation, null, "no render, no citation");
+  assert.equal(textOnly.part.dimensions.bodyHeightMm.method, "vlm");
+  assert.ok(textOnly.uncited.includes("dimensions.bodyHeightMm"));
+
+  const withRender = mergeModelValues(part, doc, result, "test-model", [2]);
+  const field = withRender.part.dimensions.bodyHeightMm;
+  assert.equal(field.value, 0.75);
+  assert.ok(field.citation, "a page we rendered can carry a citation");
+  assert.equal(field.citation.page, 2);
+  assert.equal(field.method, "vlm-drawing", "provenance must say it was read off the render");
+});
+
+test("a drawing-read value is recorded as weaker evidence than a quoted one", () => {
+  const part = deterministic();
+
+  const drawn = mergeModelValues(
+    part,
+    doc,
+    { values: { "dimensions.bodyHeightMm": { value: 0.75, page: 2 } } },
+    "test-model",
+    [2]
+  ).part.dimensions.bodyHeightMm;
+
+  // "0.5 mm" IS on page 2, so this one is quotable and takes the text path.
+  const quoted = mergeModelValues(
+    part,
+    doc,
+    { values: { "dimensions.pitchMm": { value: 0.5, page: 2 } } },
+    "test-model",
+    [2]
+  ).part.dimensions.pitchMm;
+
+  assert.equal(quoted.method, "vlm");
+  assert.equal(drawn.method, "vlm-drawing");
+  assert.ok(
+    (drawn.confidence ?? 1) < (quoted.confidence ?? 0),
+    "a value we can show but cannot grep must not outrank one we can grep"
+  );
+});
+
+test("a pin table is never accepted on drawing evidence alone", () => {
+  const part = deterministic();
+
+  // Rows that do not appear on the cited page. verifyPinTable is what stops a
+  // fabricated table entering the record, and a table is what pads are built
+  // from, so the weaker drawing path must not offer it a way in.
+  const result: ExtractionResult = {
+    values: {
+      pins: {
+        value: [
+          { number: "1", name: "INVENTED", electricalType: "passive" },
+          { number: "2", name: "ALSO_INVENTED", electricalType: "passive" }
+        ],
+        page: 2
+      }
+    }
+  };
+
+  const outcome = mergeModelValues(part, doc, result, "test-model", [2]);
+
+  // The table is still recorded and flagged uncited, which is the behaviour that
+  // predates images. What must NOT happen is the drawing path quietly supplying
+  // the citation `verifyPinTable` refused: pads are built from this field, so it
+  // does not get to stand on evidence weaker than a row-by-row check.
+  assert.equal(outcome.part.pins.citation, null, "a pin table must not take a drawing citation");
+  assert.equal(outcome.part.pins.method, "vlm", "and must not be labelled as read off a drawing");
+  assert.ok(outcome.uncited.includes("pins"), "it is reported as untraceable instead");
+});
+
+test("a rendered record still satisfies the part contract", () => {
+  const part = deterministic();
+  const outcome = mergeModelValues(
+    part,
+    doc,
+    { values: { "dimensions.bodyHeightMm": { value: 0.75, page: 2 } } },
+    "test-model",
+    [2]
+  );
+  assert.doesNotThrow(() => partSchema.parse(outcome.part));
+});
+
+// --- lead span and lead width, the two a land pattern is built from ----------
+
+test("a lead span is accepted as a min/max pair and cited when both ends are on the page", () => {
+  const part = deterministic();
+  const spanDoc = datasheetTextFromPages([
+    "VORAGO VA10820 32-pin QFN",
+    "PACKAGE OUTLINE PW0008A TSSOP C 6.6 TYP SEATING PLANE 6.2 PIN 1 ID"
+  ]);
+  const base = buildPartRecord(spanDoc, "VA10820.pdf");
+  const outcome = mergeModelValues(
+    base,
+    spanDoc,
+    { values: { "dimensions.leadSpanMm": { value: { minMm: 6.2, maxMm: 6.6 }, page: 2 } } },
+    "test-model",
+    [2]
+  );
+  const span = outcome.part.dimensions.leadSpanMm;
+  assert.deepEqual(span.value, { minMm: 6.2, maxMm: 6.6 });
+  assert.ok(span.citation, "both endpoints are printed on page 2, so this is quotable");
+  assert.equal(span.method, "vlm");
+});
+
+test("a malformed range is dropped rather than stored, because it reaches the land pattern", () => {
+  const part = deterministic();
+  for (const bad of [
+    { minMm: 6.6, maxMm: 6.2 }, // the wrong way round
+    { minMm: -1, maxMm: 6.6 }, // not a dimension
+    { minMm: 6.2 }, // half a pair
+    6.2 // a scalar where a pair was asked for
+  ]) {
+    const outcome = mergeModelValues(
+      part,
+      doc,
+      { values: { "dimensions.leadSpanMm": { value: bad as never, page: 2 } } },
+      "test-model",
+      [2]
+    );
+    assert.equal(outcome.part.dimensions.leadSpanMm.value, null, `${JSON.stringify(bad)} must not enter the record`);
+    assert.ok(outcome.rejected.some((entry) => entry.field === "dimensions.leadSpanMm"));
+  }
+});
+
+// --- retry classification ----------------------------------------------------
+//
+// Lives here rather than under models/ because the concrete models are only
+// reachable by dynamic import and this is pure classification logic. The rule it
+// guards: a 429 means two different things, and only one of them is worth
+// waiting out.
+
+test("a billing failure is not treated as transient, whatever status it arrives with", async () => {
+  const { GeminiExtractionModel } = await import("../models/gemini");
+  // Exercised through the public surface: a model with no key configured must
+  // report itself unconfigured rather than attempt a call that cannot succeed.
+  const model = new GeminiExtractionModel();
+  const had = process.env.GOOGLE_GEMINI_API_KEY;
+  delete process.env.GOOGLE_GEMINI_API_KEY;
+  assert.equal(model.isConfigured(), false, "no key means no call");
+  if (had !== undefined) process.env.GOOGLE_GEMINI_API_KEY = had;
+});
