@@ -203,3 +203,51 @@ test("pages are deduplicated, ranked by how much depends on them, and capped", (
   assert.deepEqual(reviewPages(items, 1), [5]);
   assert.deepEqual(reviewPages([]), [], "nothing to review means no pages to fetch");
 });
+
+
+/**
+ * The review panel's provenance, on a field the model won.
+ *
+ * The panel exists so a person can settle a disagreement by opening both pages.
+ * Telling them the wrong reader produced the value they are looking at inverts
+ * the judgement they are being asked to make, and it did exactly that wherever
+ * the model outranked the code. See the note on `FieldConflict.holding`.
+ */
+test("a conflict the model won is shown as the model's value, with the code's as the alternative", () => {
+  const part = record();
+  part.conflicts = [
+    {
+      field: "packageType",
+      deterministic: { display: "14-lead CFP", page: 1 },
+      model: { display: "SOIC (8)", page: 2 },
+      holding: "model"
+    }
+  ];
+
+  const item = collectReviewItems(part).find((entry) => entry.field === "packageType");
+
+  assert.ok(item, "a disagreement is a review item");
+  assert.equal(item.display, "SOIC (8)", "the record holds the model's reading");
+  assert.equal(item.page, 2);
+  assert.equal(item.alternative?.display, "14-lead CFP", "the road not taken is the code's");
+  assert.equal(item.alternative?.source, "deterministic", "and it must be attributed to the CODE");
+});
+
+test("a conflict the code won is shown the other way round", () => {
+  const part = record();
+  part.conflicts = [
+    {
+      field: "packageType",
+      deterministic: { display: "14-lead CFP", page: 1 },
+      model: { display: "SOIC (8)", page: 2 },
+      holding: "deterministic"
+    }
+  ];
+
+  const item = collectReviewItems(part).find((entry) => entry.field === "packageType");
+
+  assert.ok(item);
+  assert.equal(item.display, "14-lead CFP");
+  assert.equal(item.alternative?.display, "SOIC (8)");
+  assert.equal(item.alternative?.source, "model");
+});

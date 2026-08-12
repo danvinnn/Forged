@@ -44,9 +44,16 @@ test("a cited model reading DISPLACES the code, and the code is kept beside it",
   assert.equal(merged.dimensions.bodyWidthMm.value, 7.5, "the model's reading is on the record");
   assert.equal(merged.dimensions.bodyWidthMm.citation?.page, 3);
   assert.equal(merged.conflicts.length, 1, "and the displaced reading is kept beside it");
-  assert.equal(merged.conflicts[0].deterministic.display, "7.5", "what the record holds");
-  assert.equal(merged.conflicts[0].model.display, "10.3", "what it replaced, one click away");
-  assert.equal(merged.conflicts[0].model.page, 2, "with the page it came from");
+  // Each slot holds the reading its NAME promises, whichever side won. This
+  // test previously asserted the opposite (`deterministic.display === "7.5"`,
+  // which is the MODEL's number) and so made a swap look deliberate; the bench
+  // and the review panel both read the struct by its names and reported every
+  // model-won field as though the readers had traded places.
+  assert.equal(merged.conflicts[0].deterministic.display, "10.3", "what the CODE read");
+  assert.equal(merged.conflicts[0].deterministic.page, 2, "and the page it read it on");
+  assert.equal(merged.conflicts[0].model.display, "7.5", "what the MODEL read");
+  assert.equal(merged.conflicts[0].model.page, 3);
+  assert.equal(merged.conflicts[0].holding, "model", "the record took the model's, one click from undo");
 });
 
 test("the disagreement reaches the review panel, ahead of everything else", () => {
@@ -189,4 +196,43 @@ test("an unsettled disagreement blocks the bundle until a person decides", () =>
   const settled = JSON.parse(JSON.stringify(merged)) as typeof merged;
   settled.dimensions.bodyWidthMm = { ...settled.dimensions.bodyWidthMm, method: "user-confirmed" };
   assert.equal(resolveForExport(settled, { requireTraceableGeometry: false }).ok, true);
+});
+
+
+/**
+ * Package designators written in two different VOCABULARIES.
+ *
+ * Measured on the 2026-08-12 hold-out run, where eight parts read cleanly and
+ * were then held back from export by a cross-check disagreement. One of the
+ * eight, TL431, was purely notational: an outline code against prose. A hold
+ * that nobody can act on costs a part and teaches the user to click past the
+ * holds that matter.
+ */
+test("an outline code and its prose spelling are not a disagreement", () => {
+  // Both resolve to SOIC narrow, so both produce the same land pattern.
+  assert.ok(valuesAgree("packageType", "D (SOIC)", "SOIC (8)", 8));
+});
+
+/**
+ * The counterexample, and the reason this is resolution and not fuzzy matching.
+ *
+ * ISO7841, same run: the code read the outline code `DW (16)` and the model read
+ * the front matter's "16-pin SOIC". They share the token `16` and read almost
+ * alike, but they are 4.3 mm apart in lead span, and believing the prose puts
+ * every pad about 1.96 mm inboard of the leads. The model was WRONG here, and a
+ * comparison loose enough to pass TL431 must still fail this.
+ */
+test("SOIC wide against SOIC narrow stays a disagreement", () => {
+  assert.ok(!valuesAgree("packageType", "DW (16)", "16-pin SOIC", 16), "4.3 mm of lead span apart");
+});
+
+test("designators that state different lead counts disagree whatever they resolve to", () => {
+  assert.ok(!valuesAgree("packageType", "SOIC-8", "SOIC-16", 8));
+});
+
+test("an unresolvable designator still falls back to token comparison", () => {
+  // Neither side is a characterised family, so resolution cannot decide it and
+  // the token rule must still be doing its job.
+  assert.ok(valuesAgree("packageType", "8-Pin XYZZY", "XYZZY-8", 8));
+  assert.ok(!valuesAgree("packageType", "XYZZY-8", "PLUGH-8", 8));
 });

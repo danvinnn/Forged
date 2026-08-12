@@ -1,0 +1,91 @@
+
+> forged@0.1.0 bench:holdout
+> tsx src/lib/__bench__/holdout.ts --model
+
+Hold-out corpus: 59 parts never inspected
+Model cache: /Users/anthonytang/Desktop/Forged/Forged/.model-cache (119 responses), mode use [may spend]
+
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 21
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 22
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 21
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+warning: bogus font (BJDCAH+Calibri) ascent/descent values (0 / -178)
+Warning: TT: undefined function: 32
+cached:    39/59
+READ:      35/39  (90%)  <- the number that predicts a stranger's datasheet
+SHIPS:     9/39  (23%)
+
+Why parts did not read:
+    2  no pins, no count
+    1  count but no pins
+    1  pins but no count (nothing corroborates them)
+
+Read but no bundle:
+   16  no land pattern
+
+By kind:
+  converter   6/6
+  interface   4/4
+  logic       3/4
+  mcu         1/3
+  opamp       8/9
+  power       8/8
+  reference   2/2
+  sensor      3/3
+
+Model cache:
+  cache hits      35
+  live calls      42 (4 FAILED)
+  INCOMPLETE      4 call(s) never answered, so every number below is a floor.
+  tokens spent    856,836 in, 159,359 out (~$0.66)
+  tokens saved    700,919 in, 174,407 out (~$0.65)
+
+CROSS-CHECK: 12 disagreement(s) on 8/39 parts
+  OPA2189 pins: code 8 pins (1:NC, 2:–IN, 3:+IN, ...) (p5) vs model 8 pins (1:OUT A, 2:–IN A, 3:+IN A, ...) (p5)
+  OPA2189 dimensions.leadCount: code 8 (p43) vs model 14 (p2)
+  DAC8552 pins: code 8 pins (1:VDD, 2:VREF, 3:VOUTB, ...) (p4) vs model 8 pins (1:VDD, 2:VREF, 3:OUTB, ...) (p4)
+  TPS54360 pins: code 9 pins (1:BOOT, 2:VIN, 3:EN, ...) (p4) vs model 8 pins (1:BOOT, 2:VIN, 3:EN, ...) (p4)
+  SN74AUP1G04 pinCount: code 5 (p28) vs model 6 (p3)
+  SN74AUP1G04 pins: code 5 pins (1:NC, 2:A, 3:GND, ...) (p3) vs model 6 pins (1:N.C., 2:A, 3:GND, ...) (p3)
+  SN74AUP1G04 dimensions.pitchMm: code 0.95 (p28) vs model 0.5 (p11)
+  SN74AUP1G04 dimensions.leadCount: code 5 (p28) vs model 6 (p1)
+  TCA9548A pins: code 24 pins (1:SD0, 2:SC0, 3:SD1, ...) (p3) vs model 24 pins (1:A0, 2:A1, 3:RESET, ...) (p3)
+  ISO7841 packageType: code DW (16) (p1) vs model 16-pin SOIC (p1)
+  TL431 packageType: code D (SOIC) (p4) vs model SOIC (8) (p1)
+  LTC2400 packageType: code 8-Lead Plastic Small Outline (p39) vs model SO-8 (p1)
+
+MODEL: filled a field on 34/39 parts
+   30  dimensions.bodyLengthMm
+   30  dimensions.bodyWidthMm
+   27  dimensions.bodyHeightMm
+   26  dimensions.leadContactMm
+   22  dimensions.pitchMm
+   21  dimensions.leadSpanMm
+   17  dimensions.leadWidthMm
+   14  pins
+   10  dimensions.leadLengthMm
+    8  dimensions.thermalPadLengthMm
+    8  dimensions.thermalPadWidthMm
+    7  packageType
+    6  pinCount
+    4  dimensions.leadCount
+
+MODEL REJECTED on 3 parts (bad shape or unverifiable citation)
+  TLV9002: pins
+  LP5907: pins
+  TMP117: ERROR:ExtractionModelError

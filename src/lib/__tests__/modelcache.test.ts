@@ -4,7 +4,15 @@ import { mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "../extraction/contracts";
-import { cachingModel, requestKey, ModelCacheMiss, estimateUsd, formatCacheStats, slotDelayMs } from "../__bench__/modelcache";
+import {
+  cachingModel,
+  requestKey,
+  ModelCacheMiss,
+  estimateUsd,
+  formatCacheStats,
+  slotDelayMs,
+  permanentQuotaFailure
+} from "../__bench__/modelcache";
 
 /**
  * A temp directory, so running the suite never writes into the real cache and
@@ -314,4 +322,46 @@ test("a DAILY cap is not retried, even though it states a retry delay", async ()
 
   assert.equal(inner.calls(), 1, "no retry");
   assert.equal(model.stats.rateLimitWaits, 0, "and no wait");
+});
+
+
+/**
+ * A permanent 429 must name the RIGHT cause.
+ *
+ * Measured on 2026-08-12: a run stopped and reported "DAILY quota exhausted ...
+ * re-running tomorrow continues where this stopped." The API had actually said
+ * the project was over its MONTHLY SPEND CAP. Tomorrow would have changed
+ * nothing, and the cap is a setting no amount of waiting or credit clears. The
+ * classifier was right that the failure was permanent and the printed sentence
+ * was wrong, which is the worse half: it sent the operator away for a day.
+ */
+const SPEND_CAP =
+  "[429 Too Many Requests] Your project has exceeded its monthly spending cap. " +
+  "Please go to AI Studio at https://ai.studio/spend to manage your project spend cap.";
+
+test("a monthly spend cap is not reported as a daily quota", () => {
+  const verdict = permanentQuotaFailure(SPEND_CAP);
+
+  assert.ok(verdict, "still permanent: retrying cannot clear a spend cap");
+  assert.match(verdict.kind, /spend cap/i);
+  assert.doesNotMatch(verdict.kind, /daily/i, "the wrong cause costs a day");
+  assert.doesNotMatch(verdict.advice, /tomorrow/i, "waiting cannot clear a monthly cap");
+  assert.match(verdict.advice, /ai\.studio\/spend/, "name the page that actually fixes it");
+});
+
+test("each permanent kind is told apart from the others", () => {
+  const daily = permanentQuotaFailure(
+    "[429] GenerateRequestsPerDayPerProjectPerModel-FreeTier limit 20. Please retry in 23s"
+  );
+  assert.match(daily?.kind ?? "", /daily/i);
+  assert.match(daily?.advice ?? "", /tomorrow/i, "this is the one case where waiting works");
+
+  const credits = permanentQuotaFailure("[429] Your prepayment credits are depleted.");
+  assert.match(credits?.kind ?? "", /credits/i);
+
+  // An ordinary per-minute limit is recoverable and must stay that way.
+  assert.equal(
+    permanentQuotaFailure("[429] ...PerMinute... quota exceeded. Please retry in 56.7s"),
+    null
+  );
 });

@@ -154,6 +154,21 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
       "13": "GND", "14": "INHIBIT", "15": "NC", "16": "SENSE"
     }
   },
+  OPA2189: {
+    packageType: "D (8-pin SOIC) / DGK (8-pin VSSOP)",
+    // Read off the rendered page on 2026-08-12, promoting this part out of the
+    // hold-out. The page carries TWO pin tables: `Table 6-1. Pin Functions:
+    // OPA189` for the single, then `Table 6-2. Pin Functions: OPA2189` for the
+    // dual. These names are the SECOND one. The first table's pin 1 is `NC`,
+    // which is what both a mis-selecting reader and a model that was never told
+    // which device to read hand back, so this entry is the guard for exactly
+    // that confusion.
+    source: "page 5, Table 6-2 Pin Functions: OPA2189 (and Figure 6-3, which agrees)",
+    pins: {
+      "1": "OUT A", "2": "-IN A", "3": "+IN A", "4": "V-",
+      "5": "+IN B", "6": "-IN B", "7": "OUT B", "8": "V+"
+    }
+  },
   TLV9061: {
     packageType: "SOT-23",
     source: "page 5, Table 5-1 Pin Functions: TLV9061, SOT-23/SOT-553 column",

@@ -1,0 +1,151 @@
+
+> forged@0.1.0 bench:holdout
+> tsx src/lib/__bench__/holdout.ts --model --verbose
+
+Hold-out corpus: 59 parts never inspected
+Model cache: /Users/anthonytang/Desktop/Forged/Forged/.model-cache (84 responses), mode use [may spend]
+
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 21
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 32
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 22
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 21
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 32
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 32
+  pacing: 55s to stay under 12/min
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 32
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+Warning: TT: undefined function: 32
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+  DAILY quota exhausted for this model: retrying cannot help. Answers already fetched are cached, so re-running tomorrow continues where this stopped.
+cached:    39/59
+READ:      29/39  (74%)  <- the number that predicts a stranger's datasheet
+SHIPS:     10/39  (26%)
+
+Why parts did not read:
+    5  no pins, no count
+       TS922, TSZ121, LD39050, LSM6DSO, STM32L476RG
+    4  count but no pins
+       CD4017B, REF3025, MSP430FR2433, ST1S10
+    1  pins but no count (nothing corroborates them)
+       STM32F030C8
+
+Read but no bundle:
+   14  no land pattern
+       TLV9002, ADS1220, TPS62130, TPS7A4700, LP5907, SN74LVC245A, TCA9548A, ISO7841, TPD4E1U06, TMP117, AD620, AD9833, LTC2400, ADXL345
+
+By kind:
+  converter   6/6
+  interface   4/4
+  logic       3/4
+  mcu         0/3
+  opamp       7/9
+  power       6/8
+  reference   1/2
+  sensor      2/3
+
+Model cache:
+  cache hits      0
+  live calls      58 (23 FAILED)
+  INCOMPLETE      23 call(s) never answered, so every number below is a floor.
+  tokens spent    700,919 in, 174,407 out (~$0.65)
+
+CROSS-CHECK: 10 disagreement(s) on 5/39 parts
+  OPA2189 pins: code 8 pins (1:NC, 2:–IN, 3:+IN, ...) (p5) vs model 8 pins (1:OUT A, 2:–IN A, 3:+IN A, ...) (p5)
+  OPA2189 dimensions.leadCount: code 8 (p43) vs model 14 (p2)
+  THS3491 pinCount: code 16 (p1) vs model 8 (p5)
+  THS3491 pins: code 16 pins (1:FB, 2:NC, 3:VIN–, ...) (p5) vs model 8 pins (1:REF, 2:VIN–, 3:VIN+, ...) (p5)
+  THS3491 dimensions.leadCount: code 16 (p1) vs model 8 (p1)
+  DAC8552 pins: code 8 pins (1:VDD, 2:VREF, 3:VOUTB, ...) (p4) vs model 8 pins (1:VDD, 2:VREF, 3:OUTB, ...) (p4)
+  TPS54360 pins: code 9 pins (1:BOOT, 2:VIN, 3:EN, ...) (p4) vs model 8 pins (1:BOOT, 2:VIN, 3:EN, ...) (p4)
+  SN74AUP1G04 pinCount: code 5 (p1) vs model 6 (p3)
+  SN74AUP1G04 pins: code 5 pins (1:NC, 2:A, 3:GND, ...) (p3) vs model 6 pins (1:N.C., 2:A, 3:GND, ...) (p3)
+  SN74AUP1G04 dimensions.leadCount: code 5 (p1) vs model 6 (p1)
+
+MODEL: filled a field on 19/39 parts
+   19  dimensions.bodyLengthMm
+   19  dimensions.bodyWidthMm
+   16  dimensions.bodyHeightMm
+   15  dimensions.leadContactMm
+   12  dimensions.leadSpanMm
+   11  dimensions.pitchMm
+    8  pins
+    7  dimensions.leadWidthMm
+    6  dimensions.leadLengthMm
+    6  dimensions.thermalPadLengthMm
+    6  dimensions.thermalPadWidthMm
+    4  pinCount
+    3  dimensions.leadCount
+    2  packageType
+       OPA192: pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       OPA2189: pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       TLV9002: pinCount, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm
+       LMV321: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       INA333: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       THS3491: packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.leadCount
+       INA226: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       ADS1220: pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadWidthMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm
+       DAC8552: pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       PCM1808: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       TPS62130: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm
+       TPS7A4700: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.leadLengthMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm
+       TPS54360: packageType, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm
+       LM5117: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm
+       LP5907: pinCount, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.pitchMm
+       UCC28C43: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       SN74HC595: pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.leadLengthMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       SN74LVC245A: dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm
+       SN74AUP1G04: pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.leadCount
+
+MODEL REJECTED on 22 parts (bad shape or unverifiable citation)
+  TLV9002: pins
+  LP5907: pins
+  CD4017B: ERROR:ExtractionModelError
+  TCA9548A: ERROR:ExtractionModelError
+  SN65HVD72: ERROR:ExtractionModelError
+  ISO7841: ERROR:ExtractionModelError
+  TPD4E1U06: ERROR:ExtractionModelError
+  TMP117: ERROR:ExtractionModelError
+  REF3025: ERROR:ExtractionModelError
+  TL431: ERROR:ExtractionModelError
+  MSP430FR2433: ERROR:ExtractionModelError
+  TS922: ERROR:ExtractionModelError
+  TSZ121: ERROR:ExtractionModelError
+  LD39050: ERROR:ExtractionModelError
+  ST1S10: ERROR:ExtractionModelError
+  LSM6DSO: ERROR:ExtractionModelError
+  STM32L476RG: ERROR:ExtractionModelError
+  STM32F030C8: ERROR:ExtractionModelError
+  AD620: ERROR:ExtractionModelError
+  AD9833: ERROR:ExtractionModelError
+  LTC2400: ERROR:ExtractionModelError
+  ADXL345: ERROR:ExtractionModelError

@@ -166,3 +166,35 @@ test("on a REAL pdf the second pass happens, and carries the pages the model ask
   assert.deepEqual(outcome.renderedPages, [outline.page]);
   assert.equal(outcome.lookedAtPages, true);
 });
+
+test("the second pass does not resend the document it already read", async () => {
+  // Cost, measured: the whole-document prompt is ~16k tokens on a median
+  // datasheet, and pass two was carrying all of it a second time to ask about
+  // one drawing. That doubled the input cost of every part with a second pass
+  // and bought nothing, because the model had already read it.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { extractDatasheetText } = await import("../../pdftext");
+
+  const path = fileURLToPath(new URL("../../../../test-data/LMP7704-SP.pdf", import.meta.url));
+  const bytes = readFileSync(path);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const real = await extractDatasheetText(buffer);
+  const part = buildPartRecord(real, "LMP7704-SP.pdf");
+  const outline = real.pages.find((page) => /PACKAGE OUTLINE/.test(page.text))!;
+
+  const model = stub([{ values: {}, pagesWorthRendering: [outline.page] }, { values: {} }]);
+  await runExtraction(part, real, buffer, model, "LMP7704-SP.pdf");
+
+  assert.equal(model.seen.length, 2);
+  assert.equal(model.seen[0].pages.length, real.pages.length, "pass one is the whole document");
+  assert.deepEqual(
+    model.seen[1].pages.map((page) => page.page),
+    [outline.page],
+    "pass two carries only the page it is looking at"
+  );
+  assert.ok(
+    model.seen[1].pages.length < model.seen[0].pages.length / 5,
+    "and is a small fraction of the first"
+  );
+});

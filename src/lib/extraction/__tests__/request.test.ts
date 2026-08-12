@@ -162,3 +162,36 @@ test("a resolved package is a SUGGESTION the model may reject", () => {
     assert.doesNotMatch(prompt, /report values for THIS one only/, "no longer an order");
   }
 });
+
+
+/**
+ * The device the model is asked about, on a datasheet covering several.
+ *
+ * The prompt line naming the requested part is emitted only when the request
+ * carries a part number, and every caller in the product left it undefined, so
+ * the line was never sent. Measured on OPA2189: 58 pages covering OPA189,
+ * OPA2189 and OPA4189, two pin tables on page 5, and the model returned the
+ * SINGLE op-amp's pinout for the dual in both the text and the rendered pass.
+ * Nothing in the request said which of the three was wanted.
+ */
+test("the request names the device even when the caller does not", () => {
+  const doc = datasheetTextFromPages([
+    "OPA189, OPA2189, OPA4189\nPrecision amplifiers\n8-pin SOIC package.",
+    "Pin Functions: OPA189\n1 NC\n2 -IN"
+  ]);
+  const part = buildPartRecord(doc, "OPA2189.pdf");
+  assert.equal(part.partNumber.value, "OPA2189", "the text pass reads it off page 1");
+
+  const request = buildExtractionRequest(part, doc, "OPA2189.pdf");
+
+  assert.equal(request?.partNumber, "OPA2189", "so the model is told which device to read");
+});
+
+test("an explicit part number still wins over the record's", () => {
+  const doc = datasheetTextFromPages(["OPA189, OPA2189\nPrecision amplifiers\n8-pin SOIC."]);
+  const part = buildPartRecord(doc, "OPA2189.pdf");
+
+  const request = buildExtractionRequest(part, doc, "OPA2189.pdf", "OPA4189");
+
+  assert.equal(request?.partNumber, "OPA4189", "the caller knows something the record does not");
+});

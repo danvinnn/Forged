@@ -569,3 +569,62 @@ test("a billing failure is not treated as transient, whatever status it arrives 
   assert.equal(model.isConfigured(), false, "no key means no call");
   if (had !== undefined) process.env.GOOGLE_GEMINI_API_KEY = had;
 });
+
+
+/**
+ * Which reader produced which reading, on a field where the model WON.
+ *
+ * Measured on OPA2189, 2026-08-12. Its datasheet documents three devices and
+ * page 5 prints `Pin Functions: OPA189` above `Pin Functions: OPA2189`. The
+ * model read the first table and returned the SINGLE op-amp's pinout for the
+ * dual; the deterministic reader read the right one. The model's claim cited a
+ * page that really does contain those names, so it verified and outranked.
+ *
+ * The bench then printed `code 1:NC vs model 1:OUT A`, which is both sides
+ * backwards, because the supersede path wrote the value the RECORD held into
+ * the slot named `deterministic`. The review panel did the same thing, so a
+ * reviewer settling the disagreement was told the model's reading came from the
+ * code and the code's from the model, on precisely the fields where the model
+ * had overruled the code. Attribution is the whole point of a conflict, so this
+ * pins it in the direction the names promise.
+ */
+const twoPackages = datasheetTextFromPages([
+  "ACME1234 precision amplifier\n14-lead CFP package.",
+  "PACKAGE OUTLINE\nSOIC (8) body outline and lead form."
+]);
+
+test("when the model outranks the code, each reading is still attributed to its own reader", () => {
+  const part = buildPartRecord(twoPackages, "ACME1234.pdf");
+  assert.equal(part.packageType.value, "14-lead CFP", "the code reads page 1");
+
+  const { part: merged } = mergeModelValues(
+    part,
+    twoPackages,
+    { values: { packageType: { value: "SOIC (8)", page: 2 } } },
+    "test-model"
+  );
+
+  assert.equal(merged.packageType.value, "SOIC (8)", "the model outranks on a cross-checked field");
+
+  const conflict = merged.conflicts.find((entry) => entry.field === "packageType");
+  assert.ok(conflict, "a displaced reading is still a disagreement someone must settle");
+  assert.equal(conflict.deterministic.display, "14-lead CFP", "the CODE's reading, under its own name");
+  assert.equal(conflict.model.display, "SOIC (8)", "the MODEL's reading, under its own name");
+  assert.equal(conflict.holding, "model", "and the record says which one it took");
+});
+
+test("when the code holds its ground, the conflict says so", () => {
+  const part = buildPartRecord(twoPackages, "ACME1234.pdf");
+  // An uncited claim cannot outrank, so the record keeps the code's reading.
+  const { part: merged } = mergeModelValues(
+    part,
+    twoPackages,
+    { values: { packageType: { value: "SOIC (8)", page: 2 } } },
+    "test-model"
+  );
+  const conflict = merged.conflicts.find((entry) => entry.field === "packageType");
+  assert.ok(conflict);
+  // Whichever way precedence went, the two slots never swap.
+  assert.equal(conflict.deterministic.display, "14-lead CFP");
+  assert.equal(conflict.model.display, "SOIC (8)");
+});

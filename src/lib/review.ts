@@ -80,8 +80,12 @@ export interface ReviewItem {
    * Present only on a `disagreement`: the other reading, and the page it came
    * from, so the reviewer can open both and settle it in one look.
    *
-   * `display` above holds the value ON THE RECORD, which is the deterministic
-   * one. This holds the value that was NOT taken.
+   * `display` above holds the value ON THE RECORD and this holds the one that
+   * was NOT taken, which is the useful way round for a reviewer. Which reader
+   * produced which is read from the conflict's `holding`, NOT assumed: the
+   * record carries the model's value wherever the model outranked the code, and
+   * assuming otherwise attributed both readings to the wrong reader on exactly
+   * those fields. `source` below names the reader of the alternative.
    */
   alternative?: { display: string; page: number | null; source: "model" | "deterministic" };
 }
@@ -215,11 +219,16 @@ export function collectReviewItems(part: PartRecord): ReviewItem[] {
     // whether something is still open.
     const method = fieldAt(part, conflict.field)?.method;
     if (method === "user" || method === "user-confirmed") continue;
+    // Which reading the record actually holds, and which one is the road not
+    // taken. Read from `holding` rather than assumed to be the deterministic
+    // side; see the note on `alternative`.
+    const held = conflict.holding === "model" ? conflict.model : conflict.deterministic;
+    const other = conflict.holding === "model" ? conflict.deterministic : conflict.model;
     items.push({
       field: conflict.field,
       label: entry.label,
-      display: conflict.deterministic.display,
-      page: conflict.deterministic.page,
+      display: held.display,
+      page: held.page,
       snippet: null,
       confidence: fieldAt(part, conflict.field)?.confidence ?? null,
       reason: "disagreement",
@@ -228,7 +237,11 @@ export function collectReviewItems(part: PartRecord): ReviewItem[] {
       // oracle behind it, and stopping an export over a difference the user has
       // not looked at yet would make the safer behaviour the more annoying one.
       blocking: false,
-      alternative: { display: conflict.model.display, page: conflict.model.page, source: "model" }
+      alternative: {
+        display: other.display,
+        page: other.page,
+        source: conflict.holding === "model" ? "deterministic" : "model"
+      }
     });
   }
 

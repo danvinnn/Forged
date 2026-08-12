@@ -248,13 +248,51 @@ async function waitForSlot(onWait: (ms: number) => void): Promise<void> {
  * Nor is vocabulary: the ordinary free-tier 429 reads "please check your plan
  * and BILLING details", so a guard keyed on that word classified every rate
  * limit as permanent and disabled the retry altogether.
+ *
+ * There is a THIRD permanent kind, met on 2026-08-12 with credits on the key:
+ *
+ *   "Your project has exceeded its monthly spending cap."
+ *
+ * It is not a daily cap and not depleted credits. A run that reports it as
+ * "daily" tells the operator to wait until tomorrow, which cannot work: the cap
+ * is monthly and is a SETTING, so only raising it helps. Naming the wrong cause
+ * costs a day, so this returns WHICH kind it was and the printed line quotes
+ * Google's own sentence rather than asserting a cause of its own.
  */
-function isPermanentQuotaFailure(message: string): boolean {
-  if (/PerDay/i.test(message)) return true;
-  if (/credits? (are |is )?depleted|prepayment/i.test(message)) return true;
+type PermanentQuota = { readonly kind: string; readonly advice: string };
+
+export function permanentQuotaFailure(message: string): PermanentQuota | null {
+  if (/spend(ing)? cap/i.test(message)) {
+    return {
+      kind: "monthly SPEND CAP reached",
+      advice:
+        "This is a project setting, not a rate limit: waiting does not clear it, " +
+        "and adding credits does not either. Raise the cap at https://ai.studio/spend."
+    };
+  }
+  if (/credits? (are |is )?depleted|prepayment/i.test(message)) {
+    return { kind: "prepaid credits depleted", advice: "Add credits to the project, then re-run." };
+  }
+  if (/PerDay/i.test(message)) {
+    return {
+      kind: "DAILY request quota exhausted",
+      advice: "The quota resets on Google's clock, so re-running tomorrow continues from here."
+    };
+  }
   // No quota ID and no retry hint: assume unrecoverable rather than burn the
-  // full retry budget on every remaining part.
-  return !/retry in [\d.]+\s*s/i.test(message) && /\b429\b|quota/i.test(message);
+  // full retry budget on every remaining part. Say so honestly instead of
+  // picking one of the named causes above.
+  if (!/retry in [\d.]+\s*s/i.test(message) && /\b429\b|quota/i.test(message)) {
+    return {
+      kind: "unrecoverable 429 (no quota named)",
+      advice: "Google named no quota and gave no retry hint. Read the message above."
+    };
+  }
+  return null;
+}
+
+function isPermanentQuotaFailure(message: string): boolean {
+  return permanentQuotaFailure(message) !== null;
 }
 
 function isRateLimited(error: unknown): boolean {
@@ -294,11 +332,12 @@ async function extractWithRateLimitRetry(
       last = error;
       // A run that stops for a reason nobody can act on is worse than one that
       // stops loudly. Say which of the two 429s this was.
-      if (isPermanentQuotaFailure(errorText(error))) {
-        console.error(
-          "  DAILY quota exhausted for this model: retrying cannot help. Answers already " +
-            "fetched are cached, so re-running tomorrow continues where this stopped."
-        );
+      const permanent = permanentQuotaFailure(errorText(error));
+      if (permanent) {
+        console.error(`  ${permanent.kind}: retrying cannot help.`);
+        console.error(`  Google said: ${errorText(error).trim().slice(0, 300)}`);
+        console.error(`  ${permanent.advice}`);
+        console.error("  Answers already fetched are cached, so a re-run continues from here.");
         throw error;
       }
       if (!isRateLimited(error) || attempt === RATE_LIMIT_ATTEMPTS) throw error;
@@ -409,6 +448,23 @@ export function cacheSize(): number {
 const USD_PER_M_INPUT = 0.3;
 const USD_PER_M_OUTPUT = 2.5;
 
+/** Everything the cache has ever been paid for, summed across every run. */
+export function cumulativeSpend(): { usd: number; calls: number } {
+  const dir = modelCacheDir();
+  if (!existsSync(dir)) return { usd: 0, calls: 0 };
+  let input = 0;
+  let output = 0;
+  let calls = 0;
+  for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+    const entry = readEntry(join(dir, file));
+    if (!entry?.usage) continue;
+    input += entry.usage.inputTokens;
+    output += entry.usage.outputTokens;
+    calls += 1;
+  }
+  return { usd: estimateUsd(input, output), calls };
+}
+
 export function estimateUsd(inputTokens: number, outputTokens: number): number {
   return (inputTokens / 1_000_000) * USD_PER_M_INPUT + (outputTokens / 1_000_000) * USD_PER_M_OUTPUT;
 }
@@ -467,7 +523,23 @@ export function formatCacheStats(stats: CacheStats): string {
   }
   if (stats.misses > stats.failed) {
     lines.push(
-      `  tokens spent    ${stats.inputTokens.toLocaleString()} in, ${stats.outputTokens.toLocaleString()} out (~$${spent.toFixed(2)})`
+      `  spent THIS RUN  ${stats.inputTokens.toLocaleString()} in, ${stats.outputTokens.toLocaleString()} out (~$${spent.toFixed(2)})`
+    );
+  }
+  // The RUNNING TOTAL, because the per-run figure is the one that misleads.
+  //
+  // Every line above is scoped to one invocation, and a bench gets run over and
+  // over: refreshed after a prompt change, re-run after a fix, replayed to check
+  // a number. Reporting "this run cost $0.71" alongside nothing else invited
+  // reading it as the bill, and the account had by then paid for six runs. The
+  // gap was about 3x and it was found by the person paying, not by this report.
+  //
+  // A floor, not the bill: a call that fails after the model has generated is
+  // charged and writes no cache entry, so it cannot be counted here.
+  const total = cumulativeSpend();
+  if (total.calls > 0) {
+    lines.push(
+      `  spent IN TOTAL  ~$${total.usd.toFixed(2)} over ${total.calls} cached call(s), all runs ever (a floor: failed calls are billed and not cached)`
     );
   }
   if (stats.hits > 0 && stats.savedInputTokens > 0) {

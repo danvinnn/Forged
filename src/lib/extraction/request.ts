@@ -155,7 +155,19 @@ export function buildExtractionRequest(
     pages: selection.pages,
     images: [],
     fileName,
-    partNumber,
+    // Falls back to the part number the RECORD carries, which the text pass read
+    // off the front page with a citation.
+    //
+    // Without this the caller had to supply one, and the benches and the parse
+    // route did not, so the prompt's "the requested part number is X, data for
+    // other devices is not relevant" line was omitted entirely. On a datasheet
+    // covering ONE device that costs nothing. On a family datasheet it is the
+    // whole question: OPA2189's document is 58 pages covering OPA189, OPA2189
+    // and OPA4189, page 5 prints `Pin Functions: OPA189` above `Pin Functions:
+    // OPA2189`, and a model never told which device to read took the first one
+    // and returned the single op-amp's pinout for the dual. That is the right
+    // answer to the question it was asked, which is what made it hard to see.
+    partNumber: partNumber ?? part.partNumber.value ?? undefined,
     packageType: part.packageType.value,
     // ALWAYS sent, not only when nothing was settled.
     //
@@ -197,7 +209,17 @@ export async function withRenderedPages(
   pages: readonly number[],
   limits: Partial<RenderLimits> = {}
 ): Promise<ExtractionRequest> {
-  if (pages.length === 0) return { ...request, images: [] };
+  if (pages.length === 0) return { ...request, images: [], pages: [] };
   const images = await renderPages(pdfBytes, [...pages], { maxPages: MAX_PAGES_TO_MODEL, ...limits });
-  return { ...request, images };
+
+  // The second pass carries ONLY the pages being looked at, not the document
+  // again. The model read the whole text in the first pass and is now being
+  // asked to read arrows off a drawing; resending 16k tokens it has already seen
+  // doubled the input cost of every part with a second pass and bought nothing.
+  //
+  // The text of those pages still goes, because it is the drawing's own callouts
+  // and captions, and because a page claim is checked against the document
+  // server-side regardless of what was sent.
+  const shown = new Set(images.map((image) => image.page));
+  return { ...request, images, pages: request.pages.filter((page) => shown.has(page.page)) };
 }

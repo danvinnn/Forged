@@ -15,6 +15,8 @@
 
 import type { ExtractionField } from "./contracts";
 import type { LeadWidth, PinRecord } from "../types";
+import { findPackageDefinition } from "../packages";
+import { declaredLeadCount } from "../packagevariants";
 
 /** Fields asked about even when the deterministic pass already answered them. */
 export const CROSS_CHECKED_FIELDS: readonly ExtractionField[] = [
@@ -60,14 +62,47 @@ function asRange(value: unknown): LeadWidth | null {
 }
 
 /**
- * Package designators, compared the way a person would.
+ * Package designators, compared by WHAT THEY RESOLVE TO before how they read.
  *
  * `8-Pin SOIC`, `SOIC-8` and `SOIC (D) 8` are the same package written three
- * ways, and treating those as a disagreement would bury the real ones. So
- * punctuation and case are dropped and the comparison is on the tokens that
- * survive: the family name and the lead count, in any order.
+ * ways, and treating those as a disagreement would bury the real ones. Token
+ * comparison handles those, but it cannot handle the vocabularies: a vendor
+ * OUTLINE CODE (`D`, `DW`) and a prose designator (`SOIC`) share no tokens at
+ * all, so `D (SOIC)` against `SOIC (8)` read as a contradiction and held a part
+ * back from export for a difference that is purely notational.
+ *
+ * So resolution comes first. Two designators that resolve to the same package
+ * definition produce the SAME LAND PATTERN, which is the only sense in which a
+ * package disagreement can matter here, and no synonym table is needed to say
+ * so: the resolver already owns that vocabulary.
+ *
+ * This deliberately does NOT collapse everything that reads alike. Measured on
+ * ISO7841, where the code said `DW (16)` and the model said `16-pin SOIC`:
+ *
+ *   DW (16)      -> SOIC wide
+ *   16-pin SOIC  -> SOIC narrow
+ *
+ * Those are 4.3 mm apart in lead span, the model's prose reading would have put
+ * every pad about 1.96 mm inboard of the leads, and this comparison must keep
+ * reporting it. Same resolved family is the test, not similar spelling.
  */
-function samePackage(left: string, right: string): boolean {
+function samePackage(left: string, right: string, pinCount?: number | null): boolean {
+  // A count printed in the designator itself outranks the record's, and two
+  // designators that state DIFFERENT counts disagree whatever they resolve to.
+  const leftCount = declaredLeadCount(left);
+  const rightCount = declaredLeadCount(right);
+  if (leftCount !== null && rightCount !== null && leftCount !== rightCount) return false;
+
+  const count = leftCount ?? rightCount ?? pinCount ?? null;
+  if (count !== null) {
+    const a = findPackageDefinition(left, count);
+    const b = findPackageDefinition(right, count);
+    // Only when BOTH resolve. One side resolving proves nothing about the other,
+    // and an unresolved designator falls through to the token rule below rather
+    // than being treated as agreement by default.
+    if (a.ok && b.ok) return a.definition.family === b.definition.family;
+  }
+
   const tokens = (text: string) =>
     new Set(
       text
@@ -122,7 +157,17 @@ function samePins(left: PinRecord[], right: PinRecord[]): boolean {
  * is looking at must not manufacture a disagreement, because every false one
  * spends the user's attention and teaches them to click past the real ones.
  */
-export function valuesAgree(field: string, deterministic: unknown, model: unknown): boolean {
+export function valuesAgree(
+  field: string,
+  deterministic: unknown,
+  model: unknown,
+  /**
+   * The record's pin count, used only to resolve a package designator that does
+   * not carry its own. Optional so every existing caller and test keeps its
+   * meaning; without it the comparison simply falls back to tokens.
+   */
+  pinCount?: number | null
+): boolean {
   if (deterministic === null || model === null) return true;
 
   if (field === "pins") {
@@ -133,7 +178,7 @@ export function valuesAgree(field: string, deterministic: unknown, model: unknow
 
   if (field === "packageType") {
     return typeof deterministic === "string" && typeof model === "string"
-      ? samePackage(deterministic, model)
+      ? samePackage(deterministic, model, pinCount)
       : true;
   }
 

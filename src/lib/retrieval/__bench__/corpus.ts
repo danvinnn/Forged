@@ -89,6 +89,13 @@ export const BENCH_CORPUS: BenchPart[] = [
     note: "Promoted out of the hold-out on 2026-08-02, replaced there by ADS1256. TI's continued Pin Functions template: a 68-page document whose pin table spans pages and whose rows the reader refuses at the type gate. Promoted because diagnosing it requires reading it."
   },
   { partNumber: "TLV9061", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
+  {
+    partNumber: "OPA2189",
+    manufacturer: "Texas Instruments",
+    category: "analog",
+    expect: "hit",
+    note: "Promoted out of the hold-out on 2026-08-12, replaced there by OPA1612 (OPA2277 was the first pick and had to be discarded: it is already in this corpus and cited in five source files, so it was never blind). SBOS830I documents THREE devices (OPA189 single, OPA2189 dual, OPA4189 quad) and page 5 prints two pin tables: 'Pin Functions: OPA189' first, 'Pin Functions: OPA2189' second. The reader took the first and returned the SINGLE op-amp's pinout for the dual, so pin 1 read NC where the part has OUT A. Opened because the cross-check flagged it and only the page settles which side was right."
+  },
   { partNumber: "REF5025", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "AD8628", manufacturer: "Analog Devices", category: "analog", expect: "hit" },
   { partNumber: "ADG5412", manufacturer: "Analog Devices", category: "analog", expect: "hit" },

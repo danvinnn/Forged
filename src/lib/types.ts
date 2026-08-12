@@ -265,7 +265,13 @@ export const partSchema = z.object({
       z.object({
         field: z.string().min(1),
         deterministic: z.object({ display: z.string(), page: z.number().int().positive().nullable() }),
-        model: z.object({ display: z.string(), page: z.number().int().positive().nullable() })
+        model: z.object({ display: z.string(), page: z.number().int().positive().nullable() }),
+        // Defaulted, so a record written before this field existed still parses.
+        // Those records were built by the supersede path with the two readings
+        // the wrong way round, and there is no way to tell from the data which
+        // they were, so the default names the case that was always safe to
+        // assume: the record holds the deterministic reading.
+        holding: z.enum(["deterministic", "model"]).default("deterministic")
       })
     )
     .default([]),
@@ -320,10 +326,30 @@ export type RadiationData = {
 export type PackageVariantRecord = z.infer<typeof packageVariantSchema>;
 
 /** One field, read two ways. Both sides carry the page so a reviewer can check both. */
+/**
+ * Two readings of the same field that do not agree.
+ *
+ * `deterministic` and `model` mean exactly what they are named, ALWAYS. That
+ * sounds too obvious to state, and it is stated because the opposite shipped:
+ * the supersede path wrote the model's value into `deterministic` and the
+ * code's into `model`, on the reasoning that the record now held the model's
+ * value so it belonged in the "current" slot. The struct has no "current" slot.
+ * Every reader, the review panel and the bench alike, took the names at face
+ * value and showed both provenances BACKWARDS on exactly the fields where the
+ * model had overruled the code.
+ *
+ * Which side the record currently holds is a SEPARATE question, so it gets a
+ * separate field. It is required, so a new construction site cannot quietly
+ * default to the wrong one.
+ */
 export interface FieldConflict {
   field: string;
+  /** What the deterministic reader read. Never the model's value. */
   deterministic: { display: string; page: number | null };
+  /** What the model read. Never the code's value. */
   model: { display: string; page: number | null };
+  /** Which of the two the record is currently carrying. */
+  holding: "deterministic" | "model";
 }
 
 export type PartRecord = {

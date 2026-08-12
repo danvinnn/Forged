@@ -120,7 +120,10 @@ export interface HoldoutPart {
 export const HOLDOUT_CORPUS: HoldoutPart[] = [
   // Texas Instruments
   { partNumber: "OPA192", manufacturer: "Texas Instruments", kind: "opamp" },
-  { partNumber: "OPA2189", manufacturer: "Texas Instruments", kind: "opamp" },
+  // Replaces OPA2189, promoted into BENCH_CORPUS on 2026-08-12 after its page 5
+  // had to be opened to settle a cross-check disagreement. Chosen the same way
+  // every part here was: by vendor, kind and document age, WITHOUT opening it.
+  { partNumber: "OPA1612", manufacturer: "Texas Instruments", kind: "opamp" },
   { partNumber: "TLV9002", manufacturer: "Texas Instruments", kind: "opamp" },
   { partNumber: "LMV321", manufacturer: "Texas Instruments", kind: "opamp" },
   { partNumber: "INA333", manufacturer: "Texas Instruments", kind: "opamp" },
@@ -347,6 +350,19 @@ const modelConflicts = new Map<string, PartRecord["conflicts"]>();
               : "no land pattern";
           shipRefusals.set(why, [...(shipRefusals.get(why) ?? []), part.partNumber]);
         }
+      } else {
+        // A part `resolveForExport` declines never reached the exporter, so it
+        // was landing in NEITHER bucket: ten parts of this run were invisible,
+        // and SHIPS looked like it had regressed when the parts were in fact
+        // being HELD for review. A refusal nobody can see is the one kind that
+        // gets mistaken for a coverage loss.
+        const why =
+          resolved.unsettled && resolved.unsettled.length > 0
+            ? `held: code and model disagree (${[...new Set(resolved.unsettled)].join(",")})`
+            : resolved.untraceable && resolved.untraceable.length > 0
+              ? `held: uncitable ${[...new Set(resolved.untraceable)].join(",")}`
+              : `held: missing ${resolved.missing.join(",")}`;
+        shipRefusals.set(why, [...(shipRefusals.get(why) ?? []), part.partNumber]);
       }
     }
     byKind.set(part.kind, kind);

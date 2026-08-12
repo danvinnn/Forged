@@ -413,10 +413,11 @@ function modelOutranks(
   doc: DatasheetText,
   field: ExtractionField,
   existing: Extracted<unknown>,
-  claimed: ModelValue
+  claimed: ModelValue,
+  pinCount: number | null
 ): FieldConflict["deterministic"] | null {
   if (!CROSS_CHECKED_FIELDS.includes(field)) return null;
-  if (valuesAgree(field, existing.value, claimed.value)) return null;
+  if (valuesAgree(field, existing.value, claimed.value, pinCount)) return null;
   if (!verifyCitation(doc, claimed)) return null;
   return { display: displayValue(existing.value), page: existing.citation?.page ?? null };
 }
@@ -426,10 +427,11 @@ function recordConflict(
   doc: DatasheetText,
   field: ExtractionField,
   existing: Extracted<unknown>,
-  claimed: ModelValue
+  claimed: ModelValue,
+  pinCount: number | null
 ): void {
   if (!CROSS_CHECKED_FIELDS.includes(field)) return;
-  if (valuesAgree(field, existing.value, claimed.value)) return;
+  if (valuesAgree(field, existing.value, claimed.value, pinCount)) return;
 
   const citation = verifyCitation(doc, claimed);
   if (!citation) return;
@@ -439,7 +441,9 @@ function recordConflict(
     {
       field,
       deterministic: { display: displayValue(existing.value), page: existing.citation?.page ?? null },
-      model: { display: displayValue(claimed.value), page: citation.page }
+      model: { display: displayValue(claimed.value), page: citation.page },
+      // The model did not outrank here, so the record kept the code's reading.
+      holding: "deterministic"
     }
   ];
 }
@@ -492,9 +496,9 @@ export function mergeModelValues(
     // both be checked, not that assertion beats evidence.
     const existing = fieldAt(merged, field);
     if (existing.value !== null) {
-      const displaced = modelOutranks(doc, field, existing, claimed);
+      const displaced = modelOutranks(doc, field, existing, claimed, merged.pinCount.value);
       if (!displaced) {
-        recordConflict(merged, doc, field, existing, claimed);
+        recordConflict(merged, doc, field, existing, claimed, merged.pinCount.value);
         continue;
       }
       // Fall through: the model's reading replaces the record's, and the reading
@@ -592,19 +596,28 @@ export function mergeModelValues(
     });
     filled.push(field);
 
-    // A displaced reading becomes a conflict with the sides the other way round:
-    // the record now holds the model's value and the review panel offers the
-    // code's, so the user can put it back in one click. Recorded only after the
-    // value is actually stored, so a row that gets rejected further up never
-    // claims to have superseded anything.
+    // A displaced reading becomes a conflict, and each side is recorded under
+    // its OWN name: the code's displaced value in `deterministic`, the model's
+    // new one in `model`, and `holding: "model"` to say which the record took.
+    //
+    // These two used to be written the other way round, so that the value on the
+    // record always sat in the `deterministic` slot. It made the review panel
+    // and the bench both attribute each reading to the wrong reader on exactly
+    // the fields where the model had overruled the code. Measured on OPA2189,
+    // where the bench reported "code 1:NC vs model 1:OUT A" when the truth was
+    // the reverse, and page 5 of the datasheet settles it: the code was right.
+    //
+    // Recorded only after the value is actually stored, so a row rejected
+    // further up never claims to have superseded anything.
     const displaced = supersededBy.get(field);
     if (displaced) {
       merged.conflicts = [
         ...merged.conflicts,
         {
           field,
-          deterministic: { display: displayValue(value), page: citation?.page ?? null },
-          model: displaced
+          deterministic: displaced,
+          model: { display: displayValue(value), page: citation?.page ?? null },
+          holding: "model"
         }
       ];
     }

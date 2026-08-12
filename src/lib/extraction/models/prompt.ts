@@ -117,7 +117,8 @@ function imageGuidance(pageNumbers: number[]): string {
   const list = pageNumbers.join(", ");
   return `
 Images of page${pageNumbers.length === 1 ? "" : "s"} ${list} are attached, in that order, rendered from
-the same document. Use them:
+the same document. These are the pages you asked to see; the text below is THEIR text only, not the
+whole document, which you have already read. Use them:
 - A mechanical package drawing states its dimensions as labels beside dimension lines. Read those
   from the IMAGE. They are frequently absent from, or scrambled in, the text.
 - Where the image and the text disagree about a value, TRUST THE IMAGE and record the disagreement
