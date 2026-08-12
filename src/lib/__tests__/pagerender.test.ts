@@ -53,7 +53,7 @@ test("pages come back in the order asked for, so images line up with the prompt"
   assert.deepEqual(
     rendered.map((page) => page.page),
     [3, 1, 2],
-    "order is the caller's: selectPages already ranked by relevance"
+    "order is the caller's: the model named these pages in the order it wants them"
   );
 });
 

@@ -133,7 +133,21 @@ export class GeminiExtractionModel implements ExtractionModel {
           MODEL_TIMEOUT_MS,
           "Gemini extraction"
         );
-        return parseModelResponse(response.response.text());
+        const parsed = parseModelResponse(response.response.text());
+        // `thoughtsTokenCount` is billed as output but is reported separately
+        // and is NOT included in `candidatesTokenCount`. Measured on LM358:
+        // 256 candidate tokens against 2,779 reasoning tokens, so leaving it
+        // out understates the output side of the bill by more than 10x.
+        const usage = response.response.usageMetadata;
+        if (usage) {
+          parsed.usage = {
+            inputTokens: usage.promptTokenCount ?? 0,
+            outputTokens:
+              (usage.candidatesTokenCount ?? 0) +
+              ((usage as { thoughtsTokenCount?: number }).thoughtsTokenCount ?? 0)
+          };
+        }
+        return parsed;
       } catch (error) {
         lastError = error;
         // A timeout is ours, not theirs. Retrying a call that already burned the

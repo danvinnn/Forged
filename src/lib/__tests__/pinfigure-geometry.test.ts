@@ -727,3 +727,277 @@ test("a caption naming ONLY a glued package still names no device", () => {
   assert.ok(found, "a caption naming only a package belongs to whatever part the document is about");
   assert.equal(found.pins.length, 8);
 });
+
+// --- captions belonging to the figure above, not the one beside it ----------
+//
+// The three tests below are one defect measured on 2026-08-09. Two figures
+// STACKED vertically have their captions between them, and `captionFor` searches
+// both directions, so the lower figure collected the upper figure's caption as
+// well as its own and claimed both packages. Asking a PCF8574 for its RGY
+// package returned the DW/N pinout, 16 pins where RGY has 20; asking an AD590
+// for its 4-lead LFCSP returned the 8-lead SOIC. Both were confidently wrong
+// rather than absent.
+
+/** Two figures one above the other, each captioned BELOW itself. */
+function stackedPage(): PageText {
+  const upper = figure(80, ["A1", "A2", "A3", "A4"], ["A5", "A6", "A7", "A8"]);
+  const upperCaption = item("Figure 1. UPPER Package, 8 Pins", 80, 546 - 4 * 18 - 20, 180);
+  // The lower figure sits far enough below that the upper caption is within
+  // reach ABOVE it, which is the whole trap.
+  const lower = figure(80, ["B1", "B2", "B3"], ["B4", "B5", "B6"]).map((entry) => ({
+    ...entry,
+    y: entry.y - 130
+  }));
+  const lowerCaption = item("Figure 2. LOWER Package, 6 Pins", 80, 546 - 3 * 18 - 150, 180);
+  return page([...upper, upperCaption, ...lower, lowerCaption]);
+}
+
+test("a figure does not inherit the caption of the figure above it", () => {
+  const found = readFiguresFromPage(stackedPage());
+  const lower = found.find((entry) => entry.pins.length === 6);
+
+  assert.ok(lower, "the lower figure must still be read");
+  assert.match(lower.caption, /LOWER/, "its own caption");
+  assert.ok(!/UPPER/.test(lower.caption), "and not its neighbour's, which named a different package");
+});
+
+test("a package the caller named is not answered with a different package's figure", () => {
+  // The AD590 shape: one readable figure on the document, captioned as the SOIC,
+  // and the caller asks for the LFCSP. Agreement is trivially true of a lone
+  // figure, so before this the SOIC's pins came back under the LFCSP's name.
+  const doc = {
+    text: "",
+    pages: [
+      page(captioned(80, ["NC", "V+", "V-", "NC"], ["NC", "NC", "NC", "NC"],
+        "Figure 4. 8-Lead SOIC"))
+    ],
+    pageCount: 1,
+    truncated: false
+  };
+
+  assert.equal(
+    extractPinFigureByGeometry(doc as never, "AD590", "4-Lead LFCSP", null, true),
+    null,
+    "a figure captioned as another package must not answer for the one requested"
+  );
+
+  const asked = extractPinFigureByGeometry(doc as never, "AD590", "8-Lead SOIC", null, true);
+  assert.ok(asked, "and the package it IS captioned as still resolves");
+  assert.equal(asked.pins.length, 8);
+});
+
+test("a package the parser merely GUESSED never vetoes the document's own figure", () => {
+  // The other half of the same rule, and the reason it is scoped to a caller's
+  // request. Unhinted, an AD590 resolves its package to the first designator on
+  // page one, a 2-lead FLATPACK, while the only readable figure is the 8-lead
+  // SOIC. That figure is real and correct and the oracle pins its names; letting
+  // our own guess veto the vendor's drawing threw it away.
+  const doc = {
+    text: "",
+    pages: [
+      page(captioned(80, ["NC", "V+", "V-", "NC"], ["NC", "NC", "NC", "NC"],
+        "Figure 4. 8-Lead SOIC"))
+    ],
+    pageCount: 1,
+    truncated: false
+  };
+
+  const guessed = extractPinFigureByGeometry(doc as never, "AD590", "2-Lead FLATPACK", null, false);
+  assert.ok(guessed, "an inferred package is the weaker evidence and does not discard the drawing");
+  assert.equal(guessed.pins.length, 8);
+});
+
+// --- a pin number typeset into the same run as its name ---------------------
+
+test("a column glued to its names is recovered, and only when the proof holds", () => {
+  // AD590's 4-lead LFCSP hands its right column over as `4NC` and `3NC`, with no
+  // space at all, so those numbers were not items and the column did not exist.
+  // The split pass runs SECOND and additively: its output clears the same
+  // constant-sum and name requirements as everything else.
+  const glued: TextItem[] = [
+    item("V+", 100, 546, 12),
+    item("1", 140, 546, 5),
+    item("4NC", 260, 546, 20),
+    item("V-", 100, 528, 12),
+    item("2", 140, 528, 5),
+    item("3NC", 260, 528, 20)
+  ];
+
+  const found = readFiguresFromPage(page(glued));
+  assert.equal(found.length, 1, "the glued column is recovered as one figure");
+  assert.deepEqual(
+    found[0].pins.map((pin) => `${pin.number}=${pin.name}`),
+    ["1=V+", "2=V-", "3=NC", "4=NC"]
+  );
+});
+
+test("splitting never damages a pin name that legitimately starts with a digit", () => {
+  // `1A`, `2Y` and `1OE` are real pin names on logic parts, and no pattern tells
+  // them from `4NC` by looking at the string. The guarantee is structural: the
+  // unsplit pass runs first and its figure stands, so a wrong split can only add
+  // a candidate that the proof then rejects.
+  const logic: TextItem[] = [
+    item("1A", 100, 546, 12),
+    item("1", 140, 546, 5),
+    item("8", 260, 546, 5),
+    item("VCC", 290, 546, 18),
+    item("2A", 100, 528, 12),
+    item("2", 140, 528, 5),
+    item("7", 260, 528, 5),
+    item("2Y", 290, 528, 12),
+    item("3A", 100, 510, 12),
+    item("3", 140, 510, 5),
+    item("6", 260, 510, 5),
+    item("3Y", 290, 510, 12),
+    item("GND", 100, 492, 18),
+    item("4", 140, 492, 5),
+    item("5", 260, 492, 5),
+    item("4Y", 290, 492, 12)
+  ];
+
+  const found = readFiguresFromPage(page(logic));
+  assert.equal(found.length, 1, "one figure, not one per reading");
+  assert.deepEqual(
+    found[0].pins.map((pin) => `${pin.number}=${pin.name}`),
+    ["1=1A", "2=2A", "3=3A", "4=GND", "5=4Y", "6=3Y", "7=2Y", "8=VCC"],
+    "names keep their leading digits"
+  );
+});
+
+test("a reversed run is never split, because its leading token is not its leftmost", () => {
+  // A negative advance means the glyphs were positioned right to left, so the
+  // string is not the printed order and the number is not on the side the split
+  // would put it. See `hasPrintedOrder`.
+  const reversed: TextItem[] = [
+    item("V+", 100, 546, 12),
+    item("1", 140, 546, 5),
+    { ...item("4NC", 260, 546, 20), width: -20 },
+    item("V-", 100, 528, 12),
+    item("2", 140, 528, 5),
+    { ...item("3NC", 260, 528, 20), width: -20 }
+  ];
+
+  assert.deepEqual(readFiguresFromPage(page(reversed)), [], "no figure rather than a mis-sided one");
+});
+
+test("a caption printed under a row does not cost the whole figure", () => {
+  // Found on an LTC6563, 2026-08-10. Its 24-pin QFN figure passed the tiling
+  // proof outright and was then refused on names: under the bottom row, at 35
+  // and 53 units, sit `UDDM PACKAGE` and the `TJMAX = 150°C, θJC = 5°C/W`
+  // annotation. Both are name-shaped and both fall inside the row's own x span,
+  // so the row offered six groups for four numbers.
+  //
+  // NAME_REACH is 90 because a name sits outside the package outline, and that
+  // cannot simply be tightened: how far a name sits depends on its LENGTH, since
+  // a rotated row is aligned at its outer edge. What fixes it is taking the
+  // NEAREST candidate set that passes the existing count and constant-offset
+  // checks rather than everything within reach.
+  const items = quad(4, QUAD_NAMES);
+  const bottomRowY = 600 - 4 * 12;
+  items.push(
+    // Directly under the bottom row's names, inside its x span, exactly as the
+    // package caption sits on the real page.
+    item("UDDM PACKAGE", 200 + 8, bottomRowY - 35, 24),
+    item("TJMAX = 150C", 200 + 20, bottomRowY - 35, 24),
+    item("JC = 5C/W", 200 + 32, bottomRowY - 53, 24)
+  );
+
+  const figures = readFiguresFromPage(page(items));
+
+  assert.equal(figures.length, 1, "the figure must still be read");
+  assert.deepEqual(
+    figures[0].pins.map((pin) => `${pin.number}:${pin.name}`),
+    Array.from({ length: 16 }, (unused, index) => `${index + 1}:PA${index + 1}`),
+    "and with the row's own names, not the caption's words"
+  );
+});
+
+test("a long unspaced pin name is kept, and long prose is still refused", () => {
+  // An MSP430F5529's LQFP80 figure names pin 52 `P4.5/PM_UCA1RXD/PM_UCA1SOMI`,
+  // 27 characters of entirely correct pin name. A flat 24-character bound threw
+  // away the whole eighty-pin figure for it. What separates a pin name from
+  // prose is not length but whether it is one TOKEN.
+  const long = "P4.5/PM_UCA1RXD/PM_UCA1SOMI";
+  assert.ok(long.length > 24, "the fixture must actually exceed the old bound");
+  const names = [long, ...QUAD_NAMES.slice(1)];
+
+  const figures = readFiguresFromPage(page(quad(4, names)));
+  assert.equal(figures.length, 1, "a long unspaced name must not cost the figure");
+  assert.equal(figures[0].pins.find((pin) => pin.number === 1)?.name, long);
+
+  // And prose of the same length, which has spaces, is still kept out.
+  const prose = "SEE APPLICATIONS SECTION FOR";
+  assert.ok(prose.length > 24);
+  assert.equal(readFiguresFromPage(page(quad(4, [prose, ...QUAD_NAMES.slice(1)]))).length, 0);
+});
+
+test("a side name is found by its gap to the number, not by where it starts", () => {
+  // The reach was measured to the name's FAR end, so a longer name fell out of
+  // it. On an MSP430F5529 the left column is right-aligned to the package
+  // outline: `P7.2/CB10/A14` starts 62 units from its number and
+  // `P5.0/A8/VREF+/VeREF+` starts 92, past the 90 limit, with its right edge 14
+  // away. Pin 9 came back nameless and eighty proven pins were discarded.
+  const items = quad(4, QUAD_NAMES).map((entry) =>
+    // Pin 1's name only: pushed out so it STARTS beyond the reach while its
+    // right edge stays where it was.
+    entry.str === "PA1" ? item("PA1", entry.x - 60, entry.y, entry.width + 60) : entry
+  );
+
+  const figures = readFiguresFromPage(page(items));
+  assert.equal(figures.length, 1, "a long name must still be reachable");
+  assert.equal(figures[0].pins.find((pin) => pin.number === 1)?.name, "PA1");
+});
+
+test("a rotated row name far from its row is still found", () => {
+  // A rotated row is aligned at its OUTER edge, so how far a name's anchor sits
+  // from the row is how long the name is. Every name in an MSP430F5529's bottom
+  // row ends 12 units below it while their anchors run from 47 to 100 units
+  // away. At a 90 unit bound the longest ones were out of reach and the row came
+  // up short.
+  const items = quad(4, QUAD_NAMES).map((entry) =>
+    entry.str === "PA5" ? item("PA5", entry.x, entry.y - 80, entry.width) : entry
+  );
+
+  const figures = readFiguresFromPage(page(items));
+  assert.equal(figures.length, 1, "the row must still resolve");
+  assert.equal(figures[0].pins.find((pin) => pin.number === 5)?.name, "PA5");
+});
+
+test("a neighbouring column is not glued onto a pin name", () => {
+  // LTC2400 page 2, measured: the eight-pin figure is printed BESIDE the
+  // ABSOLUTE MAXIMUM RATINGS block at the same heights, so on each left-hand
+  // row there are two name-shaped runs about 35 units apart. The record shipped
+  // pins called `+ 0.3V)GND`, `CSS8 PART MARKING` and `SCKLTC2400IS8`, and a
+  // wrong pin name is a wrong netlist.
+  //
+  // The parts of ONE name are touching; a neighbouring column is many characters
+  // away. Measured against the anchor's own character width that holds at any
+  // scale, where the reported font height does not.
+  const items = figure(300, ["VCC", "VREF", "VIN", "GND"], ["FO", "SCK", "SDO", "CS"]);
+  // The ratings column, to the LEFT of every left-hand name and within reach.
+  ["to GND ... -0.3V to (V", " + 0.3V)", " + 0.3V)", " + 0.3V)"].forEach((text, index) => {
+    items.push(item(text, 200, 546 - index * 18, 60));
+  });
+
+  const [read] = readFiguresFromPage(page(items));
+  assert.ok(read, "the figure still reads");
+  assert.deepEqual(
+    read.pins.map((pin) => pin.name),
+    ["VCC", "VREF", "VIN", "GND", "CS", "SDO", "SCK", "FO"],
+    "each name is its own run"
+  );
+});
+
+test("a subscript is still joined to the name it belongs to", () => {
+  // The bound must not be so tight that it splits a real run: `VCC` is drawn as
+  // `V` with `CC` beside it and slightly lower, and those two are touching.
+  const items = figure(300, ["A", "B", "C", "D"], ["E", "F", "G", "H"]);
+  // Replace pin 1's name with a split run at the same origin.
+  const withoutA = items.filter((entry) => entry.str !== "A");
+  withoutA.push(item("V", 300, 546, 6, 9));
+  withoutA.push(item("CC", 306.5, 544, 8, 6));
+
+  const [read] = readFiguresFromPage(page(withoutA));
+  assert.ok(read, "the figure reads");
+  assert.equal(read.pins.find((pin) => pin.number === 1)?.name, "VCC");
+});

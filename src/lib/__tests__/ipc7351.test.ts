@@ -535,6 +535,58 @@ test("the LQFP land pattern lands on the leads it is built for", () => {
   );
 });
 
+test("a characterised family yields to the span printed on this part's own drawing", () => {
+  // One family name covers several body widths. JEDEC MO-153 is "TSSOP" at both
+  // a 4.4 mm and a 6.1 mm body, spans 6.2-6.6 and 8.0-8.4, and the pitch is 0.65
+  // on both, so the pitch agreement check cannot tell them apart. The TSSOP
+  // entry took 6.2-6.6 from one INA240 drawing, so before this a wide-body part
+  // inherited a span 1.8 mm too small and the pads landed inside the leads.
+  const wideBody = {
+    pitchMm: 0.65,
+    leadSpanMm: { minMm: 8.0, maxMm: 8.4 },
+    leadWidthMm: { minMm: 0.19, maxMm: 0.3 }
+  };
+  const lookup = resolvePackageDefinition("TSSOP", 16, wideBody);
+  assert.equal(lookup.ok, true);
+  assert.ok(lookup.ok);
+
+  assert.deepEqual(
+    lookup.definition.lead.span,
+    { minMm: 8.0, maxMm: 8.4 },
+    "the drawing in front of us outranks the one the family was read from"
+  );
+  // The contact must NOT move: IPC's contact is the seated foot, no drawing
+  // prints it, and it stays the family's hand calibration. See the printed-L
+  // guard below.
+  assert.deepEqual(lookup.definition.lead.contact, { minMm: 0.5, maxMm: 0.6 });
+  assert.match(lookup.definition.source, /Lead span 8-8\.4 mm read off this part's own package drawing/);
+
+  // And the pattern actually moves, or the override is cosmetic. `zMaxMm` is
+  // the outer toe-to-toe extent, which is what a 1.8 mm wider span buys.
+  const familyLookup = resolvePackageDefinition("TSSOP", 16, { pitchMm: 0.65 });
+  assert.ok(familyLookup.ok);
+  const narrow = computeLandPattern(familyLookup.definition.lead);
+  const wide = computeLandPattern(lookup.definition.lead);
+  assert.ok(
+    wide.zMaxMm - narrow.zMaxMm > 1.5,
+    `a 1.8 mm wider lead span must widen the lands: ${narrow.zMaxMm.toFixed(2)} -> ${wide.zMaxMm.toFixed(2)}`
+  );
+});
+
+test("a drawing span is ignored when it is not usable", () => {
+  // Same shape as the width guard: a zero, a negative or an inverted range is
+  // not evidence, and falling back to the family is better than propagating it.
+  for (const bad of [
+    { minMm: 0, maxMm: 6.6 },
+    { minMm: -1, maxMm: 6.6 },
+    { minMm: 6.6, maxMm: 6.2 }
+  ]) {
+    const lookup = resolvePackageDefinition("TSSOP", 16, { pitchMm: 0.65, leadSpanMm: bad });
+    assert.ok(lookup.ok);
+    assert.deepEqual(lookup.definition.lead.span, { minMm: 6.2, maxMm: 6.6 }, `${JSON.stringify(bad)} must not be believed`);
+  }
+});
+
 // --- land patterns derived from a part's OWN drawing -------------------------
 //
 // `packageFromDrawing` builds a definition when no characterised family covers
@@ -620,9 +672,22 @@ test("a drawing-derived pattern is refused unless the drawing stated everything"
 });
 
 test("a no-lead package gets no drawing-derived pattern, whatever the drawing says", () => {
-  // FILLET_GOALS carries gull-wing only. A QFN, DFN, SON, LGA or BGA has its own
-  // published goal table, and handing it gull-wing goals to widen coverage is
-  // the exact failure ipc7351.ts refuses to commit.
+  // Still refused, and as of 2026-08-10 for a DIFFERENT reason than when this was
+  // written, which is worth stating because the old reason has gone.
+  //
+  // The maths now exists: `computeLandPattern` lays out a no-lead terminal and is
+  // pinned above to four published vendor patterns, exactly. What is missing is
+  // the INPUTS. That rule needs the nominal body size, terminal length and
+  // terminal width, and measured over the nine no-lead parts in the cache the
+  // reader supplies terminal length for NONE of them, body size for two, and the
+  // outline code for two. Zero parts have all three.
+  //
+  // So the refusal has moved from the standard to the reader, and wiring the two
+  // together now would only let a no-lead package take dimensions read for a
+  // gull-wing one: `leadSpanMm` is a lead span, and the no-lead rule needs the
+  // BODY, which is a different number off a different part of the drawing.
+  // Connecting them before the reader can tell them apart is how a footprint gets
+  // built from the wrong dimension.
   const drawn = {
     leadSpanMm: { minMm: 3.9, maxMm: 4.1 }, leadContactMm: null,
     leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
@@ -665,4 +730,271 @@ test("a drawing's printed L is not IPC's contact length, and is not used as one"
     Math.abs(fromNominal.padLengthMm - calibrated.padLengthMm) < 0.1,
     "the nominal is the input packageFromDrawing uses, and it must stay within 0.1 mm"
   );
+});
+
+/**
+ * The no-lead rule, against the land patterns the vendors publish.
+ *
+ * Each case is TWO hand reads off the same datasheet: the package drawing for
+ * the inputs, and the `LAND PATTERN EXAMPLE` page for the expected result.
+ * Neither came from this code's output. The four span two body sizes, three
+ * families and two pitches, which is what makes them a check rather than a
+ * restatement: a rule fitted to the 3 mm parts alone would pass three of these
+ * and fail the fourth, and that is exactly how the RSS model was ruled out.
+ *
+ * TI prints the land as a CENTRE-to-centre span with a separate pad length, so
+ * the expected span below is `2 * padCentreMm` and compares against that number.
+ */
+/** Two decimals, which is the precision the vendors print these to. */
+const round = (value: number) => Math.round(value * 100) / 100;
+
+const NO_LEAD_CASES = [
+  {
+    what: "DSD0008D WSON-8, UCC27524 pages 36 and 37",
+    body: { minMm: 2.9, maxMm: 3.1 },
+    terminalLength: { minMm: 0.3, maxMm: 0.5 },
+    terminalWidth: { minMm: 0.25, maxMm: 0.37 },
+    padLengthMm: 0.6,
+    padWidthMm: 0.31,
+    centreSpanMm: 2.8
+  },
+  {
+    what: "DRB0008B VSON-8, OPA333 pages 34 and 35",
+    body: { minMm: 2.9, maxMm: 3.1 },
+    terminalLength: { minMm: 0.3, maxMm: 0.5 },
+    terminalWidth: { minMm: 0.25, maxMm: 0.35 },
+    padLengthMm: 0.6,
+    padWidthMm: 0.3,
+    centreSpanMm: 2.8
+  },
+  {
+    what: "RGT0016C VQFN-16, PCF8574 pages 30 and 31",
+    body: { minMm: 2.9, maxMm: 3.1 },
+    terminalLength: { minMm: 0.3, maxMm: 0.5 },
+    terminalWidth: { minMm: 0.18, maxMm: 0.3 },
+    padLengthMm: 0.6,
+    padWidthMm: 0.24,
+    centreSpanMm: 2.8
+  },
+  {
+    // The one that matters most: a 9 mm body with a WIDER tolerance than the
+    // others. The standard's RSS model puts its toe 0.024 mm from where the 3 mm
+    // parts put theirs; TI puts it in the same place, and so does this.
+    what: "RGC0064B VQFN-64, MSP430F5529 pages 135 and 136",
+    body: { minMm: 8.85, maxMm: 9.15 },
+    terminalLength: { minMm: 0.3, maxMm: 0.5 },
+    terminalWidth: { minMm: 0.18, maxMm: 0.3 },
+    padLengthMm: 0.6,
+    padWidthMm: 0.24,
+    centreSpanMm: 8.8
+  }
+];
+
+for (const problem of NO_LEAD_CASES) {
+  test(`no-lead land reproduces the pattern published for ${problem.what}`, () => {
+    const land = computeLandPattern({
+      form: "nolead",
+      span: problem.body,
+      contact: problem.terminalLength,
+      width: problem.terminalWidth
+    });
+
+    assert.equal(round(land.padLengthMm), problem.padLengthMm);
+    assert.equal(round(land.padWidthMm), problem.padWidthMm);
+    assert.equal(round(land.padCentreMm * 2), problem.centreSpanMm);
+  });
+}
+
+test("a no-lead package refuses a density level the rule does not carry", () => {
+  // The rule was read off four drawings that carry no density label. Producing
+  // an "A" from it would be inventing the one thing the evidence does not say.
+  const lead = {
+    form: "nolead" as const,
+    span: { minMm: 2.9, maxMm: 3.1 },
+    contact: { minMm: 0.3, maxMm: 0.5 },
+    width: { minMm: 0.18, maxMm: 0.3 }
+  };
+  assert.doesNotThrow(() => computeLandPattern(lead, { densityLevel: "B" }));
+  assert.throws(() => computeLandPattern(lead, { densityLevel: "A" }), LandPatternError);
+  assert.throws(() => computeLandPattern(lead, { densityLevel: "C" }), LandPatternError);
+});
+
+test("no-lead terminals that meet under the body are refused, not laid out", () => {
+  assert.throws(
+    () =>
+      computeLandPattern({
+        form: "nolead",
+        span: { minMm: 1.0, maxMm: 1.0 },
+        contact: { minMm: 0.6, maxMm: 0.6 },
+        width: { minMm: 0.2, maxMm: 0.2 }
+      }),
+    LandPatternError
+  );
+});
+
+test("a drawing-derived pattern reproduces the land pattern the vendor prints", () => {
+  // The whole rendered-page path, pinned end to end. An ADS8688 is a 38-pin
+  // TSSOP, a count the hand-entered TSSOP entry does not cover (8 to 16), so it
+  // could not ship at all until its own drawing was read.
+  //
+  // The span and the printed L come from a model reading the RENDERED drawing on
+  // page 65; the pitch and width from the deterministic reader on the same page.
+  // Ground truth is the land pattern TI prints on page 66: (1.5) x (0.3) on a
+  // (5.8) centre span. Nothing here came from this code's own output.
+  const lookup = resolvePackageDefinition("TSSOP (38)", 38, {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.17, maxMm: 0.23 },
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 }
+  });
+  assert.equal(lookup.ok, true, "a 38-pin TSSOP must resolve from its own drawing");
+  if (!lookup.ok) return;
+
+  const land = computeLandPattern(lookup.definition.lead, { densityLevel: "B" });
+  assertClose(land.padLengthMm, 1.5, "land length against TI page 66");
+  assertClose(land.padWidthMm, 0.3, "land width against TI page 66");
+  assertClose(land.padCentreMm * 2, 5.8, "centre-to-centre span against TI page 66");
+});
+
+test("the printed L range supplies the contact length when no single nominal was read", () => {
+  // Only the rendered-page reader fills `leadContactMm`, and it fills it as a
+  // min-max pair. Before this fallback every model-read drawing stopped here:
+  // on 2026-08-10 the model filled the pair on 4 of 4 parts and the single
+  // nominal on none, so not one of them could produce a footprint.
+  const withPair = resolvePackageDefinition("TSSOP (38)", 38, {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.17, maxMm: 0.23 },
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 }
+  });
+  const withNeither = resolvePackageDefinition("TSSOP (38)", 38, {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.17, maxMm: 0.23 },
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 }
+  });
+
+  assert.equal(withPair.ok, true);
+  assert.equal(withNeither.ok, false, "no contact length at all is still a refusal");
+});
+
+test("a lead nearly as wide as its pitch is refused, not laid out", () => {
+  // An ADS1115's DYN0010A tags several max-over-min pairs and the width reader
+  // took `10X 0.45/0.25`, which is not the lead width; the drawing's width is
+  // `10X 0.30/0.18`. At 0.45 on a 0.5 pitch the leads would sit 0.05 mm apart.
+  //
+  // The part exported anyway, and its pads came out 0.44 mm longer and 0.22 mm
+  // wider than the land pattern TI prints on page 55. A footprint that ships and
+  // is wrong is worse than one that refuses, so the ratio is checked.
+  const misread = resolvePackageDefinition("TSSOP (38)", 38, {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.25, maxMm: 0.45 },
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 }
+  });
+  assert.equal(misread.ok, false, "0.45 on a 0.5 pitch is not a lead width");
+
+  // And an ordinary width on the same pitch is accepted, so the guard is about
+  // the ratio rather than about the package. Asked of a TSSOP because a SOT is
+  // now refused a drawing-derived pattern outright, for a different reason: see
+  // the lead-form test below.
+  const correct = resolvePackageDefinition("TSSOP (38)", 38, {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.17, maxMm: 0.3 },
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 }
+  });
+  assert.equal(correct.ok, true, "0.30 on a 0.5 pitch is an ordinary lead");
+});
+
+test("a SOT whose lead form is not gull-wing is caught by its own datasheet", () => {
+  // `SOT` does not name a lead form. A SOT-23 is a gull-wing; an ADS1115's
+  // SOT-10 is JEDEC MO-368, whose terminal is a flat tab under the body edge.
+  //
+  // Every input below was read off DYN0010A by hand on page 54 and every one is
+  // correct. Correct numbers with the wrong lead form is the combination no
+  // input can express and no family name detects, and it is why excluding SOT
+  // from the gull-wing list was the wrong fix: it repaired this one part and
+  // nothing else.
+  //
+  // What detects it is the land pattern TI prints on page 55.
+  const evidence = {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.18, maxMm: 0.3 },
+    leadSpanMm: { minMm: 2.7, maxMm: 2.9 },
+    leadContactMm: { minMm: 0.35, maxMm: 0.55 }
+  };
+
+  assert.equal(
+    resolvePackageDefinition("SOT-10", 10, evidence).ok,
+    true,
+    "nothing about the family or the numbers is wrong, which is the point"
+  );
+  assert.equal(
+    resolvePackageDefinition("SOT-10", 10, { ...evidence, vendorLandMm: [0.82, 0.3, 0.5, 2.53] }).ok,
+    false,
+    "the datasheet's own printed land pattern is what refuses it"
+  );
+});
+
+test("a TSSOP still resolves from its own drawing, so the SOT rule is not a blanket refusal", () => {
+  const lookup = resolvePackageDefinition("TSSOP (38)", 38, {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.17, maxMm: 0.23 },
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 }
+  });
+  assert.equal(lookup.ok, true);
+});
+
+test("a drawing-derived land the vendor's own page contradicts is refused", () => {
+  // The general guard, tested where no family rule can be doing the work: SSOP
+  // is on the drawing path and is not in the hand-entered table.
+  //
+  // The numbers are the ADS1115's, all four read off DYN0010A by hand and all
+  // four correct. What is wrong is the LEAD FORM, which no input can express,
+  // and the symptom is that the computed land misses the pattern TI prints on
+  // page 55 (0.82 x 0.3 on a 2.53 centre span) by 0.44 mm.
+  const evidence = {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.18, maxMm: 0.3 },
+    leadSpanMm: { minMm: 2.7, maxMm: 2.9 },
+    leadContactMm: { minMm: 0.35, maxMm: 0.55 }
+  };
+
+  const unchecked = resolvePackageDefinition("SSOP (10)", 10, evidence);
+  assert.equal(unchecked.ok, true, "without the page there is nothing to contradict it");
+
+  const checked = resolvePackageDefinition("SSOP (10)", 10, {
+    ...evidence,
+    vendorLandMm: [0.82, 0.3, 0.5, 2.53]
+  });
+  assert.equal(checked.ok, false, "the printed land pattern must veto it");
+});
+
+test("a drawing-derived land that agrees with the printed one is kept", () => {
+  // The guard has to be capable of saying yes, or it is just a refusal with
+  // extra steps. The ADS8688's own numbers against its own page 66.
+  const checked = resolvePackageDefinition("TSSOP (38)", 38, {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.17, maxMm: 0.23 },
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 },
+    vendorLandMm: [1.5, 0.3, 0.5, 5.8]
+  });
+
+  assert.equal(checked.ok, true, "0.02 mm from the printed pattern is agreement");
+});
+
+test("a datasheet that prints no land pattern does not block a drawing-derived one", () => {
+  // Most datasheets print nothing to compare against. Absence of evidence must
+  // not become a refusal, or the guard would undo the whole drawing path.
+  const checked = resolvePackageDefinition("TSSOP (38)", 38, {
+    pitchMm: 0.5,
+    leadWidthMm: { minMm: 0.17, maxMm: 0.23 },
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 },
+    vendorLandMm: []
+  });
+
+  assert.equal(checked.ok, true);
 });

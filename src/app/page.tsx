@@ -7,7 +7,11 @@ import type { Extracted, ExportFormat, LeadWidth, PartRecord, PinRecord } from "
 // the resolvers, etc.) is pulled into the client bundle.
 import type { DeploymentMode } from "../lib/retrieval";
 // Type-only for the same reason: `exporters.ts` reaches the CAD generators.
-import type { RequiredInput } from "../lib/exporters";
+import type { PackageChoice, RequiredInput } from "../lib/exporters";
+import type { ReviewItem } from "../lib/review";
+// Type-only: `pagerender.ts` dynamically imports mupdf, which must not follow
+// the review panel into the browser bundle.
+import type { RenderedPage } from "../lib/pagerender";
 
 interface AppConfig {
   mode: DeploymentMode;
@@ -48,6 +52,9 @@ const defaultPart: PartRecord = {
   packageType: nothing<string>(),
   packageOutlineCode: nothing<string>(),
   packageVariants: [],
+  vendorLandPattern: null,
+  exposedPad: false,
+  conflicts: [],
   pinCount: nothing<number>(),
   pins: nothing<PinRecord[]>(),
   dimensions: {
@@ -58,7 +65,9 @@ const defaultPart: PartRecord = {
     leadLengthMm: nothing<number>(),
     leadCount: nothing<number>(),
     leadWidthMm: nothing<LeadWidth>(),
-    leadSpanMm: nothing<LeadWidth>(), leadContactMm: nothing<LeadWidth>()
+    leadSpanMm: nothing<LeadWidth>(), leadContactMm: nothing<LeadWidth>(),
+    thermalPadLengthMm: nothing<number>(),
+    thermalPadWidthMm: nothing<number>()
   },
   radiation: {
     tid: nothing<string>(),
@@ -92,7 +101,10 @@ function Provenance({ field }: { field: Extracted<unknown> }) {
   }
   const parts: string[] = [];
   if (field.citation) parts.push(`p${field.citation.page}`);
-  if (field.method === "user") parts.push("confirmed");
+  // A person typing a value and a person confirming a model's reading against
+  // the cited page are different claims, and the badge says which.
+  if (field.method === "user") parts.push("entered by you");
+  else if (field.method === "user-confirmed") parts.push("checked by you");
   else if (field.method) parts.push(field.method);
   if (field.confidence !== null) parts.push(`${Math.round(field.confidence * 100)}%`);
   return (
@@ -211,10 +223,26 @@ export default function HomePage() {
   // record and the user could not change their mind.
   const [offeredVariants, setOfferedVariants] = useState<PartRecord["packageVariants"]>([]);
 
+  // What each offered package would actually produce, from the server, which
+  // runs the real footprint generator to find out. Held on the same terms as
+  // `offeredVariants`: the first read's answer, kept across a re-read so a user
+  // who picks one package can still see what the others would have done.
+  const [packageChoice, setPackageChoice] = useState<PackageChoice | null>(null);
+
   // Values the export asked for that no datasheet carries. Empty unless the last
   // export came back 422 INPUT_REQUIRED.
   const [pendingNeeds, setPendingNeeds] = useState<RequiredInput[]>([]);
   const [needValue, setNeedValue] = useState("");
+  /**
+   * Values the record holds but nobody has checked, with the pages to check them
+   * on. This is the rung of the friction ladder between "nothing to do" and
+   * "type a number": we already have an answer, it just needs one second of a
+   * human's attention before anyone signs for it.
+   */
+  const [review, setReview] = useState<ReviewItem[]>([]);
+  const [reviewPageImages, setReviewPageImages] = useState<RenderedPage[]>([]);
+  const [openReview, setOpenReview] = useState<string | null>(null);
+  const [correction, setCorrection] = useState("");
 
   // An `install`-scoped answer is a property of the assembly line, not of the
   // part: the trim an assembler forms leads to is the same for an op-amp and a
@@ -287,6 +315,12 @@ export default function HomePage() {
   // copy, and a user who picks wrong has to be able to pick again.
   const packageChoices =
     offeredVariants.length > 0 ? offeredVariants : part.packageVariants;
+  // What each chip will do, keyed by the designator printed on it. Empty when
+  // the record could not resolve at all, in which case the chips carry no
+  // outcome rather than a wrong one: see the note on the picker below.
+  const packageOutcomes = new Map(
+    packageChoice?.ok ? packageChoice.options.map((option) => [option.designator, option]) : []
+  );
   // Flattened from the families the server says it can build, so the list can
   // never drift from what export actually accepts.
   const supportedPackages = (config?.packageFamilies ?? []).flatMap(
@@ -375,9 +409,15 @@ export default function HomePage() {
 
       const record = payload.part as PartRecord;
       setPart(record);
+      setReview((payload.review as ReviewItem[]) ?? []);
+      setReviewPageImages((payload.reviewPages as RenderedPage[]) ?? []);
+      setOpenReview(null);
       setOrigin({ kind: "upload", file });
       // A re-read keeps the packages the first read offered; see `offeredVariants`.
-      if (!packageType) setOfferedVariants(record.packageVariants);
+      if (!packageType) {
+        setOfferedVariants(record.packageVariants);
+        setPackageChoice((payload.packageChoice as PackageChoice) ?? null);
+      }
       setStatus(
         packageType
           ? describeChoice(record, packageType)
@@ -501,6 +541,82 @@ export default function HomePage() {
    * the download button again is the same friction the prompt was added to
    * remove.
    */
+  /**
+   * Writes one field back into the record by its dotted path.
+   *
+   * Only the field named is touched, and only its own keys: a confirmation must
+   * never disturb a neighbouring value or the citation the reviewer just read.
+   */
+  function withField(record: PartRecord, path: string, patch: Partial<Extracted<unknown>>): PartRecord {
+    if (!path.includes(".")) {
+      const current = (record as unknown as Record<string, Extracted<unknown>>)[path];
+      return { ...record, [path]: { ...current, ...patch } } as PartRecord;
+    }
+    const [group, key] = path.split(".");
+    const bag = (record as unknown as Record<string, Record<string, Extracted<unknown>>>)[group];
+    return {
+      ...record,
+      [group]: { ...bag, [key]: { ...bag[key], ...patch } }
+    } as PartRecord;
+  }
+
+  /** Drops an item once a person has dealt with it. */
+  function settle(field: string) {
+    setReview((items) => items.filter((item) => item.field !== field));
+    setOpenReview(null);
+    setCorrection("");
+  }
+
+  /**
+   * "I looked at the page and this is right."
+   *
+   * Recorded as `user-confirmed` rather than `user`, and the citation is KEPT.
+   * The value still came off page 2 and a reviewer auditing this later should
+   * see both facts: a model read it, and a person checked it against the page it
+   * claims. That is a stronger record than either alone, and it is also what
+   * unblocks an export: an uncited model value cannot pass `resolveForExport`,
+   * and a confirmed one can.
+   */
+  function handleConfirmReview(item: ReviewItem) {
+    setPart((record) =>
+      withField(record, item.field, { confidence: 1, method: "user-confirmed" })
+    );
+    settle(item.field);
+    setStatus(`Confirmed ${item.label.toLowerCase()} against page ${item.page ?? "?"}.`);
+  }
+
+  /**
+   * "I looked at the page and it says something else."
+   *
+   * The citation is kept here too. The user read the corrected value off that
+   * same page, so the page is still where the evidence is; what changes is that
+   * the value is now a person's reading rather than a model's.
+   */
+  function handleCorrectReview(item: ReviewItem, raw: string) {
+    const text = raw.trim();
+    if (!text) {
+      setStatus(`Enter a value for ${item.label.toLowerCase()}, or confirm what was read.`);
+      return;
+    }
+
+    // Numeric fields must stay numeric or the export schema rejects the record
+    // at the boundary, which would surface as an unrelated-looking failure.
+    const numeric = item.field === "pinCount" || /Mm$/.test(item.field);
+    let value: unknown = text;
+    if (numeric) {
+      const parsed = Number(text);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setStatus(`${item.label} must be a positive number.`);
+        return;
+      }
+      value = item.field === "pinCount" ? Math.round(parsed) : parsed;
+    }
+
+    setPart((record) => withField(record, item.field, { value, confidence: 1, method: "user" }));
+    settle(item.field);
+    setStatus(`Set ${item.label.toLowerCase()} to ${text}.`);
+  }
+
   async function handleSupplyNeed(need: RequiredInput, raw: string) {
     const value = Number(raw);
     if (!Number.isFinite(value) || value <= 0 || value > MAX_LEAD_SPAN_MM) {
@@ -625,6 +741,182 @@ export default function HomePage() {
           </>
         )}
       </section>
+
+      {review.length > 0 && (
+        <section className="tool-row">
+          <article className="panel review-panel">
+            <div className="card-kicker">Needs a look</div>
+            <h2 className="review-heading">
+              {review.filter((item) => item.blocking).length > 0
+                ? `${review.filter((item) => item.blocking).length} value${
+                    review.filter((item) => item.blocking).length === 1 ? "" : "s"
+                  } must be checked before export`
+                : `${review.length} value${review.length === 1 ? "" : "s"} worth a second look`}
+            </h2>
+            <p className="review-intro">
+              Forge read these but could not verify them against the datasheet text. Open one to see
+              the page it came from, then confirm it or type what the page actually says.
+            </p>
+
+            {review.map((item) => {
+              const open = openReview === item.field;
+              // Bound once so the JSX below narrows it; `item.alternative` inside
+              // a callback does not.
+              const alternative = item.alternative;
+              const image = reviewPageImages.find((page) => page.page === item.page);
+              // A pin table is a list, not a value anyone should retype into a
+              // text box. It is confirmed or it is re-read by naming the package.
+              const editable = item.field !== "pins";
+
+              return (
+                <div
+                  key={item.field}
+                  className={`review-item${item.blocking ? " review-blocking" : ""}${
+                    item.reason === "disagreement" ? " review-conflict" : ""
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className="review-summary"
+                    onClick={() => {
+                      setOpenReview(open ? null : item.field);
+                      setCorrection("");
+                    }}
+                    aria-expanded={open}
+                  >
+                    <span className="review-label">{item.label}</span>
+                    <span className="review-value">
+                      {item.display}
+                      {/* Both readings on the summary line. A conflict the user has
+                          to expand to see is a conflict most users never see. */}
+                      {item.alternative && (
+                        <>
+                          {" vs "}
+                          <span className="review-alt">{item.alternative.display}</span>
+                        </>
+                      )}
+                    </span>
+                    <span className="review-where">
+                      {item.alternative
+                        ? `two readings disagree${
+                            item.page !== null && item.alternative.page !== null
+                              ? ` · pages ${item.page} and ${item.alternative.page}`
+                              : ""
+                          }`
+                        : item.blocking
+                          ? "blocks export"
+                          : item.page !== null
+                            ? `page ${item.page}`
+                            : "no page cited"}
+                    </span>
+                  </button>
+
+                  {open && (
+                    <div className="review-body">
+                      <p className="review-consequence">{item.consequence}</p>
+                      {item.snippet && <p className="review-snippet">Cited as: {item.snippet}</p>}
+
+                      {/* Both pages, side by side. Settling a disagreement means
+                          looking at the two places the two readers looked, and
+                          showing one of them decides the question by omission. */}
+                      {item.alternative ? (
+                        <div className="review-compare">
+                          {[
+                            { which: "Forge read", value: item.display, page: item.page },
+                            { which: "The model read", value: item.alternative.display, page: item.alternative.page }
+                          ].map((side) => {
+                            const sideImage = reviewPageImages.find((page) => page.page === side.page);
+                            return (
+                              <figure key={side.which} className="review-side">
+                                <figcaption>
+                                  <strong>{side.which}</strong> {side.value}
+                                  {side.page !== null && <span className="review-where"> · page {side.page}</span>}
+                                </figcaption>
+                                {sideImage ? (
+                                  <img
+                                    className="review-page"
+                                    src={`data:${sideImage.mimeType};base64,${sideImage.base64}`}
+                                    alt={`Page ${sideImage.page} of the datasheet`}
+                                  />
+                                ) : (
+                                  <p className="review-snippet">
+                                    {side.page !== null
+                                      ? `Open page ${side.page} to check this.`
+                                      : "No page cited."}
+                                  </p>
+                                )}
+                              </figure>
+                            );
+                          })}
+                        </div>
+                      ) : image ? (
+                        <img
+                          className="review-page"
+                          src={`data:${image.mimeType};base64,${image.base64}`}
+                          alt={`Page ${image.page} of the datasheet`}
+                        />
+                      ) : (
+                        <p className="review-snippet">
+                          {item.page !== null
+                            ? `Open page ${item.page} of the datasheet to check this.`
+                            : "Forge could not say which page this came from, which is itself a reason to distrust it."}
+                        </p>
+                      )}
+
+                      <div className="review-actions">
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={() => handleConfirmReview(item)}
+                        >
+                          {item.alternative ? "Keep this one" : "Correct as read"}
+                        </button>
+                        {/* One click to take the other reading. Making the user
+                            retype a value that is already on screen is how a
+                            correct answer gets mistyped. */}
+                        {alternative && editable && (
+                          <button
+                            type="button"
+                            className="need-submit"
+                            onClick={() => handleCorrectReview(item, alternative.display)}
+                          >
+                            Use {alternative.display}
+                          </button>
+                        )}
+                        {editable && (
+                          <>
+                            <input
+                              className="review-input"
+                              value={correction}
+                              placeholder="or type the right value"
+                              onChange={(event) => setCorrection(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") handleCorrectReview(item, correction);
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="need-submit"
+                              onClick={() => handleCorrectReview(item, correction)}
+                            >
+                              Use this
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      {!editable && (
+                        <p className="review-snippet">
+                          To change a pinout, name the package instead of editing pins one by one.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </article>
+        </section>
+      )}
 
       <section className="tool-row export-row">
         <div className="format-card panel">
@@ -779,21 +1071,55 @@ export default function HomePage() {
                     building?
                     {origin !== null && " Picking one re-reads the datasheet for that package."}
                   </span>
-                  {packageChoices.map((variant) => (
-                    <button
-                      key={variant.designator}
-                      type="button"
-                      disabled={busy}
-                      className={
-                        part.packageType.value === variant.designator
-                          ? "package-chip active"
-                          : "package-chip"
-                      }
-                      onClick={() => handlePackageChoice(variant.designator)}
-                    >
-                      {variant.designator}
-                    </button>
-                  ))}
+                  {packageChoices.map((variant) => {
+                    // What this chip will do, from the server, which found out by
+                    // running the real footprint generator. Absent means the
+                    // record could not resolve at all, and the panel below says
+                    // so once rather than marking every chip dead in turn.
+                    const outcome = packageOutcomes.get(variant.designator);
+                    const suffix =
+                      outcome?.status === "needs-input"
+                        ? " (needs one number)"
+                        : outcome?.status === "unsupported"
+                          ? " (not buildable yet)"
+                          : "";
+                    return (
+                      <button
+                        key={variant.designator}
+                        type="button"
+                        disabled={busy}
+                        className={[
+                          "package-chip",
+                          part.packageType.value === variant.designator ? "active" : "",
+                          outcome ? `outcome-${outcome.status}` : ""
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        // Never disabled on an unsupported outcome. The pinout is
+                        // still worth having, the refusal is ours rather than the
+                        // datasheet's, and a chip that cannot be pressed cannot
+                        // explain itself.
+                        title={outcome?.reason ?? outcome?.needs[0]?.why ?? undefined}
+                        onClick={() => handlePackageChoice(variant.designator)}
+                      >
+                        {variant.designator}
+                        {suffix}
+                      </button>
+                    );
+                  })}
+                  {/*
+                    Said once, under the row, rather than per chip. The record
+                    blocks every package equally, so marking each one would
+                    present one problem as several and imply another choice might
+                    avoid it.
+                  */}
+                  {packageChoice && !packageChoice.ok && (
+                    <span className="package-picker-note">
+                      No package here can be built yet: the datasheet reading is missing{" "}
+                      {packageChoice.blockedBy.join(" and ")}. Picking one still re-reads the
+                      datasheet for that package, which is often what fills it in.
+                    </span>
+                  )}
                 </span>
               )}
               {supportedPackages.length > 0 && (

@@ -83,9 +83,17 @@ test("the rules are restated after the untrusted content", () => {
   assert.ok(fenceEnd > 0 && reminder > fenceEnd, "a reminder must follow the untrusted content");
 });
 
-test("even a fully compliant injected answer cannot overwrite extracted values", () => {
-  // Assume the injection worked completely and the model returns what the
-  // datasheet demanded. The containment must still hold.
+test("an injected instruction is not evidence, even under model-first", () => {
+  // The defence that makes model-first safe to ship.
+  //
+  // Citation checking alone cannot help here: the payload puts the literal
+  // string "128" on page 1, so the claim verifies. On an uploaded PDF "the
+  // document states this" and "the attacker wrote this" are the same act, so
+  // judging the VALUE is hopeless.
+  //
+  // What is judgeable is the REGION. A datasheet does not contain instructions
+  // addressed to a reader of datasheets, so text that does is cut out before any
+  // matching happens, and the number planted inside it has nothing to cite.
   const doc = datasheetTextFromPages([
     `VORAGO Technologies VA10820\nAvailable in a 32-pin QFN package.\n${INJECTION}`
   ]);
@@ -99,11 +107,37 @@ test("even a fully compliant injected answer cannot overwrite extracted values",
   };
   const { part: merged } = mergeModelValues(part, doc, compromised, "test-model");
 
-  // Both were read off the page by code, so the model gets no vote on them.
+  assert.equal(merged.pinCount.value, 32, "the injected count is not evidence and does not displace");
   assert.equal(merged.manufacturer.value, "VORAGO Technologies");
-  assert.equal(merged.manufacturer.method, "deterministic");
-  assert.equal(merged.pinCount.value, 32);
-  assert.notEqual(merged.pinCount.value, 128, "the injected pin count must not win");
+  assert.equal(
+    merged.conflicts.length,
+    0,
+    "and it is not shown as a disagreement either, which would spend attention on a hallucination"
+  );
+
+  // The attempt is REPORTED. The case where the defence worked must not look
+  // identical to an ordinary parse.
+  assert.ok(
+    merged.notes.some((note) => /addressed to an automated reader/i.test(note)),
+    `the record must say the document tried; notes were ${JSON.stringify(merged.notes)}`
+  );
+});
+
+test("a real value on a clean part of the page is still citable", () => {
+  // The quarantine must not swallow the document. A page carrying BOTH an
+  // injected instruction and a genuine statement still supports the genuine one:
+  // the real occurrence survives the cut, and that is what makes it evidence.
+  const doc = datasheetTextFromPages([
+    `VORAGO Technologies VA10820\nAvailable in a 32-pin QFN package.\n${INJECTION}`,
+    "Mechanical Data\nTerminal spacing is 0.5 mm nominal."
+  ]);
+  const part = buildPartRecord(doc, "VA10820.pdf");
+
+  const answer: ExtractionResult = { values: { "dimensions.pitchMm": { value: 0.5, page: 2 } } };
+  const { part: merged } = mergeModelValues(part, doc, answer, "test-model");
+
+  assert.equal(merged.dimensions.pitchMm.value, 0.5);
+  assert.equal(merged.dimensions.pitchMm.citation?.page, 2, "a clean page is unaffected");
 });
 
 test("an injected value for a genuine gap is kept but flagged untraceable", () => {

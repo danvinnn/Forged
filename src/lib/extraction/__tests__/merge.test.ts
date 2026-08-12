@@ -6,6 +6,7 @@ import { partSchema, resolveForExport, type PartRecord } from "../../types";
 import { mergeModelValues, unresolvedFields, verifyCitation } from "../merge";
 import { buildExtractionRequest } from "../request";
 import type { ExtractionResult } from "../contracts";
+import { CROSS_CHECKED_FIELDS } from "../crosscheck";
 
 // The merge layer is where the traceability guarantee is actually enforced, so
 // it carries the tests that used to sit on the legacy Gemini record builder:
@@ -159,7 +160,24 @@ test("no request is built when the text pass resolved everything it can", () => 
     full.radiation[key] = { value: "x", confidence: 1, method: "deterministic", citation: null };
   }
 
-  assert.equal(buildExtractionRequest(full, doc, "x.pdf"), null, "no gaps means no model call");
+  // A fully resolved record STILL asks, and that is the cross-check.
+  //
+  // This test asserted `null` until 2026-08-11, which encoded the behaviour that
+  // made a confidently wrong deterministic value unfalsifiable: nothing was ever
+  // asked about a field the code had answered, so nothing could ever contradict
+  // it. What must still hold is that the request is narrowed to the fields worth
+  // contradicting rather than becoming a re-ask of the whole contract.
+  const request = buildExtractionRequest(full, doc, "x.pdf");
+  assert.ok(request, "a resolved record is still cross-checked");
+  assert.deepEqual([...request.fields].sort(), [...CROSS_CHECKED_FIELDS].sort());
+  assert.ok(
+    !request.fields.some((field) => field.startsWith("radiation.")),
+    "a radiation rating places no copper, so it is not worth interrupting for"
+  );
+  assert.ok(
+    !request.fields.includes("manufacturer"),
+    "nor is a manufacturer string"
+  );
 });
 
 test("the request carries pages, not a flattened blob", () => {
@@ -325,11 +343,15 @@ test("a model pin table that does not number 1..N is discarded, not stored", () 
   );
 });
 
-test("an exposed thermal pad refuses the table, and says that is why", () => {
+test("an exposed thermal pad is recorded on the part, and the pinout is KEPT", () => {
   // AD8232, measured: the model returns a correct 1..20 LFCSP table plus a 21st
-  // row numbered "EP". Emitting the numbered pins alone would be a footprint
-  // missing the pad the part must be soldered by, and geometry.ts has no
-  // exposed-pad concept at all.
+  // row numbered "EP".
+  //
+  // This used to refuse the whole table. That was the wrong layer: geometry.ts
+  // has no exposed-pad concept, so the FOOTPRINT cannot be built, but the twenty
+  // numbered rows are a correct pinout and the symbol is built from them.
+  // Measured over the hold-out, the old behaviour discarded three complete
+  // pinouts (ADS1220, LD39050, ST1S10) over a single trailing row.
   const rows = Array.from({ length: 20 }, (_, index) => ({
     number: index + 1,
     name: `P${index + 1}`,
@@ -344,8 +366,26 @@ test("an exposed thermal pad refuses the table, and says that is why", () => {
     "gemini"
   );
 
+  assert.equal(merged.part.pins.value?.length, 20, "the numbered rows survive");
+  assert.equal(merged.part.exposedPad, true, "and the pad is recorded rather than forgotten");
+  assert.ok(
+    !merged.rejected.some((entry) => entry.field === "pins"),
+    "a pad row is not a defect in the pin table"
+  );
+});
+
+test("a table of nothing but terminals is still refused", () => {
+  // The pad row is dropped, not tolerated: dropping it must not turn an answer
+  // with no pinout in it into an empty accepted one.
+  const merged = mergeModelValues(
+    deterministic(),
+    doc,
+    { values: { pins: { value: [{ number: "EP", name: "PAD" }] as never, page: 1 } } },
+    "gemini"
+  );
+
   assert.equal(merged.part.pins.value, null);
-  assert.match(merged.rejected[0].reason, /exposed thermal pad/);
+  assert.match(merged.rejected[0].reason, /no numbered rows/);
 });
 
 // --- values read off a RENDERED page ----------------------------------------
@@ -406,33 +446,56 @@ test("a drawing-read value is recorded as weaker evidence than a quoted one", ()
   );
 });
 
-test("a pin table is never accepted on drawing evidence alone", () => {
-  const part = deterministic();
-
-  // Rows that do not appear on the cited page. verifyPinTable is what stops a
-  // fabricated table entering the record, and a table is what pads are built
-  // from, so the weaker drawing path must not offer it a way in.
-  const result: ExtractionResult = {
+function pinTableOnPage(page: number): ExtractionResult {
+  return {
     values: {
       pins: {
         value: [
-          { number: "1", name: "INVENTED", electricalType: "passive" },
-          { number: "2", name: "ALSO_INVENTED", electricalType: "passive" }
+          { number: "1", name: "OUT", electricalType: "output" },
+          { number: "2", name: "GND", electricalType: "power" }
         ],
-        page: 2
+        page
       }
     }
   };
+}
 
-  const outcome = mergeModelValues(part, doc, result, "test-model", [2]);
+test("a pin table read off a rendered page is cited to that page, not discarded", () => {
+  // Reversed on 2026-08-06. Some pinouts are vector artwork with no text layer,
+  // so a text citation is not merely hard to obtain, it does not exist. The old
+  // rule threw those pins away for want of evidence the document cannot supply.
+  // A citation naming the page a reviewer can open is real evidence.
+  const outcome = mergeModelValues(deterministic(), doc, pinTableOnPage(2), "test-model", [2]);
 
-  // The table is still recorded and flagged uncited, which is the behaviour that
-  // predates images. What must NOT happen is the drawing path quietly supplying
-  // the citation `verifyPinTable` refused: pads are built from this field, so it
-  // does not get to stand on evidence weaker than a row-by-row check.
-  assert.equal(outcome.part.pins.citation, null, "a pin table must not take a drawing citation");
-  assert.equal(outcome.part.pins.method, "vlm", "and must not be labelled as read off a drawing");
-  assert.ok(outcome.uncited.includes("pins"), "it is reported as untraceable instead");
+  assert.ok(outcome.part.pins.citation, "the render is evidence, and evidence is not discarded");
+  assert.equal(outcome.part.pins.citation?.page, 2);
+  assert.equal(outcome.part.pins.method, "vlm-drawing", "provenance must say where it came from");
+  assert.equal(outcome.part.pins.confidence, 0.4, "the review tier, not the verified tier");
+  assert.ok(!outcome.uncited.includes("pins"));
+});
+
+test("a pin table claiming a page we never sent is still uncited", () => {
+  // The guard that survives: the model may only cite what it was shown. Without
+  // this, lifting the array exclusion would let a claimed page number stand in
+  // for evidence on a page nothing ever looked at.
+  const outcome = mergeModelValues(deterministic(), doc, pinTableOnPage(7), "test-model", [2]);
+
+  assert.equal(outcome.part.pins.citation, null, "page 7 was never rendered or sent");
+  assert.equal(outcome.part.pins.method, "vlm");
+  assert.ok(outcome.uncited.includes("pins"), "recorded and flagged, as before");
+});
+
+test("a malformed pin table is still rejected outright, render or no render", () => {
+  // The shape guard is unchanged by the citation change. A table that cannot be
+  // parsed never enters the record at all, which is a stronger outcome than
+  // being recorded uncited.
+  const result = {
+    values: { pins: { value: [{ number: "", name: "" }] as never, page: 2 } }
+  } as ExtractionResult;
+
+  const outcome = mergeModelValues(deterministic(), doc, result, "test-model", [2]);
+  assert.equal(outcome.part.pins.value, null, "nothing usable, so nothing recorded");
+  assert.ok(outcome.rejected.some((entry) => entry.field === "pins"));
 });
 
 test("a rendered record still satisfies the part contract", () => {

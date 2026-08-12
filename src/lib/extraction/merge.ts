@@ -1,9 +1,17 @@
 import type { DatasheetText } from "../pdftext";
-import { pinElectricalTypes, type Citation, type Extracted, type ExtractionMethod, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
+import { pinElectricalTypes, type Citation, type Extracted, type ExtractionMethod, type FieldConflict, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
 import { extractionFields, type ExtractionField, type ExtractionResult, type ModelValue } from "./contracts";
+import { CROSS_CHECKED_FIELDS, displayValue, valuesAgree } from "./crosscheck";
+import { citableText, quarantinedRegions } from "./untrusted";
 
 /**
- * Deterministic-first merging, and verification of what the model claims.
+ * MODEL-FIRST merging, and verification of what the model claims.
+ *
+ * The precedence flipped on 2026-08-11 after cross-checking found three live
+ * deterministic defects in two days, all shipping into geometry, all outside the
+ * oracles' coverage. What did NOT flip is the evidence rule: a model value still
+ * has to carry a verified citation to win, so this is model-first among readings
+ * that can both be checked rather than assertion over evidence.
  *
  * Air-gap safe: no networking, no external URLs.
  */
@@ -75,12 +83,15 @@ export function unresolvedFields(part: PartRecord): ExtractionField[] {
  * that cannot be read is a row we do not understand, and a pin table with a hole
  * in it is the input that produces a miswired footprint.
  */
-function normalizeModelPins(rows: unknown): { ok: true; pins: PinRecord[] } | { ok: false; reason: string } {
+function normalizeModelPins(
+  rows: unknown
+): { ok: true; pins: PinRecord[]; exposedPad: boolean } | { ok: false; reason: string } {
   if (!Array.isArray(rows) || rows.length === 0) {
     return { ok: false, reason: "the pin table was empty" };
   }
 
   const pins: PinRecord[] = [];
+  let exposedPad = false;
   for (const row of rows) {
     if (row === null || typeof row !== "object") {
       return { ok: false, reason: "a row was not an object" };
@@ -97,15 +108,23 @@ function normalizeModelPins(rows: unknown): { ok: true; pins: PinRecord[] } | { 
     if (raw === null) return { ok: false, reason: "a row carried no pin number" };
 
     // A non-numeric designator is almost always the exposed thermal pad
-    // (`EP`, `PAD`, `TAB`). It is a real, electrically mandatory feature and
-    // `geometry.ts` has no concept of one, so a part that has it cannot be built
-    // correctly: emitting the numbered pins alone would produce a footprint
-    // missing the pad the part must be soldered by. Refuse, and say why.
+    // (`EP`, `PAD`, `TAB`, `epad`, `Exposed pad`). It is a real, electrically
+    // mandatory feature and `geometry.ts` has no concept of one, so no footprint
+    // can be built for the part yet.
+    //
+    // Until 2026-08-10 that refused the WHOLE table, which threw away a pinout
+    // the model had read correctly. Measured over the hold-out that cost three
+    // parts outright: ADS1220 (16 pins + `Pad`), LD39050 (6 + `Exposed pad`) and
+    // ST1S10 (8 + `epad`), every numbered row of all three hand-checked correct.
+    //
+    // The pad row is now RECORDED rather than fatal. `resolveForExport` carries
+    // the flag to `buildFootprintGeometry`, which refuses there. The guarantee
+    // that mattered is untouched: no footprint is ever emitted missing a
+    // mandatory pad. What changes is that the symbol, the pin list and the
+    // review panel no longer die with it.
     if (!/^\d+$/.test(raw)) {
-      return {
-        ok: false,
-        reason: `the table includes a non-numbered terminal ("${raw}"), which is an exposed thermal pad. Forge cannot generate a footprint for a package with an exposed pad yet, and the numbered pins alone would be a footprint missing a mandatory pad`
-      };
+      exposedPad = true;
+      continue;
     }
     const number = raw;
 
@@ -125,7 +144,11 @@ function normalizeModelPins(rows: unknown): { ok: true; pins: PinRecord[] } | { 
     pins.push({ number, name, electricalType, ...(description ? { description } : {}) });
   }
 
-  return { ok: true, pins };
+  // Dropping the pad row must not leave an empty table: a model that answered
+  // with nothing but terminals has not read a pinout.
+  if (pins.length === 0) return { ok: false, reason: "the pin table had no numbered rows" };
+
+  return { ok: true, pins, exposedPad };
 }
 
 /**
@@ -235,24 +258,34 @@ export function verifyCitation(doc: DatasheetText, claimed: ModelValue): Citatio
   const page = doc.pages.find((candidate) => candidate.page === claimed.page);
   if (!page) return null;
 
+  // Instructions addressed to a reader of datasheets are not evidence about a
+  // component, whatever numbers sit inside them. Cut before anything is matched,
+  // so every shape below is protected without having to remember to be.
+  //
+  // This is the server-side half of the injection defence and the load-bearing
+  // one since the model became authoritative: even assuming the injection worked
+  // completely and the model returned exactly what the attacker asked for, the
+  // claim cannot become a citation, so it cannot become geometry.
+  const evidence = citableText(page.text, quarantinedRegions(page.text));
+
   // A pin table is judged by whether its rows are on the page, not by matching
   // one string.
   if (Array.isArray(claimed.value)) {
     const pins = claimed.value as PinRecord[];
-    if (!verifyPinTable(page.text, pins)) return null;
+    if (!verifyPinTable(evidence, pins)) return null;
     return { page: page.page, snippet: `${pins.length}-row pin table`, region: null };
   }
 
   const range = asRange(claimed.value);
   if (range) {
-    if (!verifyRange(page.text, range)) return null;
+    if (!verifyRange(evidence, range)) return null;
     return { page: page.page, snippet: `${range.minMm}-${range.maxMm} mm`, region: null };
   }
 
   const needle = searchableText(claimed.value);
   if (needle === null) return null;
 
-  const haystack = normalize(page.text);
+  const haystack = normalize(evidence);
   if (!haystack.includes(normalize(needle))) return null;
 
   return { page: page.page, snippet: needle, region: null };
@@ -270,7 +303,15 @@ const DRAWING_CONTEXT = [
   /\ball\s+dimensions\s+are\s+in\s+(?:millimeters|millimetres|inches)\b/i,
   /\bdimensions?\s+are\s+in\s+(?:millimeters|millimetres|inches)\b/i,
   /\b[A-Z]{1,4}\d{4}[A-Z]\b/,
-  /\b(?:JEDEC|MO|MS)-\d{3}\b/i
+  /\b(?:JEDEC|MO|MS)-\d{3}\b/i,
+  // Pinout pages, added when pin tables became citable from a render. The
+  // markers above all name a MECHANICAL drawing, so a page carrying only a
+  // pinout figure fell through to the bare "read from the rendered page", which
+  // tells a reviewer the page number and nothing about what they are looking
+  // for on it. These are the headings vendors actually print above the figure.
+  /\bpin\s*(?:connection|description|configuration|assignment|out|function)s?\b/i,
+  /\b(?:top|bottom)\s+view\b/i,
+  /\bterminal\s+(?:configuration|function)s?\b/i
 ];
 
 /**
@@ -335,6 +376,74 @@ export interface MergeOutcome {
  * 2. Every model value is marked `method: "vlm"` and carries a citation only
  *    when the claim was verified against the page.
  */
+/**
+ * Records a disagreement, but only one worth a person's time.
+ *
+ * Three things have to hold before a difference is reported, and each was added
+ * because without it the list fills with noise and a real conflict gets clicked
+ * past:
+ *
+ * - the field must be one that places copper or wires a symbol
+ * - the two readings must actually differ, by `valuesAgree`, which knows that
+ *   `SOIC-8` and `8-Pin SOIC` are the same package
+ * - the model's page claim must CHECK OUT against the document
+ *
+ * The last one matters most. An unverifiable model claim is not evidence that
+ * the code is wrong, it is a claim about a page that does not say what the model
+ * says it says, and putting that in front of a user as a contradiction would
+ * spend their attention on a hallucination.
+ */
+/**
+ * Whether the model's reading should replace the code's, and what it displaces.
+ *
+ * Returns the displaced reading when the model wins, `null` when it does not.
+ * Three things have to hold, and the third is the one that keeps the product's
+ * traceability guarantee intact under model-first:
+ *
+ * - the field is one of the cross-checked ones, so identity and radiation are
+ *   untouched by a precedence change made for GEOMETRY reasons
+ * - the two readings actually differ, by `valuesAgree`
+ * - the model's page claim VERIFIES against the document
+ *
+ * Without the last, "model-first" would mean an unverifiable assertion beating a
+ * value someone can find on a page, which is the opposite of what a record
+ * signed off for flight is meant to be.
+ */
+function modelOutranks(
+  doc: DatasheetText,
+  field: ExtractionField,
+  existing: Extracted<unknown>,
+  claimed: ModelValue
+): FieldConflict["deterministic"] | null {
+  if (!CROSS_CHECKED_FIELDS.includes(field)) return null;
+  if (valuesAgree(field, existing.value, claimed.value)) return null;
+  if (!verifyCitation(doc, claimed)) return null;
+  return { display: displayValue(existing.value), page: existing.citation?.page ?? null };
+}
+
+function recordConflict(
+  merged: PartRecord,
+  doc: DatasheetText,
+  field: ExtractionField,
+  existing: Extracted<unknown>,
+  claimed: ModelValue
+): void {
+  if (!CROSS_CHECKED_FIELDS.includes(field)) return;
+  if (valuesAgree(field, existing.value, claimed.value)) return;
+
+  const citation = verifyCitation(doc, claimed);
+  if (!citation) return;
+
+  merged.conflicts = [
+    ...merged.conflicts,
+    {
+      field,
+      deterministic: { display: displayValue(existing.value), page: existing.citation?.page ?? null },
+      model: { display: displayValue(claimed.value), page: citation.page }
+    }
+  ];
+}
+
 export function mergeModelValues(
   part: PartRecord,
   doc: DatasheetText,
@@ -351,13 +460,48 @@ export function mergeModelValues(
   const filled: ExtractionField[] = [];
   const uncited: ExtractionField[] = [];
   const rejected: Array<{ field: ExtractionField; reason: string }> = [];
+  /** Readings the model displaced, kept so a swap is visible rather than silent. */
+  const supersededBy = new Map<ExtractionField, FieldConflict["deterministic"]>();
 
   for (const field of extractionFields) {
     const claimed = result.values[field];
     if (!claimed || claimed.value === null) continue;
 
-    // Rule 1: deterministic wins, always.
-    if (fieldAt(merged, field).value !== null) continue;
+    // Rule 1: deterministic wins the RECORD, always.
+    //
+    // MODEL-FIRST, as of 2026-08-11, and the reason is measured rather than
+    // stylistic. Cross-checking the two readers found three live deterministic
+    // defects in two days, every one of them shipping into geometry and none
+    // caught by 690 tests or by the oracles:
+    //
+    //   INA226/PCM1808  a front-matter millimetre pair read as the body, when it
+    //                   is the lead span in one document and width-first in the
+    //                   other
+    //   LP5907          a pinout scraped off an application circuit in the
+    //                   LAYOUT section, pins named `VINCIN`, `GND`, `Enable`
+    //   LTC2400         a neighbouring column glued into three pin names,
+    //                   `+ 0.3V)GND`, `CSS8 PART MARKING`, `SCKLTC2400IS8`
+    //
+    // On every disagreement settled by hand the model was right and the code was
+    // wrong. The oracles cover 37 parts; the defects live outside them.
+    //
+    // THE ONE THING PRECEDENCE DOES NOT CHANGE: a model value still has to be
+    // CITED. An unverifiable claim does not beat a value read off the page by
+    // code, because the whole product rests on a record whose every number can be
+    // traced to a page. Model-first means the model wins among readings that can
+    // both be checked, not that assertion beats evidence.
+    const existing = fieldAt(merged, field);
+    if (existing.value !== null) {
+      const displaced = modelOutranks(doc, field, existing, claimed);
+      if (!displaced) {
+        recordConflict(merged, doc, field, existing, claimed);
+        continue;
+      }
+      // Fall through: the model's reading replaces the record's, and the reading
+      // it displaced is kept beside it so the swap is visible and reversible in
+      // the review panel rather than silent.
+      supersededBy.set(field, displaced);
+    }
 
     // A pin table is coerced to the record contract and held to the same
     // gap-free 1..N proof the deterministic readers must pass. A table that
@@ -396,6 +540,9 @@ export function mergeModelValues(
         continue;
       }
       value = normalized.pins;
+      // Set before the citation checks below, because the pad is a fact about the
+      // PACKAGE and stays true whether or not this particular table survives them.
+      if (normalized.exposedPad) merged.exposedPad = true;
     }
 
     // Text first. A value quoted from the page is the strongest evidence
@@ -403,11 +550,27 @@ export function mergeModelValues(
     let citation = verifyCitation(doc, { ...claimed, value });
     let method: ExtractionMethod = "vlm";
 
-    // Then the drawing path, and ONLY for a scalar on a page we actually
-    // rendered. A pin table is excluded deliberately: `verifyPinTable` is the
-    // check that stops a fabricated table entering the record, and a table is
-    // what pads are built from, so it does not get the weaker evidence.
-    if (!citation && renderedPages.length > 0 && !Array.isArray(value)) {
+    // Then the render, for any value on a page we actually sent.
+    //
+    // Pin tables were excluded here until 2026-08-06, and that exclusion was
+    // wrong in a way worth recording. The reasoning was that a table is what
+    // pads are built from, so it should not rest on weaker evidence. But the
+    // evidence is not weaker: a citation reading "page 2, Pin connections (top
+    // view)" points a reviewer at something they can SEE. A text-layer citation
+    // points at a string that, on these documents, is not on the page at all.
+    //
+    // What the exclusion actually did was discard information rather than
+    // verify it. Measured over the 13 pin failures in the tuned corpus, three
+    // are pinouts drawn as vector artwork with no text layer whatsoever, so no
+    // reader of any kind can ever cite them from text. LM139AQML-SP's pins were
+    // read correctly off the render and thrown away for want of a citation the
+    // document cannot supply. That is not a safety property, it is a permanent
+    // hole.
+    //
+    // The shape guard is unchanged and still runs above: `verifyPinTable`
+    // rejects a malformed or fabricated-looking table before this point, and a
+    // render-cited table lands at confidence 0.4, the review tier.
+    if (!citation && renderedPages.length > 0) {
       const drawn = citeRenderedPage(doc, { ...claimed, value }, renderedPages);
       if (drawn) {
         citation = drawn;
@@ -428,6 +591,23 @@ export function mergeModelValues(
       citation
     });
     filled.push(field);
+
+    // A displaced reading becomes a conflict with the sides the other way round:
+    // the record now holds the model's value and the review panel offers the
+    // code's, so the user can put it back in one click. Recorded only after the
+    // value is actually stored, so a row that gets rejected further up never
+    // claims to have superseded anything.
+    const displaced = supersededBy.get(field);
+    if (displaced) {
+      merged.conflicts = [
+        ...merged.conflicts,
+        {
+          field,
+          deterministic: { display: displayValue(value), page: citation?.page ?? null },
+          model: displaced
+        }
+      ];
+    }
   }
 
   if (filled.length > 0) {
@@ -452,6 +632,22 @@ export function mergeModelValues(
     ];
   }
   for (const note of result.notes ?? []) merged.notes.push(`${modelName}: ${note}`);
+
+  // A document that addresses the reader as an agent is reported, whether or not
+  // the injection changed any value. Silence here would mean the one case where
+  // the defence WORKED looks exactly like an ordinary parse, and a reviewer
+  // signing this record deserves to know the source tried.
+  const tampered = doc.pages
+    .flatMap((page) => quarantinedRegions(page.text).map((region) => ({ page: page.page, region })))
+    .slice(0, 3);
+  if (tampered.length > 0) {
+    merged.notes.push(
+      `This document contains text addressed to an automated reader rather than describing the part, ` +
+        `on ${tampered.length === 1 ? "page" : "pages"} ${[...new Set(tampered.map((entry) => entry.page))].join(", ")}: ` +
+        `"${tampered[0].region.reason}". Those regions were excluded from evidence, so no value was read from them. ` +
+        `Treat this datasheet as untrusted and check it by hand before sign-off.`
+    );
+  }
 
   return { part: merged, filled, uncited, rejected };
 }

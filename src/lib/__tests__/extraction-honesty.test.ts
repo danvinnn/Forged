@@ -650,14 +650,40 @@ test("a millimetre pair in a certification clause is not a package body", () => 
   assert.notEqual(part.dimensions.bodyLengthMm.value, 10.3, "a certification clause is not a body");
 });
 
-test("a body stated once, beside its package, is still read", () => {
+test("an UNLABELLED millimetre pair is not a body, however close to a package name", () => {
+  // This asserted the opposite until 2026-08-11, when cross-checking the
+  // deterministic reader against a model caught the pair being wrong in two
+  // different ways on two real datasheets:
+  //
+  //   INA226   "PACKAGE SIZE     VSSOP (10)  3.00mm x 4.90mm"
+  //            4.90 is the LEAD SPAN; the body is 3.0 x 3.0 (DGS0010A, p37).
+  //   PCM1808  "BODY SIZE (NOM)  TSSOP (14)  4.40 mm x 5.00 mm"
+  //            both are body dimensions, printed WIDTH FIRST, so length and
+  //            width came out swapped against PW0014A on p27.
+  //
+  // Two different failures, and the column header does not even agree between
+  // the documents, so neither an ordering rule nor a header test recovers it.
+  // A pair of numbers beside a package name does not say WHICH dimensions they
+  // are, and guessing places a courtyard and a silkscreen outline from it.
   const stated = datasheetTextFromPages([
     ["ACME345 Accelerometer", "Small and thin: 3 mm × 5 mm × 1 mm LGA package"].join("\n")
   ]);
   const part = buildPartRecord(stated, "ACME345.pdf");
 
-  assert.equal(part.dimensions.bodyLengthMm.value, 3);
-  assert.equal(part.dimensions.bodyWidthMm.value, 5);
+  assert.equal(part.dimensions.bodyLengthMm.value, null);
+  assert.equal(part.dimensions.bodyWidthMm.value, null);
+});
+
+test("a LABELLED body dimension is still read", () => {
+  // The distinction that makes the refusal above a rule rather than a retreat:
+  // prose that says which dimension it is states a fact, and is taken.
+  const labelled = datasheetTextFromPages([
+    ["ACME345 Accelerometer", "LGA package. Body length 5 mm, body width 3 mm, body height 1 mm."].join("\n")
+  ]);
+  const part = buildPartRecord(labelled, "ACME345.pdf");
+
+  assert.equal(part.dimensions.bodyLengthMm.value, 5);
+  assert.equal(part.dimensions.bodyWidthMm.value, 3);
   assert.ok(part.dimensions.bodyLengthMm.citation, "a value read off the page cites it");
 });
 

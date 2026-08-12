@@ -91,6 +91,8 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
     manufacturer: "ACME",
     packageType: "8-pin SOIC",
     packageOutlineCode: null,
+  vendorLandPattern: null,
+  exposedPad: false,
     pinCount: 8,
     pins,
     dimensions: {
@@ -100,7 +102,8 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       pitchMm: null,
       leadLengthMm: null,
       leadCount: 8,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null
+      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      thermalPadLengthMm: null, thermalPadWidthMm: null
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "ACME27524.pdf",

@@ -83,6 +83,21 @@ export function emitKicadFootprint(geometry: FootprintGeometry, links: KicadLink
   ];
 
   for (const pad of geometry.pads) {
+    // A pad whose paste does not follow its copper is spelled as TWO things in
+    // KiCad: the copper land on `F.Cu`/`F.Mask` with no paste layer, then one
+    // paste-only pad per aperture. Emitting the land on `F.Paste` as well would
+    // paste it 1:1, which on a thermal pad floats the package off its leads.
+    if (pad.pasteApertures && pad.pasteApertures.length > 0) {
+      lines.push(
+        `  (pad "${kicadString(pad.number)}" smd ${pad.shape} (at ${mm(pad.centre.xMm)} ${mm(pad.centre.yMm)}) (size ${mm(pad.widthMm)} ${mm(pad.heightMm)}) (layers "F.Cu" "F.Mask") (roundrect_rratio 0.25))`
+      );
+      for (const aperture of pad.pasteApertures) {
+        lines.push(
+          `  (pad "${kicadString(pad.number)}" smd rect (at ${mm(aperture.centre.xMm)} ${mm(aperture.centre.yMm)}) (size ${mm(aperture.widthMm)} ${mm(aperture.heightMm)}) (layers "F.Paste"))`
+        );
+      }
+      continue;
+    }
     lines.push(
       `  (pad "${kicadString(pad.number)}" smd ${pad.shape} (at ${mm(pad.centre.xMm)} ${mm(pad.centre.yMm)}) (size ${mm(pad.widthMm)} ${mm(pad.heightMm)}) (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.25))`
     );

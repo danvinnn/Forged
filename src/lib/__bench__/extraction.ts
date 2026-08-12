@@ -10,9 +10,20 @@
 // four-vendor spot check found confident wrong answers on ST and ADI. Measure, then decide.
 //
 // Usage:
-//   npm run bench:extraction                     all cached parts
+//   npm run bench:extraction                     all cached parts, parser only
 //   npm run bench:extraction -- --fetch          fetch anything not cached (network, slow)
 //   npm run bench:extraction -- --category analog
+//
+// With the model. Only the first of these can spend money:
+//   ... -- --model                               replay cached answers, call live on a miss
+//   ... -- --model --offline                     replay only, never call. Iterate here.
+//   ... -- --model --estimate                    call nothing, report what a live run would cost
+//   ... -- --model --refresh                     ignore the cache and re-ask everything
+//   ... -- --model --parts LM358,INA240          just these parts
+//
+// Model answers are cached under .model-cache/ keyed by the request we would
+// send, so a change downstream of the call (merging, the package table, the
+// land pattern) re-measures the whole corpus for nothing. See modelcache.ts.
 //
 // PDFs are cached under .bench-cache/ (gitignored). They are NOT committed: the corpus allowlist
 // rule for test-data/ exists so no datasheet is ever committed to a public repo, and a cache of 30+
@@ -25,7 +36,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { join } from "node:path";
 import { BENCH_CORPUS, type BenchCategory, type BenchPart } from "../retrieval/__bench__/corpus";
 import { extractPartRecord } from "../datasheet";
-import { buildExtractionRequest, makeExtractionModel, mergeModelValues, withRenderedPages } from "../extraction";
+import { makeExtractionModel, runExtraction } from "../extraction";
 import { resolveForExport, type Extracted, type PartRecord } from "../types";
 import { createExportZip, FootprintUnavailableError } from "../exporters";
 import {
@@ -35,11 +46,24 @@ import {
   checkPackageFamily,
   type NameMismatch
 } from "./pinout-oracle";
+import {
+  cachingModel,
+  cacheSize,
+  formatCacheStats,
+  projectCost,
+  ModelCacheMiss,
+  modelCacheDir,
+  type CacheMode,
+  type CachingModel
+} from "./modelcache";
+import { loadBenchEnv } from "./env";
 
 const PINOUT_ORACLE_SIZE = Object.keys(PINOUT_ORACLE).length;
 
 // This is a report read by a human. Resolver events are useful in production and
 // noise here, so quiet the logger unless the caller asked for detail.
+loadBenchEnv();
+
 if (!process.env.FORGE_LOG_LEVEL) process.env.FORGE_LOG_LEVEL = "warn";
 
 const FETCH = process.argv.includes("--fetch");
@@ -51,13 +75,71 @@ const FETCH = process.argv.includes("--fetch");
  * has.
  */
 const MODEL = process.argv.includes("--model");
-/** Spacing between model calls. Free-tier limits are per minute. */
-const MODEL_DELAY_MS = 4000;
 const categoryFlag = process.argv.indexOf("--category");
 const ONLY_CATEGORY = categoryFlag !== -1 ? (process.argv[categoryFlag + 1] as BenchCategory) : null;
 
+/**
+ * How the model response cache behaves. See `modelcache.ts` for why it exists.
+ *
+ * `--offline` is the one to iterate in: it answers from disk and refuses to
+ * spend, so a change to merging or the package table can be measured against
+ * the full corpus for nothing.
+ */
+const CACHE_MODE: CacheMode = process.argv.includes("--refresh")
+  ? "refresh"
+  : process.argv.includes("--estimate")
+    ? "estimate"
+    : process.argv.includes("--offline")
+      ? "offline"
+      : "use";
+
+/**
+ * Run a named subset, e.g. `--parts LM358,INA240`.
+ *
+ * The cheapest lever there is. Chasing one defect does not need the other 43
+ * parts, and before this the only choices were one category or everything.
+ */
+const partsFlag = process.argv.indexOf("--parts");
+const ONLY_PARTS: Set<string> | null =
+  partsFlag !== -1 && process.argv[partsFlag + 1]
+    ? new Set(
+        process.argv[partsFlag + 1]
+          .split(",")
+          .map((p) => p.trim().toUpperCase())
+          .filter(Boolean)
+      )
+    : null;
+
 const CACHE_DIR = join(process.cwd(), ".bench-cache");
 const FETCH_DELAY_MS = 1500;
+
+/**
+ * The wrapped model, built once and shared, with the part name it is currently
+ * working on. The cache only uses the label to name files readably; the request
+ * hash alone decides what matches.
+ */
+let sharedModel: CachingModel | null | undefined;
+let currentLabel = "";
+
+async function benchModel(): Promise<CachingModel | null> {
+  if (sharedModel !== undefined) return sharedModel;
+  let inner = await makeExtractionModel("commercial");
+  if (!inner && (CACHE_MODE === "offline" || CACHE_MODE === "estimate")) {
+    // Replaying costs nothing and needs no credentials, so a run that cannot
+    // spend must not require an API key to be present. Without this, iterating
+    // offline would still depend on the billing state of an account it never
+    // intends to call.
+    inner = {
+      name: "gemini",
+      isConfigured: () => true,
+      extract: async () => {
+        throw new Error("offline stub model must never be called");
+      }
+    };
+  }
+  sharedModel = inner ? cachingModel(inner, CACHE_MODE, () => currentLabel) : null;
+  return sharedModel;
+}
 
 /** Fields worth scoring. Grouped so the report says WHICH kind of extraction is failing. */
 const SCORED = {
@@ -295,31 +377,41 @@ async function scoreRow(part: BenchPart): Promise<Row> {
     let modelFilled: string[] = [];
     let modelRejected: string[] = [];
     if (MODEL) {
-      const built = buildExtractionRequest(deterministic, doc, `${part.partNumber}.pdf`);
-      const model = await makeExtractionModel("commercial");
-      if (built && model) {
-        const request = await withRenderedPages(
-          built,
-          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-        );
+      const model = await benchModel();
+      if (model) {
+        currentLabel = part.partNumber;
         try {
-          const outcome = mergeModelValues(
+          const outcome = await runExtraction(
             deterministic,
             doc,
-            await model.extract(request),
-            model.name,
-            request.images.map((image) => image.page)
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+            model,
+            `${part.partNumber}.pdf`
           );
-          record = outcome.part;
-          modelFilled = outcome.filled;
-          modelRejected = outcome.rejected.map((entry) => entry.field);
+          if (outcome) {
+            record = outcome.part;
+            modelFilled = outcome.filled;
+            modelRejected = outcome.rejected.map((entry) => entry.field);
+          }
         } catch (error) {
           // A model failure must not cost the deterministic row, exactly as in
           // the parse route. It is recorded so the run is not silently partial.
-          modelRejected = [`ERROR:${error instanceof Error ? error.name : "unknown"}`];
+          //
+          // A cache miss is called out separately from a real failure. It means
+          // "this run declined to ask", which says nothing about the extractor
+          // and must not be read as one.
+          modelRejected = [
+            error instanceof ModelCacheMiss
+              ? "UNCACHED"
+              : `ERROR:${error instanceof Error ? error.name : "unknown"}`
+          ];
         }
-        // Free-tier rate limits are per minute; without this the run 429s.
-        await new Promise((resolve) => setTimeout(resolve, MODEL_DELAY_MS));
+        // Free-tier rate limits are per minute; without this the run 429s. A
+        // replayed answer touched no network, so waiting for it is pure delay:
+        // this is what makes a fully cached 44-part run finish in seconds.
+        // Pacing lives in `cachingModel` now, against a rolling window that counts
+        // retries too. A flat sleep here cannot see them and so could not hold the
+        // limit; it is kept only as a floor between parts.
       }
     }
 
@@ -416,11 +508,28 @@ const pct = (n: number, d: number) => (d === 0 ? "  n/a" : `${String(Math.round(
 async function main() {
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
 
-  const corpus = BENCH_CORPUS.filter((p) => !ONLY_CATEGORY || p.category === ONLY_CATEGORY);
+  const corpus = BENCH_CORPUS.filter(
+    (p) =>
+      (!ONLY_CATEGORY || p.category === ONLY_CATEGORY) &&
+      (!ONLY_PARTS || ONLY_PARTS.has(p.partNumber.toUpperCase()))
+  );
   const cachedBefore = readdirSync(CACHE_DIR).filter((f) => f.endsWith(".pdf")).length;
 
-  console.log(`\nExtraction coverage: ${corpus.length} parts${ONLY_CATEGORY ? ` (${ONLY_CATEGORY})` : ""}`);
-  console.log(`Cache: ${CACHE_DIR} (${cachedBefore} PDFs)${FETCH ? ", fetching missing" : ""}\n`);
+  if (ONLY_PARTS && corpus.length === 0) {
+    console.log(`\nNo corpus part matches --parts ${[...ONLY_PARTS].join(",")}\n`);
+    return;
+  }
+
+  const scope = [ONLY_CATEGORY, ONLY_PARTS ? `${corpus.length} named` : null].filter(Boolean).join(", ");
+  console.log(`\nExtraction coverage: ${corpus.length} parts${scope ? ` (${scope})` : ""}`);
+  console.log(`Cache: ${CACHE_DIR} (${cachedBefore} PDFs)${FETCH ? ", fetching missing" : ""}`);
+  if (MODEL) {
+    console.log(
+      `Model cache: ${modelCacheDir()} (${cacheSize()} responses), mode ${CACHE_MODE}` +
+        (CACHE_MODE === "use" || CACHE_MODE === "refresh" ? " [may spend]" : " [no spend]")
+    );
+  }
+  console.log();
 
   if (FETCH) {
     let fetched = 0;
@@ -617,10 +726,17 @@ async function main() {
   const blocked = allOk.filter((r) => !r.exportable);
   if (blocked.length > 0) {
     const reasons = new Map<string, number>();
-    for (const row of blocked) reasons.set(row.blockedBy, (reasons.get(row.blockedBy) ?? 0) + 1);
+    const named = new Map<string, string[]>();
+    for (const row of blocked) {
+      reasons.set(row.blockedBy, (reasons.get(row.blockedBy) ?? 0) + 1);
+      named.set(row.blockedBy, [...(named.get(row.blockedBy) ?? []), row.part.partNumber]);
+    }
     console.log("Blocked by:");
     for (const [reason, count] of [...reasons].sort((a, b) => b[1] - a[1])) {
-      console.log(`  ${String(count).padStart(3)}  ${reason}`);
+      // Named, not just counted. A blocker class is only actionable if you can
+      // open the documents in it, and these are all tuned-corpus parts, which
+      // are the ones it is legitimate to open.
+      console.log(`  ${String(count).padStart(3)}  ${reason}: ${(named.get(reason) ?? []).join(", ")}`);
     }
     console.log("");
   }
@@ -630,6 +746,20 @@ async function main() {
   // next to it: the point is the DIFFERENCE the model makes, not a blended
   // number nobody can attribute.
   if (MODEL) {
+    // What the run cost, before what it found. An uncached count above zero is
+    // the load-bearing line in a no-spend run: it says how much of the report
+    // below was measured against a model at all.
+    const stats = (await benchModel())?.stats;
+    if (stats) {
+      console.log("Model cache:");
+      console.log(formatCacheStats(stats));
+      if (stats.skipped > 0) {
+        console.log(projectCost(stats.skipped));
+        console.log(`  ${stats.skipped} parts above ran WITHOUT a model answer.`);
+      }
+      console.log("");
+    }
+
     const helped = allOk.filter((r) => r.modelFilled.length > 0);
     const refusedRows = allOk.filter((r) => r.modelRejected.length > 0);
     const perField = new Map<string, number>();

@@ -2324,8 +2324,6 @@ function numberFirstHeader(items: TextItem[]): NumberFirstHeader | null {
   // the presence of the word PIN.
   for (const line of pageLines(items)) {
     const onLine = items.filter((item) => Math.abs(item.y - line.y) <= LINE_TOLERANCE);
-    const at = (pattern: RegExp) => onLine.find((item) => pattern.test(clean(item.str)))?.x;
-
     const number = onLine.find((item) => NUMBER_FIRST_NUMBER_HEADING.test(clean(item.str)));
     const name = onLine.find((item) => NUMBER_FIRST_NAME_HEADING.test(clean(item.str)));
     const description = onLine.find((item) => NUMBER_FIRST_DESCRIPTION_HEADING.test(clean(item.str)));

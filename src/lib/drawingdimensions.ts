@@ -101,6 +101,16 @@ const VALUE_REACH_Y = 12;
 const LEAD_WIDTH_MIN = 0.1;
 const LEAD_WIDTH_MAX = 1.0;
 
+/**
+ * Widest a lead may be as a fraction of its pitch. Mirrors the guard of the same
+ * name in `packages.ts`; see the note at the width reader below.
+ */
+const MAX_LEAD_WIDTH_FRACTION_OF_PITCH = 0.75;
+
+
+
+
+
 export interface DrawnValue<T> {
   value: T;
   page: number;
@@ -185,6 +195,34 @@ function countGroups(page: PageText): CountGroup[] {
 }
 
 /**
+ * Whether a count tag on a pitch label is arithmetic on this part's pin count.
+ *
+ * Four forms, and every one of them is printed in the corpus. The first two were
+ * here from the start; the last two were found on 2026-08-10 by dumping the
+ * tagged labels on the pages where pitch came back null, and each cost a part
+ * its drawing:
+ *
+ *   pinCount - 2   both rows of a dual package, gaps counted across the part
+ *   pinCount/2 - 1 one row of a dual package, gaps counted per side
+ *   pinCount - 4   all four rows of a QUAD package: 4 sides x (perSide - 1).
+ *                  An MSP430F5529 is 80 pins in an LQFP and tags `76X 0.5`.
+ *   pinCount       the vendor tags the pitch with the LEAD count rather than
+ *                  the gap count. An ADS8688 is 38 pins and tags `38 X 0.5`.
+ *
+ * Still arithmetic on the pin count, which is the whole point of the check: a
+ * number that matches none of these is not this part's pitch, and the drawing is
+ * full of other count-tagged labels that would be read as one.
+ */
+function isGapCount(count: number, pinCount: number): boolean {
+  return (
+    count === pinCount - 2 ||
+    count === pinCount / 2 - 1 ||
+    count === pinCount - 4 ||
+    count === pinCount
+  );
+}
+
+/**
  * Reads what the drawing states outright.
  *
  * Returns null for anything it cannot confirm. Nothing here is approximated: a
@@ -221,7 +259,12 @@ export function readDrawingDimensions(
     // The page is still the right page even when no count-tagged label parses,
     // and its code is worth returning on its own: it is what tells a SOIC narrow
     // from a SOIC wide.
-    return { page: drawing.page, code: drawing.code, pitchMm: null, leadWidthMm: null };
+    return {
+      page: drawing.page,
+      code: drawing.code,
+      pitchMm: null,
+      leadWidthMm: null
+    };
   }
 
   const drawn = (item: TextItem) => ({ page: drawing.page, citation: citationAt(doc, item.start, 12) });
@@ -233,24 +276,74 @@ export function readDrawingDimensions(
   // else is, so the count still has to be arithmetic on the pin count.
   const pitch =
     pinCount !== null
-      ? groups.find(
-          (group) =>
-            group.values.length === 1 &&
-            (group.count === pinCount - 2 || group.count === pinCount / 2 - 1)
-        )
+      ? groups.find((group) => group.values.length === 1 && isGapCount(group.count, pinCount))
       : undefined;
 
-  // The lead width is the tagged max/min pair inside the physical range. The
-  // count is usually the pin count exactly, but not always (LMP7704-SP tags
-  // eight on a fourteen-lead part), so the range is what confirms it rather than
-  // the count.
-  const width = groups.find(
+  // The lead width is a tagged max/min pair inside the physical range. The count
+  // is usually the pin count exactly, but not always (LMP7704-SP tags eight on a
+  // fourteen-lead part), so the range is what confirms it rather than the count.
+  //
+  // Taking the FIRST such pair was wrong, and it read an ADS1115's DYN0010A
+  // wrong: that drawing tags four pairs in range, and document order put the
+  // 0.25-0.45 one first. The width is 0.18-0.30. The others are the lead
+  // thickness (0.08-0.18), the terminal contact (0.35-0.55) and the lead
+  // protrusion (0.25-0.45), and nothing in the text distinguishes them by name.
+  //
+  // Two facts about a lead do distinguish them, and both are physical rather
+  // than typographic:
+  //
+  //   A lead cannot occupy most of its pitch, or neighbours would bridge in
+  //   reflow. Measured over every drawing read here the width runs 40-60% of the
+  //   pitch, and the misread sat at 90%.
+  //
+  // What is left after that test is not always one pair, and where it is not,
+  // this reader says so instead of choosing. Taking the largest was tried and
+  // was WRONG: an OPA2277's DRM0008A leaves 0.23-0.38 and 0.30-0.50, the width
+  // is the smaller, and the rule picked the terminal LENGTH. Taking the smallest
+  // fails the other way on drawings that tag the lead thickness.
+  //
+  // The two are separated by which DIRECTION the dimension runs: a lead's width
+  // is measured along the row, its length across it. That is carried by the
+  // arrows, which are graphics. This is the same wall the lead span ran into
+  // below, for the same reason, and the answer is the same: read it off the
+  // RENDERED page, where the arrows are visible, rather than guess here. A null
+  // is what puts the field in front of that reader, since a field the
+  // deterministic pass has filled is never asked about again.
+  //
+  // Where no pitch was read there is nothing to take a fraction of, so the
+  // original first-match behaviour stands rather than a second guess.
+  const inRange = groups.filter(
     (group) =>
       group.values.length === 2 &&
       group.values[0] >= LEAD_WIDTH_MIN &&
       group.values[1] <= LEAD_WIDTH_MAX
   );
+  const pitchMm = pitch?.values[0];
+  const plausible = pitchMm
+    ? inRange.filter((group) => group.values[1] <= MAX_LEAD_WIDTH_FRACTION_OF_PITCH * pitchMm)
+    : [];
+  const width = pitchMm ? (plausible.length === 1 ? plausible[0] : undefined) : inRange[0];
 
+  // The LEAD SPAN is still not read here, and an attempt on 2026-08-10 was
+  // reverted rather than shipped. It is recorded because the idea is an obvious
+  // one to try again.
+  //
+  // A drawing prints the span, the body length and the body width as three bare
+  // max-over-min pairs. Nothing in the TEXT says which is which; the arrows do,
+  // and they are graphics. The rule tried was that only the body has to be long
+  // enough to hold its row of leads, so `(perSide - 1) * pitch` should pick it
+  // out and leave the span as the largest of the rest.
+  //
+  // It reads DYN0010A backwards. An ADS1115's row is exactly 2.0 mm and its body
+  // WIDTH is 2.0-2.2, so the width cleared the row test and was taken for the
+  // body; the span then came back 2.8-3.0, which is the body LENGTH, when the
+  // real span is 2.7-2.9. The part exported, and its pads would have been placed
+  // on a dimension that runs the other way across the package.
+  //
+  // A footprint built from the wrong dimension is the exact failure this module
+  // exists to prevent, and it is worse than the refusal it replaced because it
+  // looks like an answer. Reading the span needs a signal that says which
+  // DIRECTION a dimension runs, and the text layer does not carry one.
   return {
     page: drawing.page,
     code: drawing.code,

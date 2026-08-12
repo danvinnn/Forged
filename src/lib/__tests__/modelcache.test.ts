@@ -1,0 +1,317 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "../extraction/contracts";
+import { cachingModel, requestKey, ModelCacheMiss, estimateUsd, formatCacheStats, slotDelayMs } from "../__bench__/modelcache";
+
+/**
+ * A temp directory, so running the suite never writes into the real cache and
+ * never leaves anything in the working tree. `modelCacheDir()` reads the
+ * environment per call, so setting it here is enough.
+ */
+const TEMP_DIR = mkdtempSync(join(tmpdir(), "forge-modelcache-"));
+process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+
+process.on("exit", () => rmSync(TEMP_DIR, { recursive: true, force: true }));
+
+function request(overrides: Partial<ExtractionRequest> = {}): ExtractionRequest {
+  return {
+    pages: [{ page: 3, text: "PACKAGE DIMENSIONS: body 4.90 mm" }],
+    images: [],
+    fileName: "LM358.pdf",
+    partNumber: "LM358",
+    packageType: "SOIC-8",
+    fields: ["dimensions.leadSpanMm"],
+    ...overrides
+  };
+}
+
+/** Counts calls so a hit can be distinguished from a fast second call. */
+function countingModel(result: ExtractionResult): ExtractionModel & { calls: number } {
+  return {
+    name: "gemini",
+    calls: 0,
+    isConfigured: () => true,
+    async extract() {
+      (this as { calls: number }).calls += 1;
+      return result;
+    }
+  };
+}
+
+const ANSWER: ExtractionResult = {
+  values: { "dimensions.leadSpanMm": { value: { minMm: 5.8, maxMm: 6.2 }, page: 3 } },
+  usage: { inputTokens: 11_044, outputTokens: 3_035 }
+};
+
+test("an identical request is answered from disk, not from the model", async () => {
+  const inner = countingModel(ANSWER);
+  const model = cachingModel(inner, "use", () => "LM358");
+
+  const first = await model.extract(request());
+  const second = await model.extract(request());
+
+  assert.equal(inner.calls, 1, "the second identical request must not reach the model");
+  assert.deepEqual(second, first);
+  assert.equal(model.stats.hits, 1);
+  assert.equal(model.stats.misses, 1);
+  assert.equal(model.wasHit(), true);
+});
+
+test("tokens saved are counted from the entry, so a replay reports what it did not spend", async () => {
+  const model = cachingModel(countingModel(ANSWER), "use", () => "LM358-tokens");
+
+  await model.extract(request({ fileName: "tokens.pdf" }));
+  await model.extract(request({ fileName: "tokens.pdf" }));
+
+  assert.equal(model.stats.inputTokens, 11_044, "the live call's real cost");
+  assert.equal(model.stats.savedInputTokens, 11_044, "the replay's avoided cost");
+  assert.equal(model.stats.savedOutputTokens, 3_035);
+});
+
+test("a changed prompt input is a different question and is re-asked", async () => {
+  const inner = countingModel(ANSWER);
+  const model = cachingModel(inner, "use", () => "prompt-change");
+
+  await model.extract(request({ fileName: "a.pdf", packageType: "SOIC-8" }));
+  // The package hint is part of the prompt. Answering this from the SOIC entry
+  // would report the model against a question it was never asked, which is the
+  // one failure mode a response cache can actually cause.
+  await model.extract(request({ fileName: "a.pdf", packageType: "TSSOP-8" }));
+
+  assert.equal(inner.calls, 2);
+  assert.equal(model.stats.hits, 0);
+});
+
+test("a changed page render is a different question and is re-asked", async () => {
+  const inner = countingModel(ANSWER);
+  const model = cachingModel(inner, "use", () => "image-change");
+  const page = { page: 3, mimeType: "image/png" as const, widthPx: 1275, heightPx: 1650 };
+
+  await model.extract(request({ fileName: "b.pdf", images: [{ ...page, base64: "AAAA" }] }));
+  await model.extract(request({ fileName: "b.pdf", images: [{ ...page, base64: "BBBB" }] }));
+
+  assert.equal(inner.calls, 2, "the model saw different pixels, so the answer cannot be reused");
+});
+
+test("a live call that throws is still counted, and marks the run incomplete", async () => {
+  // Regression, 2026-08-09. The counter sat after the await, so eighteen calls
+  // rejected on quota reported "live calls 0" beside eighteen errors, and the
+  // run read as though the cache had served everything. A stats line that goes
+  // quiet exactly when something is going wrong is worse than none.
+  const failing: ExtractionModel = {
+    name: "gemini",
+    isConfigured: () => true,
+    extract: async () => {
+      throw new Error("[429] You exceeded your current quota");
+    }
+  };
+  const model = cachingModel(failing, "use", () => "quota-part");
+
+  await assert.rejects(() => model.extract(request({ fileName: "quota.pdf" })));
+
+  assert.equal(model.stats.misses, 1, "the attempt happened and must be visible");
+  assert.equal(model.stats.failed, 1);
+  assert.match(formatCacheStats(model.stats), /1 FAILED/);
+  assert.match(formatCacheStats(model.stats), /INCOMPLETE/, "the report must say the numbers are a floor");
+});
+
+test("a failed call writes no cache entry, so a retry still asks", async () => {
+  let attempts = 0;
+  const flaky: ExtractionModel = {
+    name: "gemini",
+    isConfigured: () => true,
+    extract: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("[503] overloaded");
+      return ANSWER;
+    }
+  };
+  const model = cachingModel(flaky, "use", () => "flaky-part");
+
+  await assert.rejects(() => model.extract(request({ fileName: "flaky.pdf" })));
+  await model.extract(request({ fileName: "flaky.pdf" }));
+
+  assert.equal(attempts, 2, "a failure must not be mistaken for an answer");
+  assert.equal(model.stats.hits, 0);
+});
+
+test("offline mode never calls the model and reports the miss as a miss", async () => {
+  const inner = countingModel(ANSWER);
+  const model = cachingModel(inner, "offline", () => "offline-part");
+
+  await assert.rejects(() => model.extract(request({ fileName: "never-asked.pdf" })), ModelCacheMiss);
+  assert.equal(inner.calls, 0, "offline must guarantee zero spend");
+  assert.equal(model.stats.skipped, 1);
+  assert.equal(model.stats.misses, 0, "a skipped call is not a live call");
+});
+
+test("offline mode still replays what is on disk", async () => {
+  const warm = cachingModel(countingModel(ANSWER), "use", () => "warm-part");
+  await warm.extract(request({ fileName: "warm.pdf" }));
+
+  const inner = countingModel(ANSWER);
+  const offline = cachingModel(inner, "offline", () => "warm-part");
+  const replayed = await offline.extract(request({ fileName: "warm.pdf" }));
+
+  assert.deepEqual(replayed.values, ANSWER.values);
+  assert.equal(inner.calls, 0);
+});
+
+test("refresh ignores an existing entry and overwrites it", async () => {
+  const first = countingModel(ANSWER);
+  await cachingModel(first, "use", () => "refresh-part").extract(request({ fileName: "refresh.pdf" }));
+
+  const updated: ExtractionResult = { values: { "dimensions.leadSpanMm": { value: 9.9, page: 4 } } };
+  const second = countingModel(updated);
+  const model = cachingModel(second, "refresh", () => "refresh-part");
+  await model.extract(request({ fileName: "refresh.pdf" }));
+
+  assert.equal(second.calls, 1, "refresh must re-ask");
+
+  // And the overwrite must stick, or the next run would replay the stale answer.
+  const after = cachingModel(countingModel(ANSWER), "offline", () => "refresh-part");
+  const replayed = await after.extract(request({ fileName: "refresh.pdf" }));
+  assert.deepEqual(replayed.values["dimensions.leadSpanMm"]?.value, 9.9);
+});
+
+test("the key does not depend on the label, so renaming a part does not orphan its answer", () => {
+  const a = requestKey("gemini", request({ fileName: "same.pdf" }));
+  const b = requestKey("gemini", request({ fileName: "same.pdf" }));
+  assert.equal(a, b);
+  assert.notEqual(requestKey("gemini", request()), requestKey("local", request()));
+});
+
+test("entries land in the configured directory, never in the working tree", async () => {
+  const model = cachingModel(countingModel(ANSWER), "use", () => "placement");
+  await model.extract(request({ fileName: "placement.pdf" }));
+  assert.ok(readdirSync(TEMP_DIR).some((f) => f.startsWith("placement-") && f.endsWith(".json")));
+});
+
+test("cost estimate uses input and output rates separately", () => {
+  // Output is the expensive side and it is where reasoning tokens land, which
+  // is exactly what the original estimate missed.
+  assert.ok(estimateUsd(0, 1_000_000) > estimateUsd(1_000_000, 0));
+  assert.equal(estimateUsd(0, 0), 0);
+});
+
+// --- the two kinds of 429 -----------------------------------------------------
+//
+// Google returns 429 both for "you are going too fast" and for "your account is
+// out of money", and only the message distinguishes them. Retrying the second
+// costs three waits per part for something the first response already settled:
+// over an hour, on a 38-part run, to learn nothing.
+
+// VERBATIM from a real response. It mentions "billing", which is why matching on
+// vocabulary cannot tell the two apart: an earlier guard keyed on that word and
+// classified every rate limit as permanent, so the retry never fired at all.
+// The server states a retry delay only for the recoverable one.
+const TRANSIENT = new Error(
+  "[GoogleGenerativeAI Error]: [429 Too Many Requests] You exceeded your current quota, " +
+    "please check your plan and billing details. " +
+    "* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, " +
+    "limit: 20, model: gemini-3.6-flash. Please retry in 0.01s"
+);
+const DEPLETED = new Error(
+  "[GoogleGenerativeAI Error]: [429 Too Many Requests] Your prepayment credits are depleted. " +
+    "Please go to AI Studio to manage your project and billing."
+);
+
+// The one that cost two wrong fixes. A DAILY cap still reports a retry delay, so
+// the delay is not the discriminator; the quota ID is.
+const DAILY_CAP = new Error(
+  "[GoogleGenerativeAI Error]: [429 Too Many Requests] You exceeded your current quota, " +
+    "please check your plan and billing details. Please retry in 23s. " +
+    '[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{' +
+    '"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests",' +
+    '"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier","quotaValue":"20"}]}]'
+);
+
+function throwingOnce(error: Error): { model: ExtractionModel; calls: () => number } {
+  let calls = 0;
+  return {
+    calls: () => calls,
+    model: {
+      name: "test",
+      isConfigured: () => true,
+      extract: async (): Promise<ExtractionResult> => {
+        calls += 1;
+        if (calls === 1) throw error;
+        return { values: {} };
+      }
+    }
+  };
+}
+
+test("a transient rate limit is waited out rather than recorded as a failure to read", async () => {
+  const inner = throwingOnce(TRANSIENT);
+  const model = cachingModel(inner.model, "use", () => "transient");
+
+  await model.extract(request({ fileName: "transient.pdf" }));
+
+  assert.equal(inner.calls(), 2, "the call is retried");
+  assert.equal(model.stats.rateLimitWaits, 1, "and the wait is reported, so a slow run is explained");
+});
+
+test("depleted account credits fail immediately, because waiting cannot fix them", async () => {
+  const inner = throwingOnce(DEPLETED);
+  const model = cachingModel(inner.model, "use", () => "depleted");
+
+  await assert.rejects(() => model.extract(request({ fileName: "depleted.pdf" })));
+
+  assert.equal(inner.calls(), 1, "no retry");
+  assert.equal(model.stats.rateLimitWaits, 0, "and no wait");
+});
+
+test("under the ceiling nothing waits, so the limiter is invisible", async () => {
+  const model = cachingModel(
+    { name: "test", isConfigured: () => true, extract: async () => ({ values: {} }) },
+    "use",
+    () => "paced"
+  );
+
+  const started = Date.now();
+  for (let index = 0; index < 5; index += 1) {
+    await model.extract(request({ fileName: `paced-${index}.pdf` }));
+  }
+
+  assert.ok(Date.now() - started < 1000, "no delay while there is headroom");
+  assert.equal(model.stats.pacedWaits, 0);
+  assert.equal(model.stats.rateLimitWaits, 0, "the limit is never reached, so it is never hit");
+});
+
+test("at the ceiling the next request waits for the oldest to age out", () => {
+  // The arithmetic, checked without a test that sleeps for a minute.
+  //
+  // The failure this replaces: reacting to 429s cannot hold a rate limit,
+  // because a RETRY IS ITSELF A REQUEST. At the cap, four attempts per part over
+  // eighteen parts added seventy-two more requests, each refreshing the window
+  // it was waiting for. Two runs were lost and every number they printed was a
+  // floor.
+  const now = 1_000_000;
+
+  assert.equal(slotDelayMs([now - 5_000, now - 1_000], now, 3), 0, "below the limit, no wait");
+
+  // Three in the window with a limit of three: wait until the oldest is 60s old.
+  const atCap = slotDelayMs([now - 50_000, now - 20_000, now - 1_000], now, 3);
+  assert.ok(atCap > 9_000 && atCap < 11_000, `expected about 10s, got ${atCap}`);
+
+  // Requests older than the window do not count against it.
+  assert.equal(slotDelayMs([now - 61_000, now - 62_000, now - 1_000], now, 3), 0);
+});
+
+
+test("a DAILY cap is not retried, even though it states a retry delay", async () => {
+  // Measured: waiting three minutes for `GenerateRequestsPerDayPerProjectPerModel`
+  // fails exactly as it did at the start. Thirteen parts x three attempts x 60s
+  // is 39 minutes spent learning what the first response already said.
+  const inner = throwingOnce(DAILY_CAP);
+  const model = cachingModel(inner.model, "use", () => "daily");
+
+  await assert.rejects(() => model.extract(request({ fileName: "daily.pdf" })));
+
+  assert.equal(inner.calls(), 1, "no retry");
+  assert.equal(model.stats.rateLimitWaits, 0, "and no wait");
+});

@@ -39,6 +39,9 @@ function exportablePart(packageType: string, pinCount: number): PartRecord {
     packageType: citedValue(packageType),
     packageOutlineCode: unknown<string>(),
     packageVariants: [],
+  vendorLandPattern: null,
+  exposedPad: false,
+  conflicts: [],
     pinCount: citedValue(pinCount),
     pins: citedValue(pins(pinCount)),
     dimensions: {
@@ -49,7 +52,9 @@ function exportablePart(packageType: string, pinCount: number): PartRecord {
       leadLengthMm: citedValue(0.8),
       leadCount: citedValue(pinCount),
       leadWidthMm: citedValue({ minMm: 0.35, maxMm: 0.5 }),
-      leadSpanMm: citedValue({ minMm: 5.8, maxMm: 6.2 }), leadContactMm: citedValue({ minMm: 0.4, maxMm: 0.625 })
+      leadSpanMm: citedValue({ minMm: 5.8, maxMm: 6.2 }), leadContactMm: citedValue({ minMm: 0.4, maxMm: 0.625 }),
+      thermalPadLengthMm: unknown<number>(),
+      thermalPadWidthMm: unknown<number>()
     },
     radiation: {
       tid: unknown<string>(),

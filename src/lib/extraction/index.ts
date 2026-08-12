@@ -18,3 +18,4 @@ export {
 export { makeExtractionModel } from "./factory";
 export { citeRenderedPage, mergeModelValues, unresolvedFields, verifyCitation, type MergeOutcome } from "./merge";
 export { buildExtractionRequest, withRenderedPages } from "./request";
+export { runExtraction, type ExtractionRun } from "./run";

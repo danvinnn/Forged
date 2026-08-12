@@ -238,3 +238,106 @@ test("the outline code is returned, because it is what tells a SOIC from a SOIC"
   assert.equal(read.code?.prefix, "DW", "the prefix is the family, and DW is the wide body");
   assert.equal(read.code?.leadCount, 16, "the digits are checkable arithmetic, not decoration");
 });
+
+test("a pitch tagged with the LEAD count is read, not just the gap count", () => {
+  // Found 2026-08-10 by dumping the tagged labels on every page where the pitch
+  // came back null. An ADS8688 is 38 pins in a DBT0038A and its drawing tags the
+  // pitch `38 X 0.5`: the vendor counted the leads, not the gaps between them.
+  // The reader wanted 36 or 18 and so read no pitch at all for that part.
+  const read = readDrawingDimensions(
+    doc(drawingPage([item("38 X 0.5", 512, 560)], 29, "TSSOP - 1.2 mm max height")) as never,
+    "TSSOP (38)",
+    38
+  );
+
+  assert.ok(read);
+  assert.equal(read.pitchMm?.value, 0.5);
+});
+
+test("a quad package's pitch is read from its four-sided gap count", () => {
+  // An MSP430F5529 is 80 pins in an LQFP and tags `76X 0.5`. A quad divides its
+  // leads between four sides, so the gaps are 4 * (80/4 - 1) = 76. The reader
+  // only knew the dual forms (78 across, 39 a side) and refused it.
+  const read = readDrawingDimensions(
+    doc(drawingPage([item("76X 0.5", 512, 560)], 29, "LQFP - 1.6 mm max height")) as never,
+    "LQFP (80)",
+    80
+  );
+
+  assert.ok(read);
+  assert.equal(read.pitchMm?.value, 0.5);
+});
+
+test("a count near the pin count but not arithmetic on it is still refused", () => {
+  // The forms widened on 2026-08-10, and widening them is how a drawing's other
+  // count-tagged labels start being read as the pitch. `40X` on an 80-pin part
+  // is neither the leads, the gaps across, the gaps a side, nor the quad gaps.
+  const read = readDrawingDimensions(
+    doc(drawingPage([item("40X 0.5", 512, 560)], 29, "LQFP - 1.6 mm max height")) as never,
+    "LQFP (80)",
+    80
+  );
+
+  assert.ok(read);
+  assert.equal(read.pitchMm, null);
+});
+
+test("the lead width is refused when the drawing tags two pairs that could both be it", () => {
+  // An OPA2277's DRM0008A tags `8X 0.38/0.23` for the terminal width and
+  // `8X 0.5/0.3` for its length. Both are plausible lead widths against the 0.8
+  // pitch and nothing in the TEXT separates them: what does is the direction the
+  // dimension runs, and that is carried by arrows this reader cannot see.
+  //
+  // Taking the first in document order read an ADS1115 wrong; taking the largest
+  // read this one wrong. So neither is taken. The null is what puts the field in
+  // front of the rendered-page reader, which reads DRM0008A as 0.23-0.38.
+  const read = readDrawingDimensions(
+    doc(
+      drawingPage(
+        [
+          item("6X 0.8", 300, 600),
+          // The width, stacked: the count between its max and its min.
+          item("8X", 463, 500),
+          item("0.38", 475, 505),
+          item("0.23", 475, 495),
+          // The terminal LENGTH, tagged exactly the same way.
+          item("8X", 463, 420),
+          item("0.5", 475, 425),
+          item("0.3", 475, 415)
+        ],
+        29,
+        "VSON - 1 mm max height"
+      )
+    ) as never,
+    "8-pin VSON",
+    8
+  );
+
+  assert.ok(read);
+  assert.equal(read.pitchMm?.value, 0.8, "the pitch is unambiguous and is still read");
+  assert.equal(read.leadWidthMm, null, "two candidates is not an answer");
+});
+
+test("a single plausible width pair is still read", () => {
+  // The refusal above must not become a blanket one. An ADS8688's DBT0038A tags
+  // exactly one pair inside the pitch, and it is the width.
+  const read = readDrawingDimensions(
+    doc(
+      drawingPage(
+        [
+          item("36X 0.5", 300, 600),
+          item("38X", 463, 500),
+          item("0.23", 475, 505),
+          item("0.17", 475, 495)
+        ],
+        29,
+        "TSSOP - 1.2 mm max height"
+      )
+    ) as never,
+    "TSSOP (38)",
+    38
+  );
+
+  assert.ok(read);
+  assert.deepEqual(read.leadWidthMm?.value, { minMm: 0.17, maxMm: 0.23 });
+});

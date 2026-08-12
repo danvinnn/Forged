@@ -518,6 +518,18 @@ export interface AltiumFootprintExtras {
 }
 
 export function emitAltiumPcbLib(geometry: FootprintGeometry, extras: AltiumFootprintExtras = {}): Buffer {
+  // A pad whose paste must not follow its copper cannot be spelled in this
+  // writer yet, and emitting it as an ordinary pad would paste a thermal land
+  // 1:1: the solder volume floats the package and lifts the perimeter leads off
+  // their lands. Refusing is the only honest option, because the file would look
+  // correct in Altium and fail at reflow.
+  const windowed = geometry.pads.find((pad) => pad.pasteApertures && pad.pasteApertures.length > 0);
+  if (windowed) {
+    throw new AltiumEmitError(
+      `Footprint "${geometry.name}" has an exposed thermal pad on pad ${windowed.number}, whose solder paste must be broken into apertures. This writer cannot express a paste pattern that differs from the copper, and pasting the land solid would float the package off its leads. Export to KiCad, which can.`
+    );
+  }
+
   if (geometry.pads.length === 0) {
     throw new AltiumEmitError(`Footprint "${geometry.name}" has no pads, so there is nothing to fabricate from.`);
   }

@@ -14,7 +14,8 @@
  *      published pattern for that package. If it disagrees, the inputs are wrong.
  */
 
-import { type LeadDimensions } from "./ipc7351";
+import { computeLandPattern, type LeadDimensions } from "./ipc7351";
+import { landDisagreements } from "./vendorland";
 import { type LeadWidth } from "./types";
 
 export interface PackageDefinition {
@@ -627,6 +628,14 @@ export const SUPPORTED_PACKAGE_FAMILIES = PACKAGE_DEFINITIONS.map((definition) =
  */
 const PITCH_AGREEMENT_MM = 0.02;
 
+/**
+ * Widest a lead may be as a fraction of its pitch, on a drawing-derived pattern.
+ *
+ * A plausibility check on a number nobody has verified by hand, not an
+ * engineering allowance. See the note where it is used.
+ */
+const MAX_LEAD_WIDTH_FRACTION_OF_PITCH = 0.75;
+
 /** What this part's own mechanical drawing contributed, where it was readable. */
 export interface DrawnPackageEvidence {
   /** Code printed on the drawing, e.g. `DW0016B`. */
@@ -641,6 +650,11 @@ export interface DrawnPackageEvidence {
   leadLengthMm?: number | null;
   /** Lead contact length as the drawing prints it, min to max. Preferred. */
   leadContactMm?: LeadWidth | null;
+  /**
+   * The land pattern callouts the datasheet PRINTS, in mm. Checked against a
+   * pattern derived from this part's own drawing; see `packageFromDrawing`.
+   */
+  vendorLandMm?: readonly number[] | null;
 }
 
 /**
@@ -659,6 +673,24 @@ export interface DrawnPackageEvidence {
  */
 const GULLWING_FAMILY =
   /\b(?:SOIC|SOP|SSOP|TSSOP|HTSSOP|VSSOP|HVSSOP|MSOP|MINISO|TSOT|SOT|LQFP|TQFP|PQFP|HTQFP|QFP|CFP|GFP|FLATPACK|FLAT)\b/i;
+
+/**
+ * `SOT` is on that list even though the name does not name a lead form, and the
+ * reason is worth stating because it was briefly taken off.
+ *
+ * A SOT-23 is a genuine gull-wing. An ADS1115's `SOT-10` is JEDEC MO-368, whose
+ * terminal is a flat tab under the body edge, and the two share nothing but the
+ * three letters. Given its own drawing (span 2.7-2.9, L 0.35-0.55, b 0.18-0.30,
+ * pitch 0.5, every one correct and hand-verified against page 54) the gull-wing
+ * model produced a 1.26 mm land against the 0.82 mm TI prints on page 55.
+ *
+ * Excluding the family fixed that one part and nothing else. The general defect
+ * is that CORRECT inputs and the wrong lead form produce a confident wrong
+ * answer, and no list of family names detects it. What detects it is the vendor's
+ * own printed land pattern, which is checked below and which refuses the ADS1115
+ * without anyone naming a family. So the family list stays permissive and the
+ * evidence does the work.
+ */
 
 /**
  * A land pattern derived from THIS part's own drawing, when no family entry
@@ -711,10 +743,24 @@ function packageFromDrawing(
   // entry on the SOIC and 0.150 mm out on the TSSOP. The nominal alone is
   // within 0.079 mm. So `leadContactMm` is RECORDED, because it is a real
   // dimension a reviewer may want, and it is deliberately not used here.
-  const contact: LeadWidth | null =
+  //
+  // Taken from `leadContactMm` when the single figure is absent, using its
+  // MIDPOINT and not its range, which is the same decision one line up rather
+  // than a different one. Both fields carry the drawing's L; `leadLengthMm` is
+  // the nominal where a reader found one printed, `leadContactMm` the min-max
+  // pair. Only the rendered-page reader fills the pair, which is why this
+  // fallback is what lets a model-read drawing produce a footprint at all: on
+  // 2026-08-10 it filled `leadContactMm` on 4 of 4 parts and `leadLengthMm` on
+  // none, so every one of them stopped here.
+  const printedL = drawn.leadContactMm;
+  const nominalL =
     drawn.leadLengthMm && drawn.leadLengthMm > 0
-      ? { minMm: drawn.leadLengthMm, maxMm: drawn.leadLengthMm }
-      : null;
+      ? drawn.leadLengthMm
+      : printedL && printedL.minMm > 0 && printedL.maxMm >= printedL.minMm
+        ? (printedL.minMm + printedL.maxMm) / 2
+        : null;
+  const contact: LeadWidth | null =
+    nominalL !== null ? { minMm: nominalL, maxMm: nominalL } : null;
 
   if (!span || !width || !contact || !pitch) return null;
   if (!GULLWING_FAMILY.test(packageType)) return null;
@@ -730,9 +776,26 @@ function packageFromDrawing(
 
   // Physical plausibility, and each of these has a specific failure it prevents.
   //
-  // A lead cannot be wider than the pitch that separates it from its neighbour,
-  // or adjacent leads would touch.
-  if (width.maxMm >= pitch) return null;
+  // A lead cannot occupy most of the pitch that separates it from its
+  // neighbour, and `>= pitch` was far too loose a way to say so.
+  //
+  // Found 2026-08-10 on an ADS1115. Its DYN0010A drawing tags several max-over-min
+  // pairs and the width reader took `10X 0.45/0.25`, which is not the lead width;
+  // the width is `10X 0.30/0.18`. At 0.45 against a 0.5 pitch the leads would sit
+  // 0.05 mm apart, which no package does and no stencil could print. The old
+  // check passed it, the part exported, and its pads came out 0.44 mm longer and
+  // 0.22 mm wider than the land pattern TI prints on page 55.
+  //
+  // Measured across every drawing read so far, the real ratio sits between 40%
+  // and 60%: ISO7741 0.51/1.27, INA240 0.30/0.65, ADS8688 0.23/0.5, and the
+  // ADS1115's own correct width 0.30/0.5. Three quarters is clear of all of them
+  // and clear of the misread, and it makes the part refuse rather than ship a
+  // footprint built on the wrong dimension.
+  //
+  // This guards the DRAWING-derived path only. The hand-entered families above
+  // are each pinned to a published land pattern by test, which is a stronger
+  // check than this one.
+  if (width.maxMm > MAX_LEAD_WIDTH_FRACTION_OF_PITCH * pitch) return null;
   // Two feet cannot be longer than the span they both sit inside; if they were,
   // the inner gap would be negative and opposing lands would overlap at the
   // centre of the package.
@@ -745,6 +808,39 @@ function packageFromDrawing(
   // 6.6 mm span, and the check refused a part whose numbers were all correct.
   // Constraining the row would need the body LENGTH, which is a different
   // dimension and not required here.
+
+  // The vendor's own printed land pattern, where the datasheet has one, is the
+  // only independent check this path has, and it is now a REFUSAL rather than a
+  // note.
+  //
+  // A hand-entered family carries a JEDEC outline and a test pinning it to a
+  // published pattern; "differs" there is a legitimate finding, because IPC-7351B
+  // density B and a vendor house rule genuinely disagree by a few hundredths.
+  // This has neither. Every number came from one drawing read minutes ago, and if
+  // the page two sheets later prints a different land, the reading or the lead
+  // form is wrong.
+  //
+  // It is the check that would have caught the ADS1115 without anyone naming a
+  // family: its inputs were all correct and hand-verified, its lead form was not,
+  // and the land came out 0.44 mm from the 0.82 mm TI prints on page 55. The
+  // tolerance is the same one the advisory check uses, and it separates that case
+  // from an ADS8688 landing 0.02 mm from its own printed pattern.
+  const printed = drawn.vendorLandMm;
+  if (printed && printed.length > 0) {
+    const candidate: LeadDimensions = {
+      form: "gullwing",
+      span: { minMm: span.minMm, maxMm: span.maxMm },
+      contact: { minMm: contact.minMm, maxMm: contact.maxMm },
+      width: { minMm: width.minMm, maxMm: width.maxMm }
+    };
+    try {
+      if (landDisagreements(printed, computeLandPattern(candidate)).length > 0) return null;
+    } catch {
+      // A candidate whose land cannot be computed is refused by the caller
+      // anyway; failing to CHECK it is not a reason to accept it here.
+      return null;
+    }
+  }
 
   return {
     family: `${packageType} (from drawing)`,
@@ -822,6 +918,34 @@ export function resolvePackageDefinition(
         reason: `The lead pitch extracted from this datasheet is ${drawn.pitchMm} mm, but "${packageType}" resolves to ${definition.family}, whose pitch is ${definition.pitchMm} mm. One of the two is about a different package, so no land pattern is generated. Name the package explicitly to override.`,
         supported: SUPPORTED_PACKAGE_FAMILIES
       }
+    };
+  }
+
+  // Where the drawing gives this part's own lead span, it is used in place of
+  // the family constant, for the same reason the width is below and with more
+  // at stake.
+  //
+  // One family name covers several body widths. JEDEC MO-153 is "TSSOP" whether
+  // the body is 4.4 mm or 6.1 mm, and those have lead spans of 6.2-6.6 and
+  // 8.0-8.4; the designator does not distinguish them and the pitch is 0.65 on
+  // both, so the pitch check below cannot catch it either. Every entry in the
+  // table above took its span from ONE drawing, so a part from a different
+  // variant of the same family silently inherited a span up to 1.8 mm wrong,
+  // and the span is what places the pads. That is the confidently-wrong
+  // footprint this module exists to prevent, and the part's own drawing has the
+  // answer whenever it was read.
+  //
+  // The family still supplies the contact length, which is deliberate: IPC's
+  // contact is the SEATED FOOT and no drawing prints it. Measured 2026-08-05 on
+  // the LM358 and INA240 drawings, every value derivable from the printed L was
+  // off by 0.10 to 0.21 mm against the hand-calibrated entry, so the contact
+  // stays a family constant. See the guard test in ipc7351.test.ts.
+  const span = drawn.leadSpanMm;
+  if (span && span.minMm > 0 && span.maxMm >= span.minMm) {
+    definition = {
+      ...definition,
+      lead: { ...definition.lead, span: { minMm: span.minMm, maxMm: span.maxMm } },
+      source: `${definition.source}. Lead span ${span.minMm}-${span.maxMm} mm read off this part's own package drawing${drawn.outlineCode ? ` (${drawn.outlineCode})` : ""}, in place of the family value.`
     };
   }
 

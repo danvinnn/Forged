@@ -23,6 +23,8 @@ function partWith(partNumber: string): ResolvedPart {
     manufacturer: "Test",
     packageType: "SOIC-8",
     packageOutlineCode: null,
+    vendorLandPattern: null,
+    exposedPad: false,
     pinCount: 8,
     pins: [],
     dimensions: {
@@ -32,7 +34,8 @@ function partWith(partNumber: string): ResolvedPart {
       pitchMm: 1.27,
       leadLengthMm: 0.6,
       leadCount: 8,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null
+      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      thermalPadLengthMm: null, thermalPadWidthMm: null
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "test.pdf",

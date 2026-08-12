@@ -15,7 +15,7 @@ import { PdfExtractionError } from "../../../lib/pdftext";
 // The extraction layer's public surface deliberately excludes the concrete
 // models, so importing it cannot pull a networked model into the air-gapped
 // module graph. makeExtractionModel reaches those by dynamic import.
-import { buildExtractionRequest, makeExtractionModel, mergeModelValues, withRenderedPages } from "../../../lib/extraction";
+import { makeExtractionModel, runExtraction } from "../../../lib/extraction";
 import {
   ModelDeadlineError,
   modelBudgetMs,
@@ -26,6 +26,9 @@ import { computeLandPattern } from "../../../lib/ipc7351";
 import { resolvePackageDefinition } from "../../../lib/packages";
 import { findPackageDrawing, type PackageDrawing } from "../../../lib/packagedrawing";
 import { crossCheckLandPattern } from "../../../lib/vendorland";
+import { collectReviewItems, reviewPages, type ReviewItem } from "../../../lib/review";
+import { renderPages, type RenderedPage } from "../../../lib/pagerender";
+import { packageOptions, type PackageChoice } from "../../../lib/exporters";
 
 export const runtime = "nodejs";
 // Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
@@ -148,13 +151,16 @@ export async function POST(request: Request) {
     throw error;
   }
   let method = "deterministic";
+  // Renders kept in scope past the model block. The review panel shows the user
+  // the page a value came from, and re-rendering a page we already rasterised
+  // for the model would be pure waste.
+  let rendered: RenderedPage[] = [];
 
   const model = await makeExtractionModel(mode);
   if (model) {
-    const request = buildExtractionRequest(part, doc, ref.fileName);
     const budgetMs = modelBudgetMs(ROUTE_BUDGET_MS, Date.now() - startedAt);
 
-    if (request && !worthAsking(budgetMs)) {
+    if (!worthAsking(budgetMs)) {
       // Retrieval and parsing have already used the route's budget. Asking now
       // guarantees the platform kills the function mid-call, which would lose the
       // record that is already in hand.
@@ -165,21 +171,21 @@ export async function POST(request: Request) {
           `Retrieval and text extraction used the request's time budget, so the ${model.name} extraction pass was skipped. Only text extraction was applied.`
         ]
       };
-    } else if (request) {
+    } else {
       try {
         // Rendered inside the try: a renderer failure is a model-pass failure,
         // and both must leave the deterministic record untouched.
-        const withImages = await withRenderedPages(request, ref.bytes);
-        const result = await withDeadline(model.extract(withImages), budgetMs);
-        const outcome = mergeModelValues(
-          part,
-          doc,
-          result,
-          model.name,
-          withImages.images.map((image) => image.page)
+        const outcome = await withDeadline(
+          runExtraction(part, doc, ref.bytes, model, ref.fileName),
+          budgetMs
         );
-        part = outcome.part;
-        if (outcome.filled.length > 0) method = `deterministic+${model.name}`;
+        if (outcome) {
+          part = outcome.part;
+          // Rendered pages are needed by the review panel, which shows a
+          // reviewer the page a value was read from.
+          rendered = await renderPages(ref.bytes, outcome.renderedPages, { maxPages: 8 });
+          if (outcome.filled.length > 0) method = `deterministic+${model.name}`;
+        }
       } catch (error) {
         // A model failure must never cost the user the deterministic record.
         // Running out of time is reported as what it is rather than as a failure,
@@ -207,6 +213,7 @@ export async function POST(request: Request) {
   // are both legitimate and they genuinely differ.
   const packageType = part.packageType.value;
   const pinCount = part.pinCount.value;
+
   if (packageType && pinCount !== null) {
     // The same resolution the exporter performs, drawing evidence included. An
     // ISO7741 calls itself a "16-pin SOIC" and its drawing is titled DW0016B,
@@ -236,11 +243,47 @@ export async function POST(request: Request) {
   // for it. Nothing is read off the drawing here; this is only its location.
   const packageDrawing = findPackageDrawing(doc, part.packageType.value ?? undefined);
 
-  return NextResponse.json<RetrievalSuccess & { method: string; packageDrawing: PackageDrawing | null }>({
+  // What a person should look at, and the pages they need to look at it ON.
+  //
+  // The pages are shipped with the record rather than fetched later on demand,
+  // because by the time the user is looking at the panel this route has already
+  // released the PDF. A second endpoint would have to re-retrieve the document
+  // to rasterise one page, which on the commercial path means fetching a vendor
+  // PDF again to answer a question we could already answer.
+  // What clicking each offered package would actually do. Computed here, where
+  // the record is complete, because the chooser is shown before any export is
+  // attempted and a dropdown that cannot say which of its entries work is the
+  // failure `packageOptions` exists to end. It runs the real generator, so it
+  // costs one footprint build per package and never disagrees with the export.
+  const packageChoice = packageOptions(part);
+
+  const review = collectReviewItems(part);
+  const wanted = reviewPages(review);
+  const already = new Map(rendered.map((image) => [image.page, image]));
+  const missing = wanted.filter((page) => !already.has(page));
+  // Only the pages nothing has rasterised yet. A renderer failure degrades the
+  // panel to page numbers without pictures, which is still better than nothing,
+  // so this is never allowed to fail the request.
+  const extra = missing.length > 0 ? await renderPages(ref.bytes, missing, { maxPages: missing.length }) : [];
+  for (const image of extra) already.set(image.page, image);
+  const pages = wanted.map((page) => already.get(page)).filter((image): image is RenderedPage => Boolean(image));
+
+  return NextResponse.json<
+    RetrievalSuccess & {
+      method: string;
+      packageDrawing: PackageDrawing | null;
+      packageChoice: PackageChoice;
+      review: ReviewItem[];
+      reviewPages: RenderedPage[];
+    }
+  >({
     part,
     source: toRetrievalSource(ref, "upload"),
     mode,
     method,
-    packageDrawing
+    packageDrawing,
+    packageChoice,
+    review,
+    reviewPages: pages
   });
 }

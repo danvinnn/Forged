@@ -1,6 +1,5 @@
 import type { RenderedPage } from "../pagerender";
 import type { PinRecord } from "../types";
-import type { PageSelection } from "./pageselect";
 
 /**
  * Layer 2 extraction model contract.
@@ -32,6 +31,11 @@ export const extractionFields = [
   "dimensions.leadWidthMm",
   "dimensions.leadSpanMm",
   "dimensions.leadContactMm",
+  // The exposed thermal pad's own size. Without these a part with a pad cannot
+  // be built at all: the numbered lands alone are a footprint missing the
+  // feature the part is soldered by.
+  "dimensions.thermalPadLengthMm",
+  "dimensions.thermalPadWidthMm",
   "radiation.tid",
   "radiation.see",
   "radiation.sel",
@@ -56,6 +60,24 @@ export interface ModelValue {
   value: string | number | PinRecord[] | ModelRange | null;
   /** 1-indexed page the model says the value appears on, if it reported one. */
   page: number | null;
+}
+
+/**
+ * What was sent to the model, and what it was a subset of.
+ *
+ * Lived in `pageselect.ts` until that module was deleted on 2026-08-11. The
+ * whole document now goes to the model, so `reason` is `whole-document` in
+ * practice and `truncated` only past a 2,000,000-character safety rail; the
+ * older values are kept so a stored record from before the change still reads.
+ */
+export interface PageSelection {
+  pages: Array<{ page: number; text: string }>;
+  /** How the pages were chosen, for the record and for logs. */
+  reason: "relevance" | "leading" | "whole-document" | "truncated";
+  /** Pages the whole document had, before any limit was applied. */
+  totalPages: number;
+  /** Characters the whole document had, before any limit was applied. */
+  totalChars: number;
 }
 
 export interface ExtractionRequest {
@@ -94,6 +116,30 @@ export interface ExtractionRequest {
    */
   packageType?: string | null;
   /**
+   * The packages this document describes, when the deterministic pass could not
+   * settle on ONE of them.
+   *
+   * The complement of `packageType` above, and it exists because refusing to
+   * pick is not the same as having nothing to say. Told nothing, the model
+   * refuses the whole document and says exactly why, measured on the hold-out:
+   * STM32L476RG, "the document specifies multiple package options (LQFP64,
+   * WLCSP72, ...) so package dimensions, lead specifications and pin count
+   * cannot be uniquely assigned"; TSZ121, "without specifying a single primary
+   * package for intake". Both are correct answers to the question as asked, and
+   * both cost the entire part.
+   *
+   * A person resolves this from the PART NUMBER: an `STM32L476RG` is the 64-pin
+   * member of its family, so LQFP64 is the only candidate that fits. That is
+   * knowledge about a vendor's ordering scheme, which is exactly the kind of
+   * thing a model has and a parser cannot be given.
+   *
+   * It is a list of CANDIDATES the document itself names, never an invitation to
+   * invent one, and where the part number genuinely does not decide (a part
+   * really sold in two packages) the model is told to refuse rather than guess.
+   * That refusal is the package chooser's job, not extraction's.
+   */
+  packageCandidates?: string[];
+  /**
    * Only the fields the deterministic pass could not resolve. A model is never
    * asked about, and can never overwrite, a value that was read off the page by
    * code.
@@ -112,6 +158,37 @@ export interface ExtractionResult {
   values: Partial<Record<ExtractionField, ModelValue>>;
   /** Free-form observations to surface as record notes. */
   notes?: string[];
+  /**
+   * Pages the model wants to LOOK at, named after it has read the whole text.
+   *
+   * The second pass. A mechanical drawing states its dimensions as labels beside
+   * dimension lines, and which dimension a label belongs to is carried by the
+   * ARROWS, which are graphics: the text layer has the numbers and not what they
+   * measure. So the values on those pages are unreadable from text and readable
+   * from a render.
+   *
+   * Asked of the model rather than decided for it, because after reading the
+   * document it knows where its drawings are and nothing else in the system
+   * does. Everything that tried to decide this on the model's behalf has been a
+   * source of lost parts.
+   *
+   * Absent or empty means the text was enough and no second pass is made.
+   */
+  pagesWorthRendering?: number[];
+  /**
+   * What the call cost, when the provider reports it. Absent otherwise, and
+   * absent is not zero.
+   *
+   * Here because the run that ran the account dry could not say how much it had
+   * spent, and the estimate it was authorised against turned out to be for a
+   * different configuration: the image path is roughly four times the input of
+   * the text path, and reasoning tokens are billed as output and were never
+   * counted at all. A number nobody can see is a number nobody can check.
+   *
+   * `outputTokens` INCLUDES reasoning tokens where the provider separates them,
+   * because the bill does.
+   */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface ExtractionModel {

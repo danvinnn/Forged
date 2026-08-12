@@ -249,6 +249,19 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
     // why the pin COUNT is refused and only the names are pinned here. Page one
     // draws four packages: the 2-lead flatpack (no numbers), the 4-lead LFCSP,
     // the 3-pin TO-52 and this one. All four are the AD590.
+    //
+    // NOT EXERCISED unhinted since 2026-08-09, and that is a deliberate trade
+    // rather than a regression to fix by reverting. The 4-lead LFCSP became
+    // readable that day (its right column arrives glued as `4NC`/`3NC`), so the
+    // page now yields TWO figures of different lengths and nothing chooses
+    // between them without being told the package. Before, only the SOIC was
+    // readable and it was returned for a part labelled `2-lead FLATPACK`, which
+    // is a pairing no reviewer should have been shown.
+    //
+    // Asked for a package by name, both are now correct: `8-lead SOIC` gives
+    // these eight, `4-lead LFCSP` gives 1=V+, 2=V-, 3=NC, 4=NC, hand-read off
+    // page 1 the same day. The bench only ever reads unhinted, so it can see
+    // neither, and this note is the record that they work.
     source: "page 1, 8-lead SOIC figure under PIN CONFIGURATIONS (rendered)",
     pins: {
       "1": "NC", "2": "V+", "3": "V-", "4": "NC",
@@ -307,15 +320,68 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
     source: "page 1, 5-Lead TSOT-23 (UJ-5) / 5-Lead SOT-23 (RT-5) figure (rendered)",
     pins: { "1": "OUT", "2": "V-", "3": "+IN", "4": "-IN", "5": "V+" }
   },
+  "LM139AQML-SP": {
+    packageType: "GDIP-14",
+    // Read off the rendered page 2 by eye on 2026-08-06, from the Dual-In-Line
+    // Package diagram titled `See Package Number J(R-GDIP-14)`, then checked
+    // against the second diagram on the same page (`LM139W`, NAD0014B/NAC0014A),
+    // which prints the identical fourteen names. The page also carries a 20-pin
+    // NAJ002A diagram with DIFFERENT names (OUT1, IN-1); that is a separate
+    // package and these names do not apply to it.
+    //
+    // This entry exists specifically to guard pin tables cited to a RENDERED
+    // page. Nothing else in this file covers that path, so before it was added
+    // the change that opened it was measured by nothing.
+    source: "page 2, Connection Diagrams, Dual-In-Line Package J(R-GDIP-14) (rendered at 200 dpi)",
+    pins: {
+      "1": "OUTPUT 2", "2": "OUTPUT 1", "3": "V+", "4": "INPUT 1-",
+      "5": "INPUT 1+", "6": "INPUT 2-", "7": "INPUT 2+", "8": "INPUT 3-",
+      "9": "INPUT 3+", "10": "INPUT 4-", "11": "INPUT 4+", "12": "GND",
+      "13": "OUTPUT 4", "14": "OUTPUT 3"
+    }
+  },
+  LTC6563: {
+    packageType: "24-Lead QFN",
+    // Read by a person off the datasheet on 2026-08-10, from the PIN
+    // CONFIGURATION figure on page 2 (UDDM package, 24-lead 3mm x 5mm QFN, TOP
+    // VIEW), and cross-checked name by name against the PIN FUNCTIONS prose on
+    // page 17, which states every pin number in words. Two independent
+    // statements in the document, not the extractor's output.
+    //
+    // The overlines are LOST and that is recorded rather than hidden: pins 9 and
+    // 10 are OUT-bar and TERM-bar on the page. The text layer does not carry the
+    // bar on either the figure or the prose, so no reader here can recover it,
+    // and pin 9 is stored as the page's own characters.
+    //
+    // This part is the reason `namesAlongRow` takes the nearest valid name set:
+    // its bottom row sits directly above `UDDM PACKAGE` and a thermal
+    // annotation, which were being read as candidate names.
+    source: "page 2, PIN CONFIGURATION, UDDM 24-lead QFN, checked against PIN FUNCTIONS on page 17",
+    pins: {
+      "1": "GND", "2": "IN4", "3": "GND", "4": "PWRMD",
+      "5": "VCCI", "6": "OMUX", "7": "CM", "8": "HI",
+      "9": "OUT", "10": "TERM", "11": "TERM", "12": "OUT",
+      "13": "CHSEL1", "14": "VCCO", "15": "CHSEL0", "16": "OFFSET",
+      "17": "TILT", "18": "GND", "19": "IN1", "20": "GND",
+      "21": "IN2", "22": "ADJ0", "23": "ADJ1", "24": "IN3"
+    }
+  },
   RHF310A: {
     packageType: "ceramic Flat-8",
-    // NOT currently read, and this entry records why rather than what we emit.
-    // Pin 4 is printed `VCC-`; the text layer hands the run over as `"-VCC"` with
-    // a NEGATIVE advance, meaning the glyphs were positioned right to left and
-    // the string is not the printed order. The reader now refuses that run rather
-    // than emit a pin nobody can connect, so this part reports no pins at all.
-    // See `hasPrintedOrder` in pdftext.ts. Kept so the day it is recovered, it is
-    // recovered correctly.
+    // READ CORRECTLY as of 2026-08-08, 8/8 including pin 4. This entry spent
+    // months recording a refusal, and the history is worth keeping.
+    //
+    // Pin 4 is printed `VCC-`. The text layer hands the run over as `"-VCC"`
+    // with a NEGATIVE advance, meaning the glyphs were positioned right to left
+    // and the string is not the printed order, so the deterministic reader
+    // refuses it rather than emit a pin nobody can connect. See `hasPrintedOrder`
+    // in pdftext.ts. That refusal was right, and it was never the whole story:
+    // the PAGE shows `VCC-` perfectly plainly, and a model reading the render
+    // returns it. The information was in the document the entire time and the
+    // text layer was the only thing that could not see it.
+    //
+    // Kept as the standing check that the recovery stays correct: if this ever
+    // reads `-VCC` again, a reversed run is being trusted somewhere.
     source: "page 2, Figure 1 Pin connections of ceramic Flat-8 (rendered at 8x)",
     pins: {
       "1": "NC", "2": "IN-", "3": "IN+", "4": "VCC-",

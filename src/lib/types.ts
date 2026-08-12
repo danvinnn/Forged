@@ -36,7 +36,12 @@ export const pinElectricalTypes = [
  *
  * Collapsing the two would let a value nobody can grep pass as one they can.
  */
-export const extractionMethods = ["deterministic", "vlm", "vlm-drawing", "user"] as const;
+// `user-confirmed` is distinct from `user` on purpose. "A person typed this
+// number" and "a model read this number and a person checked it against page 2"
+// are different provenance, and a QML reviewer auditing the record is entitled
+// to tell them apart. Collapsing them would lose the fact that a citation backs
+// the value.
+export const extractionMethods = ["deterministic", "vlm", "vlm-drawing", "user", "user-confirmed"] as const;
 
 export const textRegionSchema = z.object({
   x: z.number(),
@@ -141,6 +146,25 @@ export const packageDimensionsSchema = z.object({
     confidence: null,
     method: null,
     citation: null
+  }),
+  /**
+   * The exposed thermal pad on the underside, drawing dimensions D2 and E2.
+   *
+   * Separate from the body because they are unrelated numbers: a 5 x 5 mm VQFN
+   * carries a 3.1 x 3.1 mm pad. Both are needed before a part with a pad can be
+   * built at all, so `exposedPad` without these is still a refusal.
+   */
+  thermalPadLengthMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  thermalPadWidthMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
   })
 });
 
@@ -192,8 +216,59 @@ export const partSchema = z.object({
    * field existed is still a valid record.
    */
   packageVariants: z.array(packageVariantSchema).max(32).default([]),
+  /**
+   * The land pattern this datasheet PRINTS for the resolved package, as bare
+   * millimetre callouts, plus the page it was read from.
+   *
+   * Carried on the record rather than recomputed because the export route never
+   * sees the document. It is evidence, not a result: a land pattern derived from
+   * a part's own drawing has no JEDEC outline behind it, so the vendor's own page
+   * is the only independent check available, and `packageFromDrawing` refuses a
+   * pattern the page contradicts. Defaulted, so a record stored before this field
+   * existed is still valid.
+   */
+  vendorLandPattern: z
+    .object({ page: z.number().int().positive(), valuesMm: z.array(z.number().positive()).max(64) })
+    .nullable()
+    .default(null),
   pinCount: extracted(z.number().int().positive()),
   pins: extracted(z.array(pinSchema)),
+  /**
+   * The part has an exposed thermal pad, so no footprint can be built for it yet.
+   *
+   * Recorded on the RECORD and enforced at the FOOTPRINT rather than by throwing
+   * the pin table away, which is what happened until 2026-08-10. A pad row is
+   * evidence about the package, not a defect in the pinout: measured over the
+   * hold-out, three parts (ADS1220, LD39050, ST1S10) had a completely correct
+   * pinout discarded because the last row read `Pad`, `Exposed pad` or `epad`.
+   * The safety property is unchanged, because the property was never "refuse the
+   * pins", it was "never emit a footprint missing a mandatory pad".
+   *
+   * Defaulted, so a record stored before this field existed is still valid.
+   */
+  exposedPad: z.boolean().default(false),
+  /**
+   * Fields where the code and the model read the page differently.
+   *
+   * Neither side wins here. The deterministic value stays on the record, because
+   * it is the one measured against the hand-read oracles (31/31 pin names, 24/24
+   * package families), and the disagreement is carried alongside it so a person
+   * can settle it with both pages in front of them.
+   *
+   * This is what makes asking the model about ALREADY-ANSWERED fields worth the
+   * tokens. Before it, a model reading a field the code had also read was thrown
+   * away unexamined, so the one case that matters, the code being confidently
+   * wrong, was invisible. Dimensions have no oracle at all and place copper.
+   */
+  conflicts: z
+    .array(
+      z.object({
+        field: z.string().min(1),
+        deterministic: z.object({ display: z.string(), page: z.number().int().positive().nullable() }),
+        model: z.object({ display: z.string(), page: z.number().int().positive().nullable() })
+      })
+    )
+    .default([]),
   dimensions: packageDimensionsSchema,
   radiation: radiationDataSchema,
   sourceFileName: z.string().min(1),
@@ -231,6 +306,8 @@ export type PackageDimensions = {
   leadWidthMm: Extracted<LeadWidth>;
   leadSpanMm: Extracted<LeadWidth>;
   leadContactMm: Extracted<LeadWidth>;
+  thermalPadLengthMm: Extracted<number>;
+  thermalPadWidthMm: Extracted<number>;
 };
 
 export type RadiationData = {
@@ -242,6 +319,13 @@ export type RadiationData = {
 
 export type PackageVariantRecord = z.infer<typeof packageVariantSchema>;
 
+/** One field, read two ways. Both sides carry the page so a reviewer can check both. */
+export interface FieldConflict {
+  field: string;
+  deterministic: { display: string; page: number | null };
+  model: { display: string; page: number | null };
+}
+
 export type PartRecord = {
   id: string;
   partNumber: Extracted<string>;
@@ -249,8 +333,13 @@ export type PartRecord = {
   packageType: Extracted<string>;
   packageOutlineCode: Extracted<string>;
   packageVariants: PackageVariantRecord[];
+  vendorLandPattern: { page: number; valuesMm: number[] } | null;
   pinCount: Extracted<number>;
   pins: Extracted<PinRecord[]>;
+  /** True when a reader saw a non-numbered terminal. Blocks the footprint, not the pinout. */
+  exposedPad: boolean;
+  /** Fields the code and the model read differently. Settled by a person, not by precedence. */
+  conflicts: FieldConflict[];
   dimensions: PackageDimensions;
   radiation: RadiationData;
   sourceFileName: string;
@@ -288,8 +377,12 @@ export interface ResolvedPart {
   packageType: string;
   /** Null when the datasheet prints no drawing we could confirm as this part's. */
   packageOutlineCode: string | null;
+  /** The land pattern the datasheet prints for this package, in mm. */
+  vendorLandPattern: { page: number; valuesMm: number[] } | null;
   pinCount: number;
   pins: PinRecord[];
+  /** True when the part has an exposed thermal pad; `buildFootprintGeometry` refuses. */
+  exposedPad: boolean;
   dimensions: {
     bodyLengthMm: number | null;
     bodyWidthMm: number | null;
@@ -300,6 +393,8 @@ export interface ResolvedPart {
     leadWidthMm: LeadWidth | null;
     leadSpanMm: LeadWidth | null;
     leadContactMm: LeadWidth | null;
+    thermalPadLengthMm: number | null;
+    thermalPadWidthMm: number | null;
   };
   radiation: {
     tid: string | null;
@@ -314,7 +409,7 @@ export interface ResolvedPart {
 
 export type ResolveResult =
   | { ok: true; part: ResolvedPart }
-  | { ok: false; missing: string[]; untraceable?: string[] };
+  | { ok: false; missing: string[]; untraceable?: string[]; unsettled?: string[] };
 
 /**
  * Fields whose values become physical geometry rather than metadata.
@@ -390,6 +485,30 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
     if (untraceable.length > 0) return { ok: false, missing: [], untraceable };
   }
 
+  // An UNSETTLED disagreement blocks the bundle.
+  //
+  // Two readers looked at the document and returned different numbers for
+  // something that places copper. The record holds one of them, and which one is
+  // decided by a precedence rule rather than by evidence. Shipping on that is
+  // shipping a coin toss with a citation attached.
+  //
+  // This is also the control that makes model-first safe under prompt injection.
+  // A crafted document can, in principle, get a value onto the record; it cannot
+  // get one into a generated part without a person seeing both readings and both
+  // pages and choosing. Confirming or correcting the field in the review panel
+  // clears the conflict, which is what `user` and `user-confirmed` mean.
+  const unsettled = (part.conflicts ?? []).filter((conflict) => {
+    const field = conflict.field;
+    const settled = ["user", "user-confirmed"];
+    const at = field.startsWith("dimensions.")
+      ? part.dimensions[field.slice("dimensions.".length) as keyof PackageDimensions]
+      : (part as unknown as Record<string, Extracted<unknown>>)[field];
+    return !(at && at.method && settled.includes(at.method));
+  });
+  if (unsettled.length > 0) {
+    return { ok: false, missing: [], untraceable: [], unsettled: unsettled.map((c) => c.field) };
+  }
+
   return {
     ok: true,
     part: {
@@ -398,8 +517,10 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
       manufacturer: part.manufacturer.value ?? "Unknown",
       packageType: part.packageType.value ?? "Unknown package",
       packageOutlineCode: part.packageOutlineCode.value,
+      vendorLandPattern: part.vendorLandPattern,
       pinCount: pinCount as number,
       pins,
+      exposedPad: part.exposedPad,
       dimensions: {
         bodyLengthMm: part.dimensions.bodyLengthMm.value,
         bodyWidthMm: part.dimensions.bodyWidthMm.value,
@@ -409,7 +530,9 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
         leadCount: part.dimensions.leadCount.value,
         leadWidthMm: part.dimensions.leadWidthMm.value,
         leadSpanMm: part.dimensions.leadSpanMm.value,
-        leadContactMm: part.dimensions.leadContactMm.value
+        leadContactMm: part.dimensions.leadContactMm.value,
+        thermalPadLengthMm: part.dimensions.thermalPadLengthMm.value,
+        thermalPadWidthMm: part.dimensions.thermalPadWidthMm.value
       },
       radiation: {
         tid: part.radiation.tid.value,

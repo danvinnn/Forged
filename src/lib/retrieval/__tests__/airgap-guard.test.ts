@@ -99,7 +99,12 @@ const EXTRACTION_AIR_GAP_SAFE = [
   "merge.ts",
   "factory.ts",
   "request.ts",
-  "pageselect.ts",
+  // Pure comparison of a deterministic reading against a model one. No I/O.
+  "crosscheck.ts",
+  // The pipeline itself: two model passes, no networking of its own.
+  "run.ts",
+  // Pure string work over document text, no networking.
+  "untrusted.ts",
   // Timers and arithmetic over the calling route's budget. It decides whether a
   // model is worth asking; it never reaches one.
   "budget.ts",

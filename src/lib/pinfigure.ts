@@ -69,6 +69,23 @@ const ROW_TOLERANCE = 3;
  */
 const NAME_REACH = 90;
 
+/**
+ * The same, for the rotated names along a top or bottom row.
+ *
+ * Larger because a rotated row is set aligned at its OUTER edge, so how far a
+ * name's anchor sits from the row is how LONG the name is. On an MSP430F5529
+ * LQFP80 figure every name in the bottom row ends 12 units below it, but their
+ * anchors run from 47 to 100 units away: `P1.1/TA0.0` against
+ * `P3.3/UCA0TXD/UCA0SIMO`. At 90 the longest names were out of reach, the row
+ * came up short, and an eighty-pin figure that had already proved itself by
+ * tiling was discarded.
+ *
+ * Raising it is safe because the reach is no longer what decides: `namesAlongRow`
+ * takes the NEAREST candidate set that has one group per number and a constant x
+ * offset, so a larger bound only matters when no nearer set passes those checks.
+ */
+const ROW_NAME_REACH = 130;
+
 /** Two rows is the smallest thing that can be a two-column figure at all. */
 const MIN_PAIRS = 2;
 
@@ -115,8 +132,29 @@ const ROTATED_NAME_X_TOLERANCE = 4;
 /** How a vendor opens a figure or table caption. Never how a pin name opens. */
 const CAPTION_LABEL = /^(?:figure|table)\s+\d/i;
 
-/** Longest a pin name may be. Beyond this it is prose that drifted in. */
+/**
+ * Longest a pin name may be. Beyond this it is prose that drifted in.
+ *
+ * Length alone was the wrong test and it cost real pins. An MSP430F5529's
+ * LQFP80 figure names pin 52 `P4.5/PM_UCA1RXD/PM_UCA1SOMI`, which is 27
+ * characters of entirely correct pin name, and the figure was discarded whole:
+ * eighty proven pins thrown away for one that was read perfectly.
+ *
+ * What actually separates a pin name from prose is not how long it is but
+ * whether it is one TOKEN. A multi-function MCU pin stacks its alternates with
+ * slashes and underscores and no spaces; prose that drifts into a figure is
+ * words with spaces between them. So an unspaced name is allowed to run longer,
+ * and a spaced one is held to the original bound.
+ */
 const MAX_NAME_LENGTH = 24;
+
+/** Longest an UNSPACED name may be, which is the multi-function MCU case. */
+const MAX_UNSPACED_NAME_LENGTH = 40;
+
+/** Whether a name is short enough to be a pin name rather than drifted prose. */
+function nameLengthOk(name: string): boolean {
+  return /\s/.test(name) ? name.length <= MAX_NAME_LENGTH : name.length <= MAX_UNSPACED_NAME_LENGTH;
+}
 
 /**
  * Fraction of rows that may carry text between the two number columns before the
@@ -125,6 +163,7 @@ const MAX_NAME_LENGTH = 24;
  * are on every row.
  */
 const MAX_LABELLED_ROWS = 0.6;
+
 
 /** How far apart two baselines may be and still be the same printed line. */
 const LINE_TOLERANCE = 2;
@@ -246,6 +285,56 @@ function verticalRuns(band: TextItem[]): TextItem[][] {
 }
 
 /** Vertical bands of integers, which is what a figure's two number columns are. */
+/**
+ * A pin NUMBER typeset into the same run as its name, split back apart.
+ *
+ * `splitSpacedRun` needs two spaces between parts, which is the right bound for
+ * a table and too strict for a figure: an AD590's 4-lead LFCSP hands its right
+ * column over as `4 NC` and `3 NC`, one space each, so those two numbers were
+ * not integer items at all, the column did not exist, and a correct four-pin
+ * figure could not be read from a page that draws it plainly. The same document
+ * hands the LEFT column over already split, which is why only one side went
+ * missing and the figure looked merely incomplete rather than unreadable.
+ *
+ * Deliberately narrow, because splitting on a single space is how a figure
+ * reader starts inventing columns out of prose. All of these must hold:
+ *
+ *  - the run is a number then ONE token, nothing longer;
+ *  - the number is a plausible pin number, not a dimension or a year;
+ *  - the token reads like a pin name rather than like a word in a sentence;
+ *  - the run's glyphs are in printed order, or the leading token is not the
+ *    leftmost one and the split would put the number on the wrong side.
+ */
+const NUMBER_THEN_NAME = /^(\d{1,3})\s?([A-Za-z][A-Za-z0-9+\-_/.–−]{0,11})$/;
+
+function splitNumberFromName(item: TextItem): TextItem[] {
+  if (!hasPrintedOrder(item) || item.width <= 0) return [item];
+  const match = NUMBER_THEN_NAME.exec(clean(item.str));
+  if (!match) return [item];
+
+  const [, number, name] = match;
+  const text = clean(item.str);
+  // Positions are apportioned by character count, which is an approximation and
+  // an adequate one: every comparison downstream is against COLUMN_TOLERANCE or
+  // NAME_REACH, both far larger than the error a proportional font introduces
+  // over a run this short.
+  const perChar = item.width / text.length;
+  // The separator is optional: an AD590 glues its column as `4NC` with no space
+  // at all, while other documents leave one.
+  const nameOffset = text.length - name.length;
+
+  return [
+    { ...item, str: number, width: perChar * number.length, end: item.start + number.length },
+    {
+      ...item,
+      str: name,
+      x: item.x + perChar * nameOffset,
+      width: perChar * name.length,
+      start: item.start + nameOffset
+    }
+  ];
+}
+
 function integerBands(items: TextItem[]): TextItem[][] {
   const integers = items
     .filter((item) => isInteger(clean(item.str)))
@@ -281,9 +370,21 @@ function nameBeside(items: TextItem[], number: TextItem, side: "left" | "right")
     // name; see `hasPrintedOrder`. Dropped rather than repaired, so the name
     // comes up short and the figure refuses.
     if (!hasPrintedOrder(item)) return false;
-    return side === "left"
-      ? item.x < number.x && number.x - item.x <= NAME_REACH
-      : item.x > number.x && item.x - number.x <= NAME_REACH;
+    // Measured to the name's NEAR edge, which is the gap between the two, not to
+    // wherever the name happens to start.
+    //
+    // Using the far edge makes the reach depend on how LONG the name is, and
+    // that discarded whole figures. An MSP430F5529's LQFP80 figure sets its left
+    // column right-aligned to the package outline, so `P7.2/CB10/A14` starts 62
+    // units from its number and `P5.0/A8/VREF+/VeREF+` starts 92, past the 90
+    // limit, though its right edge is 14 away. Pin 9 came back nameless and the
+    // eighty-pin figure was thrown out whole.
+    //
+    // The sort just below already measures the near edge, for the same reason.
+    // These two were simply inconsistent, and the filter was the wrong one.
+    const gap =
+      side === "left" ? number.x - (item.x + item.width) : item.x - (number.x + number.width);
+    return side === "left" ? item.x < number.x && gap <= NAME_REACH : item.x > number.x && gap <= NAME_REACH;
   });
 
   // The run is ANCHORED on the pin's own baseline, and only the anchor has to be
@@ -314,7 +415,28 @@ function nameBeside(items: TextItem[], number: TextItem, side: "left" | "right")
   // Adjacency is measured against the font size rather than a constant, so this
   // holds at any scale the figure is drawn at.
   const anchor = ordered[0];
-  const limit = Math.max(anchor.height, 6);
+  // Measured against the anchor's own CHARACTER width, not its reported height.
+  //
+  // Height is not reliably the font size, which this file already records for the
+  // vertical bound, and using it horizontally let a whole neighbouring column
+  // join the run. Measured on LTC2400 page 2, which prints the eight-pin figure
+  // beside the ABSOLUTE MAXIMUM RATINGS block at the same heights:
+  //
+  //   y=609.8 x=332.5 "GND"                <- the pin name
+  //   y=610.9 x=261.4 " + 0.3V)"           <- the ratings column, 35 units left
+  //   y=609.8 x=422.3 "CS"                 <- the pin name
+  //   y=606.0 x=465.0 "S8 PART MARKING"    <- the marking block, 35 units right
+  //
+  // and the record shipped pins named `+ 0.3V)GND`, `CSS8 PART MARKING` and
+  // `SCKLTC2400IS8`. A wrong pin name is a wrong netlist, and nothing caught it:
+  // LTC2400 has no oracle entry. Found by cross-checking against a model.
+  //
+  // A character width is derived from the item's own text, so it holds at any
+  // scale, and the parts of one name are touching by definition: `V` then `CC` is
+  // a gap of nearly nothing, while a neighbouring column is many characters away.
+  // The height still caps it, so this can only ever be stricter than before.
+  const charWidth = anchor.str.length > 0 ? anchor.width / anchor.str.length : anchor.height;
+  const limit = Math.max(Math.min(anchor.height, charWidth * 2), 6);
   // A subscript belongs to the run when it is x-adjacent to it and within about
   // two thirds of the ANCHOR's own font size vertically. Rows on these figures sit
   // 13 or more apart, so this cannot reach the row below, and x-adjacency is still
@@ -370,6 +492,15 @@ function nameBeside(items: TextItem[], number: TextItem, side: "left" | "right")
 const FIGURE_CAPTION = /\bpackage\b|\b\d{1,3}[-\s]?(?:pin|lead)\b|\b(?:pin|ball)out\b/i;
 
 /**
+ * The figure's own number, e.g. `Figure 4-2.` or `Figure 12`.
+ *
+ * Used only to tell one figure's caption from the next one's; it is never read
+ * as content. Vendors number both ways, plain (`Figure 12`) and sectioned
+ * (`Figure 4-2`), so both forms are one token here.
+ */
+const FIGURE_NUMBER = /\bfigure\s+(\d{1,3}(?:[-.]\d{1,3})?)/i;
+
+/**
  * A device named in a caption. Anything with a digit in it, which is what
  * separates `OPA2333` from the `DRB` and `SOIC` beside it.
  *
@@ -416,7 +547,15 @@ function pageLines(items: TextItem[]): { y: number; items: TextItem[] }[] {
  * figures printed side by side from sharing a caption: their captions are on the
  * SAME line, one after the other, so only x separates them.
  */
-function captionFor(page: PageText, figureItems: TextItem[]): string {
+/** Lead counts a caption states, e.g. `20 Pins` or `4-Lead`. */
+function sizeMatches(caption: string, pinCount: number): boolean {
+  if (pinCount <= 0) return false;
+  const stated = caption.match(/\b(\d{1,3})[-\s]?(?:pin|lead)s?\b/gi);
+  if (!stated) return false;
+  return stated.some((token) => Number(token.match(/\d{1,3}/)?.[0]) === pinCount);
+}
+
+function captionFor(page: PageText, figureItems: TextItem[], pinCount = 0): string {
   // The extent is the numbers widened by the reach the NAMES occupy, because a
   // caption is set to the width of the whole drawing rather than to its pin
   // numbers. Measured on INA240: its `8-Pin TSSOP` sits five units outside the
@@ -433,25 +572,66 @@ function captionFor(page: PageText, figureItems: TextItem[]): string {
   // ones: an OPA333 page four names the device on one line (`OPA2333 D or DGK
   // Package`) and the package on the next (`8-Pin SOIC or VSSOP`). Reading only
   // the nearer line left the figure looking like an unlabelled one.
-  return clean(
-    pageLines(page.items)
-      .filter((line) => {
-        if (line.y <= top && line.y >= bottom) return false;
-        const distance = line.y > top ? line.y - top : bottom - line.y;
-        return distance <= reach;
-      })
-      .map((line) =>
-        clean(
-          line.items
-            .filter((item) => item.x + item.width / 2 >= left && item.x + item.width / 2 <= right)
-            .sort((first, second) => first.x - second.x)
-            .map((item) => item.str)
-            .join(" ")
-        )
+  const candidates = pageLines(page.items)
+    .filter((line) => {
+      if (line.y <= top && line.y >= bottom) return false;
+      const distance = line.y > top ? line.y - top : bottom - line.y;
+      return distance <= reach;
+    })
+    .map((line) => ({
+      distance: line.y > top ? line.y - top : bottom - line.y,
+      text: clean(
+        line.items
+          .filter((item) => item.x + item.width / 2 >= left && item.x + item.width / 2 <= right)
+          .sort((first, second) => first.x - second.x)
+          .map((item) => item.str)
+          .join(" ")
       )
-      .filter((text) => FIGURE_CAPTION.test(text))
-      .join(" ")
-  );
+    }))
+    .filter((line) => FIGURE_CAPTION.test(line.text))
+    .sort((first, second) => {
+      // A caption that states this figure's OWN size wins, however far away it
+      // sits. Distance alone is not enough to tell a figure's caption from its
+      // neighbour's: on an AD590 the 8-lead SOIC drawing has `Figure 2. 4-Lead
+      // LFCSP` above it and `Figure 4. 8-Lead SOIC` below it, five units further
+      // away, so nearest-first attributed the SOIC's pins to the LFCSP.
+      //
+      // A PREFERENCE and never a requirement, because vendors get this wrong:
+      // TI captions PCF8574 Figure 4-4 `DW or N Package, 20 Pins` over a drawing
+      // of 16, and the drawing is the correct one. Where no caption agrees, or
+      // several do, distance decides as before and nothing is discarded.
+      const bySize = Number(sizeMatches(second.text, pinCount)) - Number(sizeMatches(first.text, pinCount));
+      return bySize !== 0 ? bySize : first.distance - second.distance;
+    });
+
+  // Stop at the second figure NUMBER.
+  //
+  // The horizontal extent above separates figures printed side by side, and it
+  // cannot separate figures STACKED vertically, which is the other way vendors
+  // lay out a pin configuration page. Figure 4-2's caption sits below 4-2, which
+  // puts it directly above 4-4, and this function searches both directions, so
+  // 4-4 collected its neighbour's caption as well as its own and claimed both
+  // packages. Measured 2026-08-09: asking a PCF8574 for its RGY package matched
+  // that glued caption and returned the DW/N pinout, 16 pins where RGY has 20,
+  // and an AD590 asked for its 4-lead LFCSP returned the 8-lead SOIC. Both were
+  // confidently wrong rather than absent, which is the worst outcome this file
+  // has.
+  //
+  // Lines carrying no figure number still accumulate, because that is the case
+  // the multi-line join exists for: an OPA333 names the device on one line and
+  // the package on the next, and neither repeats the number.
+  const kept: string[] = [];
+  let anchor: string | null = null;
+  for (const line of candidates) {
+    const number = FIGURE_NUMBER.exec(line.text)?.[1] ?? null;
+    if (number !== null) {
+      if (anchor !== null && number !== anchor) break;
+      anchor = number;
+    }
+    kept.push(line.text);
+  }
+
+  return clean(kept.join(" "));
 }
 
 /**
@@ -468,7 +648,47 @@ function captionFor(page: PageText, figureItems: TextItem[]): string {
  * the quad only where the page is otherwise silent is what makes it unable to
  * take a part away.
  */
-export function readFiguresFromPage(page: PageText): PinFigure[] {
+export function readFiguresFromPage(rawPage: PageText): PinFigure[] {
+  const figures = readFiguresFrom(rawPage);
+
+  // A second pass over items with a glued number split off the front, kept only
+  // where it finds something the first pass could not.
+  //
+  // Splitting `4NC` into `4` and `NC` recovers an AD590's 4-lead LFCSP, whose
+  // right column arrives entirely glued. Splitting is also how a figure reader
+  // starts destroying real data: `1A`, `2Y` and `1OE` are pin NAMES on logic
+  // parts, and TXB0104 and SN74LVC1G08 are both in the corpus. No pattern
+  // separates `4NC` from `1A` by looking at the string.
+  //
+  // So the proof decides instead of a regex. The split pass is additive and runs
+  // second, its output has to clear the same constant-sum and name requirements
+  // as everything else, and anything it finds that the unsplit pass already
+  // found is discarded. A wrong split therefore yields no figure and costs
+  // nothing, and no correct figure can be taken away by it.
+  const split = rawPage.items.flatMap(splitNumberFromName);
+  if (split.length > rawPage.items.length) {
+    for (const extra of readFiguresFrom({ ...rawPage, items: split })) {
+      // Kept only where the unsplit pass found no figure of this SIZE.
+      //
+      // Deduplicating on identical pins is not enough, because the danger is a
+      // rival reading rather than a repeat: split `1A`/`2A`/`3A` on a logic
+      // part's page and the pass yields a second eight-pin figure with different
+      // names, which then disagrees with the real one and refuses a part that
+      // read perfectly well before. A size that the unsplit pass never produced
+      // cannot be a re-reading of anything it found.
+      //
+      // Conservative on purpose: a page holding two figures of the SAME size,
+      // one of them glued, is left unread rather than risked. AD590's LFCSP is
+      // four pins beside an eight-pin SOIC, which is the shape this is for.
+      if (figures.some((existing) => existing.pins.length === extra.pins.length)) continue;
+      figures.push(extra);
+    }
+  }
+
+  return figures;
+}
+
+function readFiguresFrom(page: PageText): PinFigure[] {
   const bands = integerBands(page.items);
   const figures: PinFigure[] = [];
 
@@ -482,9 +702,42 @@ export function readFiguresFromPage(page: PageText): PinFigure[] {
     }
   }
 
-  if (figures.length === 0) figures.push(...readQuadFigures(page));
+  // Four-sided figures are read ALONGSIDE the two-column ones, not only when
+  // those found nothing.
+  //
+  // The old rule was "quads only where the page is otherwise silent", on the
+  // reasoning that a page yielding both is one this reader cannot arbitrate. The
+  // cost of that caution was a whole package going missing rather than being
+  // arbitrated: PCF8574 page 3 draws its RGY as a 20-pin QFN beside two
+  // two-column figures, so the quad reader never ran and asking for RGY could
+  // not be answered from the page that plainly shows it.
+  //
+  // Adding them cannot take a part away, because nothing downstream prefers a
+  // quad: selection still runs the device filter, the package claim and the
+  // declared count over every candidate, and `agree` still has to hold. What a
+  // new candidate CAN do is turn agreement into disagreement, so the one thing
+  // guarded against here is the same drawing being read twice, once each way.
+  for (const quad of readQuadFigures(page)) {
+    if (!figures.some((existing) => sameDrawing(existing, quad))) figures.push(quad);
+  }
 
   return figures;
+}
+
+/**
+ * Whether two figures are two readings of ONE drawing rather than two drawings.
+ *
+ * Compared on the pin assignments themselves, not on position: the two readers
+ * describe a figure differently enough that their extents do not line up, but if
+ * they are looking at the same package they agree about what most of its pins
+ * are called. Half is the bar because a partial second reading is still the same
+ * drawing and must not be added as a rival to itself.
+ */
+function sameDrawing(left: PinFigure, right: PinFigure): boolean {
+  if (left.pins.length !== right.pins.length) return false;
+  const names = new Map(left.pins.map((pin) => [pin.number, pin.name.toUpperCase()]));
+  const shared = right.pins.filter((pin) => names.get(pin.number) === pin.name.toUpperCase()).length;
+  return shared * 2 >= right.pins.length;
 }
 
 /**
@@ -638,6 +891,7 @@ function namesAlongRow(
   const first = ordered[0].x;
   const last = ordered[ordered.length - 1].x;
   const pitch = ordered.length > 1 ? (last - first) / (ordered.length - 1) : COLUMN_TOLERANCE;
+  const distanceOf = (item: TextItem) => (side === "above" ? item.y - rowY : rowY - item.y);
 
   // Candidates are name-shaped runs on the outer side of the row, within the
   // row's own span.
@@ -648,15 +902,55 @@ function namesAlongRow(
   // it joined the ladder as a thirty-seventh name for thirty-six pins.
   const candidates = items.filter((item) => {
     const text = clean(item.str);
-    if (!text || isInteger(text) || text.length > MAX_NAME_LENGTH) return false;
+    if (!text || isInteger(text) || !nameLengthOk(text)) return false;
     if (CAPTION_LABEL.test(text)) return false;
     if (!hasPrintedOrder(item)) return false;
     if (!/[A-Za-z]/.test(text)) return false;
-    const distance = side === "above" ? item.y - rowY : rowY - item.y;
-    if (distance <= 0 || distance > NAME_REACH) return false;
+    const distance = distanceOf(item);
+    if (distance <= 0 || distance > ROW_NAME_REACH) return false;
     return item.x >= first - pitch && item.x <= last + pitch;
   });
 
+  // The NEAREST set that accounts for every number, not everything within reach.
+  //
+  // `NAME_REACH` is 90 because a name sits outside the package outline and the
+  // outline can be tall. Downward that is far too generous on a compact figure:
+  // under an LTC6563's bottom row, at distances of 35 to 55, sit `UDDM PACKAGE`
+  // and the `TJMAX = 150°C, θJC = 5°C/W` annotation, all of them name-shaped and
+  // all of them inside the row's own x span. They made six groups for four
+  // numbers and the whole 24-pin figure was refused, having already passed the
+  // tiling proof.
+  //
+  // Simply tightening the reach is not the fix: how far a name sits depends on
+  // how LONG it is, because a rotated row is set aligned at its outer edge, so
+  // this figure's own `TERM` starts 5 units further out than its `OUT`. Any
+  // fixed number is wrong for some row.
+  //
+  // So the cutoff is not chosen, it is FOUND. Candidates are tried in order of
+  // distance and the first cutoff whose set satisfies every existing check is
+  // taken. Those checks are what make it safe: the set has to have exactly one
+  // group per number AND hold a constant x offset across the whole row, which is
+  // a measurement rather than a preference. A nearer set that is not the names
+  // does not pass them, and the old single-cutoff behaviour is simply the last
+  // cutoff this tries.
+  const distances = [...new Set(candidates.map(distanceOf))].sort((left, right) => left - right);
+  for (const cutoff of distances) {
+    const named = pairRowNames(
+      candidates.filter((item) => distanceOf(item) <= cutoff),
+      ordered
+    );
+    if (named) return named;
+  }
+  return null;
+}
+
+/**
+ * Pairs one candidate set to a row's numbers, or refuses it.
+ *
+ * Split out of `namesAlongRow` so the same checks can be applied to each
+ * candidate set in turn; the logic is unchanged.
+ */
+function pairRowNames(candidates: TextItem[], ordered: TextItem[]): Map<TextItem, string> | null {
   // One name may be drawn as several runs stacked along its own baseline, so
   // runs sharing an x are one name. Chained here rather than seeded because
   // names on a row are a pitch apart and a name's own parts are a couple of
@@ -824,7 +1118,7 @@ function readQuadFigure(
     if (side === "left" || side === "right") {
       for (const item of groups[index]) {
         const name = nameBeside(items, item, side);
-        if (!name || name.length > MAX_NAME_LENGTH) return null;
+        if (!name || !nameLengthOk(name)) return null;
         pins.push({ number: Number(clean(item.str)), name, start: item.start });
       }
       continue;
@@ -834,7 +1128,7 @@ function readQuadFigure(
     if (!named) return null;
     for (const item of groups[index]) {
       const name = named.get(item);
-      if (!name || name.length > MAX_NAME_LENGTH) return null;
+      if (!name || !nameLengthOk(name)) return null;
       pins.push({ number: Number(clean(item.str)), name, start: item.start });
     }
   }
@@ -844,7 +1138,7 @@ function readQuadFigure(
     pins,
     page: page.page,
     start: pins[0].start,
-    caption: captionFor(page, groups.flat())
+    caption: captionFor(page, groups.flat(), pins.length)
   };
 }
 
@@ -907,7 +1201,7 @@ function readCornerNumbered(page: PageText, left: TextItem[], right: TextItem[])
         y: line.y,
         name: nameBeside(page.items, { ...column.anchor, y: line.y }, column.side)
       }))
-      .filter((entry) => entry.name.length > 0 && entry.name.length <= MAX_NAME_LENGTH)
+      .filter((entry) => entry.name.length > 0 && nameLengthOk(entry.name))
       .sort((first, second) => second.y - first.y);
 
     // One name per pin, no more and no fewer. This is the check that makes the
@@ -930,7 +1224,7 @@ function readCornerNumbered(page: PageText, left: TextItem[], right: TextItem[])
     pins,
     page: page.page,
     start: pins[0].start,
-    caption: captionFor(page, [top.left, top.right, bottom.left, bottom.right])
+    caption: captionFor(page, [top.left, top.right, bottom.left, bottom.right], pins.length)
   };
 }
 
@@ -1003,7 +1297,7 @@ function readAsymmetricFigure(page: PageText, first: TextItem[], second: TextIte
   ] as const) {
     for (const item of column) {
       const name = nameBeside(page.items, item, side);
-      if (!name || name.length > MAX_NAME_LENGTH) return null;
+      if (!name || !nameLengthOk(name)) return null;
       pins.push({ number: Number(clean(item.str)), name, start: item.start });
     }
   }
@@ -1013,7 +1307,7 @@ function readAsymmetricFigure(page: PageText, first: TextItem[], second: TextIte
     pins,
     page: page.page,
     start: pins[0].start,
-    caption: captionFor(page, [...left, ...right])
+    caption: captionFor(page, [...left, ...right], pins.length)
   };
 }
 
@@ -1104,7 +1398,7 @@ function readFigure(page: PageText, left: TextItem[], right: TextItem[]): PinFig
       [row.right, "right"]
     ] as const) {
       const name = nameBeside(page.items, item, side);
-      if (!name || name.length > MAX_NAME_LENGTH) return null;
+      if (!name || !nameLengthOk(name)) return null;
       pins.push({ number: Number(clean(item.str)), name, start: item.start });
     }
   }
@@ -1115,7 +1409,7 @@ function readFigure(page: PageText, left: TextItem[], right: TextItem[]): PinFig
     pins,
     page: page.page,
     start: pins[0].start,
-    caption: captionFor(page, spanned)
+    caption: captionFor(page, spanned, pins.length)
   };
 }
 
@@ -1136,7 +1430,20 @@ export function extractPinFigureByGeometry(
    * The count the document declares for this part, used ONLY to choose between
    * figures that have each already proved themselves complete. See below.
    */
-  declaredCount?: number | null
+  declaredCount?: number | null,
+  /**
+   * Whether `packageType` is the caller's OWN assertion rather than something
+   * this parser inferred from the document.
+   *
+   * Load-bearing for the contradiction filter below, and the distinction is the
+   * whole of it. A user who clicks "LFCSP" has told us which package they want,
+   * and a figure captioned `8-Lead SOIC` is evidence it is not that one. An
+   * unhinted package is our own guess, usually the first designator printed on
+   * page one, and it is the WEAKER evidence: an AD590 declares a 2-lead FLATPACK
+   * and draws a readable 8-lead SOIC, and the SOIC pinout is real and correct
+   * and worth having. Letting our guess veto the document's own drawing lost it.
+   */
+  packageRequested = false
 ): PinFigure | null {
   const found: PinFigure[] = [];
   for (const page of doc.pages) found.push(...readFiguresFromPage(page));
@@ -1158,18 +1465,49 @@ export function extractPinFigureByGeometry(
   // had it.
   const ours = claimedByDevice(found, partNumber);
 
+  // A figure whose caption names a DIFFERENT package than the one asked for is
+  // dropped before agreement is considered, for the same reason the device
+  // filter runs first.
+  //
+  // Agreement is trivially true of a lone figure, so a document drawing exactly
+  // one pinout returned it for every package anyone asked about. Measured
+  // 2026-08-09: an AD590 draws four packages and only its 8-lead SOIC is
+  // readable, so asking for the 4-lead LFCSP was answered with the SOIC's eight
+  // pins under the LFCSP's name. Three names wrong and four pins that do not
+  // exist on that package.
+  //
+  // This drops a figure only when its caption NAMES a package and that package
+  // is not the one requested. A figure captioned with no package at all is
+  // still kept, which is the common case and the one the fast path serves.
+  const requested =
+    packageType && packageRequested
+      ? ours.filter((figure) => !contradictsPackage(figure, packageType))
+      : ours;
+
+  // The POSITIVE package claim is asked first, before mere agreement.
+  //
+  // `claimedByPackage` never returns a figure whose caption does not name the
+  // requested package, so surviving it means this figure says what it draws and
+  // says it is the one asked for. That is a stronger thing than the constant-sum
+  // proof, which only says the figure is complete, and `packageClaimed` carries
+  // the difference out to the caller, which uses it to accept a lone figure
+  // without a corroborating count.
+  //
+  // This used to run AFTER the agreement check, which was harmless while
+  // agreement was computed over every figure on the document: two packages drawn
+  // side by side disagree, so the claim was always reached. Once contradicting
+  // figures are filtered out above, one survivor agrees with itself trivially
+  // and returned unflagged, so PCF8574's DW and PW pinouts came back correct and
+  // uncounted. Asking the stronger question first costs nothing and cannot
+  // promote a figure that agreement would have rejected, because `agree` still
+  // has to hold on whatever `claimedByPackage` returns.
+  const mine = claimedByPackage(requested, packageType);
+  if (agree(mine)) return { ...mine[0], packageClaimed: true };
+
   // They may still disagree, in which case they are different packages, and the
   // caption is what says which: an INA240 draws its PW and its D, which have
   // genuinely different pinouts, and only the designator separates them.
-  if (agree(ours)) return ours[0];
-
-  // `claimedByPackage` never returns a figure whose caption does not name the
-  // requested package, so surviving here means this figure says what it draws
-  // and says it is the one asked for. That is a stronger thing than the
-  // constant-sum proof, which only says the figure is complete, and the flag
-  // carries the difference out to the caller.
-  const mine = claimedByPackage(ours, packageType);
-  if (agree(mine)) return { ...mine[0], packageClaimed: true };
+  if (agree(requested)) return requested[0];
 
   // Last, the count the document declares for this part. An STM32F407 draws its
   // LQFP64, LQFP100, LQFP144 and LQFP176 as four complete figures and captions
@@ -1185,8 +1523,47 @@ export function extractPinFigureByGeometry(
   // bad read. `agree` still has to hold on what survives, so two figures of the
   // same length that disagree about a name are refused exactly as before.
   if (declaredCount == null) return null;
-  const counted = ours.filter((figure) => figure.pins.length === declaredCount);
+  const counted = requested.filter((figure) => figure.pins.length === declaredCount);
   return agree(counted) ? counted[0] : null;
+}
+
+/**
+ * Whether this figure's caption names a package that is NOT the one requested.
+ *
+ * Deliberately asymmetric with `claimedByPackage`: that asks "does this figure
+ * claim the package we want", this asks "does it claim a DIFFERENT one". The gap
+ * between them is the figure captioned with no package at all, which neither
+ * claims nor contradicts, and which must stay readable because most figures on
+ * most datasheets are captioned that way.
+ *
+ * Contradiction is judged on the caption's own package tokens, the same
+ * `captionPackages` that `claimedByPackage` matches against, rather than on any
+ * word that looks family-ish. An earlier attempt used `packageFamilies` on the
+ * raw caption, which returns every capitalised token in it (`FIGURE`, `PINS`,
+ * `VIEW`), so every caption contradicted every request and three correct PCF8574
+ * pinouts went silent at once.
+ */
+function contradictsPackage(figure: PinFigure, packageType: string): boolean {
+  // Only a LABELLED caption may contradict. `captionFor` also picks up nearby
+  // prose, and prose mentions other packages without being about them: a TSV911
+  // footnote reads "The exposed pad of the DFN8 2x2 package is not internally
+  // connected", which named DFN8 and so silenced a correct SO14 pinout when this
+  // rule trusted any caption text. A vendor's own `Figure 4. 8-Lead SOIC` is a
+  // statement about what the drawing IS; a sentence near it is not.
+  if (!CAPTION_LABEL.test(figure.caption)) return false;
+
+  const named = captionPackages(figure.caption);
+  if (named.length === 0) return false;
+
+  // Names exactly what was asked for, spelled either way.
+  if (named.includes(normalizePackage(packageType))) return false;
+
+  // Or names its family, which is how a caller who said `SOIC` reaches a caption
+  // reading `8-Lead SOIC`.
+  const families = packageFamilies(packageType);
+  if (families.some((family) => new RegExp(`\\b${family}\\b`, "i").test(figure.caption))) return false;
+
+  return true;
 }
 
 /** Whether every figure describes the same pinout, which is the only readable case. */

@@ -1,9 +1,83 @@
 import { renderPages, type RenderLimits } from "../pagerender";
 import type { DatasheetText } from "../pdftext";
 import type { PartRecord } from "../types";
-import type { ExtractionRequest } from "./contracts";
+import { extractionFields, type ExtractionField, type ExtractionRequest, type PageSelection } from "./contracts";
 import { unresolvedFields } from "./merge";
-import { selectPages } from "./pageselect";
+import { CROSS_CHECKED_FIELDS } from "./crosscheck";
+
+/**
+ * Every field to ask about: the gaps, plus the ones worth contradicting.
+ *
+ * Not simply `extractionFields`. Asking about a radiation rating the code
+ * already read spends output tokens on a value nothing generated depends on,
+ * and the interruption budget belongs to the values that place copper. Identity
+ * is excluded for the same reason: a disagreement about the manufacturer string
+ * is not a reason to stop a board.
+ */
+function crossCheckFields(unresolved: ExtractionField[]): ExtractionField[] {
+  const asked = new Set<ExtractionField>(unresolved);
+  for (const field of CROSS_CHECKED_FIELDS) asked.add(field);
+  return extractionFields.filter((field) => asked.has(field));
+}
+
+/**
+ * The packages this document names, as the record already recorded them.
+ *
+ * `packageVariants` is used rather than a fresh scan because it is already
+ * narrowed to the variants that FIT this part: a variant declaring a lead count
+ * the part does not have is dropped upstream, so an OPA2277's document does not
+ * offer the quad's 14-pin SOIC here. Offering a package the part does not come
+ * in is offering a wrong answer dressed as a choice.
+ *
+ * Capped, because this is prompt text and a family datasheet can name a dozen.
+ * The front-matter ones come first: a package printed on page 1 is the one the
+ * document is about, and the tail is siblings and ordering-table rows.
+ */
+const MAX_PACKAGE_CANDIDATES = 8;
+
+function candidateDesignators(part: PartRecord): string[] | undefined {
+  const ranked = [...part.packageVariants].sort(
+    (left, right) => Number(right.inFrontMatter) - Number(left.inFrontMatter)
+  );
+  const seen = new Set<string>();
+  for (const variant of ranked) {
+    if (seen.size >= MAX_PACKAGE_CANDIDATES) break;
+    seen.add(variant.designator);
+  }
+  // One candidate is not a choice, and zero is nothing to say.
+  return seen.size > 1 ? [...seen] : undefined;
+}
+
+/**
+ * Every page, in order, up to the safety ceiling.
+ *
+ * Truncation drops WHOLE PAGES from the end rather than trimming each page to a
+ * character budget, which is what the old per-page cap did. A half page is worse
+ * than no page: it can cut a pin table in the middle, and the model then reads a
+ * complete-looking table that is missing its last rows.
+ */
+function wholeDocument(doc: DatasheetText): PageSelection {
+  const totalPages = doc.pages.length;
+  const totalChars = doc.pages.reduce((sum, page) => sum + page.text.length, 0);
+
+  if (totalChars <= MAX_TOTAL_CHARS) {
+    return {
+      pages: doc.pages.map((page) => ({ page: page.page, text: page.text })),
+      reason: "whole-document",
+      totalPages,
+      totalChars
+    };
+  }
+
+  const pages: Array<{ page: number; text: string }> = [];
+  let used = 0;
+  for (const page of doc.pages) {
+    if (used + page.text.length > MAX_TOTAL_CHARS) break;
+    pages.push({ page: page.page, text: page.text });
+    used += page.text.length;
+  }
+  return { pages, reason: "truncated", totalPages, totalChars };
+}
 
 /**
  * Builds the request handed to a model. Air-gap safe: no networking.
@@ -14,23 +88,47 @@ import { selectPages } from "./pageselect";
  * passed `pdfParse(...).text`, which has no page boundaries, so nothing it
  * returned could ever be traced.
  *
- * Which pages go in is decided by `pageselect.ts`, on relevance to the fields
- * still missing rather than on position. That is a measured fix, not a tidy-up:
- * a real local model returns nothing usable on a whole-document prompt and
- * answers the same contract correctly on a short one.
+ * Every page goes in; see the note on the ceiling below for why selection was
+ * removed rather than tuned.
  */
 
 /**
- * Size ceiling on what is sent to a model.
+ * The WHOLE document goes to the model. Measured 2026-08-11, across all 85
+ * cached datasheets:
  *
- * These are much tighter than the positional limits they replace (40 pages,
- * 180k characters), because selecting the right pages is only worth doing if
- * the budget is then small enough to matter. A model that cannot answer from
- * eight relevant pages will not be rescued by forty irrelevant ones.
+ * ```
+ * largest document   STM32H743ZI, 357pp, 569k chars  ~142k tokens
+ * median document              39pp,  68k chars   ~17k tokens
+ * model accepts                              1,048,576 tokens
+ * what we used to send                            ~6k tokens
+ * ```
+ *
+ * Every datasheet in the corpus fits whole, with seven times headroom on the
+ * worst one, and we were sending 0.6% of capacity.
+ *
+ * Page selection was not wrong when it was written. It was built for a local
+ * `qwen2.5:1.5b`, which returns nothing usable on a long prompt, and the note in
+ * the deleted `pageselect.ts` said so. Nobody revisited it when the model became a
+ * million-token one, so a workaround for a constraint that no longer exists went
+ * on quietly deciding which 8 of 357 pages the model was allowed to see, ranked
+ * by the deterministic parser's own opinion. It cost whole parts: TS922 and
+ * TSZ121 both had their pinout on a page that was never sent, and the model said
+ * so in its notes.
+ *
+ * The ceiling below is a safety rail for a pathological document, not a budget.
+ * At roughly four characters per token it is about 500k tokens, three and a half
+ * times the largest datasheet we have and half the model's limit. A document
+ * that exceeds it is TRUNCATED and says so, rather than being silently sampled.
+ */
+const MAX_TOTAL_CHARS = 2_000_000;
+
+/**
+ * Rendered pages are still capped, and for a real reason rather than an obsolete
+ * one: an image costs far more than the text of the same page, and most pages
+ * have nothing to look at. Which pages get rendered is chosen by the MODEL in a
+ * second pass; see `pagesWorthRendering` in the contract.
  */
 const MAX_PAGES_TO_MODEL = 8;
-const MAX_CHARS_PER_PAGE = 6000;
-const MAX_TOTAL_CHARS = 24_000;
 
 export function buildExtractionRequest(
   part: PartRecord,
@@ -38,22 +136,19 @@ export function buildExtractionRequest(
   fileName: string,
   partNumber?: string
 ): ExtractionRequest | null {
-  const fields = unresolvedFields(part);
+  const unresolved = unresolvedFields(part);
+
+  // Asked about EVERY field, not just the gaps.
+  //
+  // A model answer can still never overwrite a deterministic one. What changes
+  // is that an answer about an already-resolved field is now compared instead of
+  // discarded, so the code being confidently wrong becomes visible rather than
+  // silently preferred. That is the whole point: the dimension fields place
+  // copper and have no hand-read oracle behind them.
+  const fields = crossCheckFields(unresolved);
   if (fields.length === 0) return null;
 
-  const selection = selectPages(
-    doc.pages,
-    fields,
-    {
-      maxPages: MAX_PAGES_TO_MODEL,
-      maxCharsPerPage: MAX_CHARS_PER_PAGE,
-      maxTotalChars: MAX_TOTAL_CHARS
-    },
-    // What the deterministic pass already settled. On a family datasheet this is
-    // what separates this part's package drawing from a sibling's.
-    { packageType: part.packageType.value, pinCount: part.pinCount.value }
-  );
-
+  const selection = wholeDocument(doc);
   if (selection.pages.length === 0) return null;
 
   return {
@@ -62,6 +157,13 @@ export function buildExtractionRequest(
     fileName,
     partNumber,
     packageType: part.packageType.value,
+    // ALWAYS sent, not only when nothing was settled.
+    //
+    // While the resolved package was an instruction, naming alternatives beside
+    // it would have reintroduced the ambiguity it existed to remove. Now that it
+    // is a suggestion the model may reject, the model needs to see what it can
+    // reject it IN FAVOUR OF, and the list is the document's own.
+    packageCandidates: candidateDesignators(part),
     fields,
     selection
   };
@@ -83,12 +185,19 @@ export function buildExtractionRequest(
 export async function withRenderedPages(
   request: ExtractionRequest,
   pdfBytes: ArrayBuffer,
+  /**
+   * Which pages to render. Named by the MODEL after it has read the text, which
+   * is the whole point of the second pass: it has seen the document and knows
+   * where the drawings are, and nothing else in the system does.
+   *
+   * Defaulting to `request.pages` would now mean "the first eight pages of the
+   * document", since the request carries all of them. That is worse than the
+   * selection it replaced, so the pages are required rather than defaulted.
+   */
+  pages: readonly number[],
   limits: Partial<RenderLimits> = {}
 ): Promise<ExtractionRequest> {
-  const images = await renderPages(
-    pdfBytes,
-    request.pages.map((page) => page.page),
-    { maxPages: MAX_PAGES_TO_MODEL, ...limits }
-  );
+  if (pages.length === 0) return { ...request, images: [] };
+  const images = await renderPages(pdfBytes, [...pages], { maxPages: MAX_PAGES_TO_MODEL, ...limits });
   return { ...request, images };
 }

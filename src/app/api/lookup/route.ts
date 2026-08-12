@@ -13,7 +13,7 @@ import {
 } from "../../../lib/retrieval";
 import { extractPartRecord } from "../../../lib/datasheet";
 import { PdfExtractionError } from "../../../lib/pdftext";
-import { buildExtractionRequest, makeExtractionModel, mergeModelValues, withRenderedPages } from "../../../lib/extraction";
+import { makeExtractionModel, runExtraction } from "../../../lib/extraction";
 import { type PartRecord } from "../../../lib/types";
 
 export const runtime = "nodejs";
@@ -65,23 +65,9 @@ async function extractPart(
   const model = await makeExtractionModel(mode);
   if (!model) return { part, method: "deterministic" };
 
-  const built = buildExtractionRequest(part, doc, ref.fileName, partNumberHint);
-  if (!built) return { part, method: "deterministic" };
-
-  // Render the selected pages. A drawing's dimensions are not in the text layer,
-  // so without this the model cannot answer the fields it is best at. Rendering
-  // degrades to an empty list rather than throwing.
-  const request = await withRenderedPages(built, ref.bytes);
-
   try {
-    const result = await model.extract(request);
-    const outcome = mergeModelValues(
-      part,
-      doc,
-      result,
-      model.name,
-      request.images.map((image) => image.page)
-    );
+    const outcome = await runExtraction(part, doc, ref.bytes, model, ref.fileName, partNumberHint);
+    if (!outcome) return { part, method: "deterministic" };
     return {
       part: outcome.part,
       method: outcome.filled.length > 0 ? `deterministic+${model.name}` : "deterministic"

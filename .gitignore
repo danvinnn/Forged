@@ -45,3 +45,9 @@ yarn-error.log*
 # Cached vendor datasheets for the extraction benchmark. NEVER commit datasheets.
 .bench-cache
 .holdout-cache
+
+# Cached model responses for the benchmarks. Not committed because an entry is
+# only valid for the exact prompt and page renders that produced it, so a shared
+# copy would be stale for anyone whose tree differs by one prompt character, and
+# the entries quote datasheet content back.
+.model-cache

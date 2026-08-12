@@ -37,9 +37,22 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { extractPartRecord } from "../datasheet";
-import { buildExtractionRequest, makeExtractionModel, mergeModelValues, withRenderedPages } from "../extraction";
+import { makeExtractionModel, runExtraction } from "../extraction";
 import { resolveForExport, type PartRecord } from "../types";
 import { createExportZip, FootprintUnavailableError } from "../exporters";
+import {
+  cachingModel,
+  cacheSize,
+  formatCacheStats,
+  projectCost,
+  ModelCacheMiss,
+  modelCacheDir,
+  type CacheMode,
+  type CachingModel
+} from "./modelcache";
+import { loadBenchEnv } from "./env";
+
+loadBenchEnv();
 
 if (!process.env.FORGE_LOG_LEVEL) process.env.FORGE_LOG_LEVEL = "error";
 
@@ -55,10 +68,47 @@ const VERBOSE = process.argv.includes("--verbose");
  * is looking at one of these datasheets and then fitting a rule to it.
  */
 const MODEL = process.argv.includes("--model");
-/** Spacing between model calls. Free-tier limits are per minute. */
-const MODEL_DELAY_MS = 4000;
 const CACHE_DIR = join(process.cwd(), ".holdout-cache");
 const FETCH_DELAY_MS = 1200;
+
+/** Model response cache. Same flags and same reasoning as the tuned bench. */
+const CACHE_MODE: CacheMode = process.argv.includes("--refresh")
+  ? "refresh"
+  : process.argv.includes("--estimate")
+    ? "estimate"
+    : process.argv.includes("--offline")
+      ? "offline"
+      : "use";
+
+/**
+ * There is deliberately no `--parts` here, though the tuned bench has one.
+ *
+ * The hold-out is worth something only because of the discipline around it: you
+ * do not look at one of these datasheets and then fit a rule to it, you promote
+ * the part into the tuned corpus and add a blind replacement. A flag that made
+ * it easy to run one hold-out part over and over is a flag for doing exactly
+ * the forbidden thing, and the cost argument that justifies it elsewhere does
+ * not apply: replaying all 38 from cache is free.
+ */
+
+let sharedModel: CachingModel | null | undefined;
+let currentLabel = "";
+
+async function benchModel(): Promise<CachingModel | null> {
+  if (sharedModel !== undefined) return sharedModel;
+  let inner = await makeExtractionModel("commercial");
+  if (!inner && (CACHE_MODE === "offline" || CACHE_MODE === "estimate")) {
+    inner = {
+      name: "gemini",
+      isConfigured: () => true,
+      extract: async () => {
+        throw new Error("offline stub model must never be called");
+      }
+    };
+  }
+  sharedModel = inner ? cachingModel(inner, CACHE_MODE, () => currentLabel) : null;
+  return sharedModel;
+}
 
 export interface HoldoutPart {
   partNumber: string;
@@ -184,7 +234,14 @@ function classify(record: PartRecord): string {
 async function main(): Promise<void> {
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
 
-  console.log(`Hold-out corpus: ${HOLDOUT_CORPUS.length} parts never inspected\n`);
+  console.log(`Hold-out corpus: ${HOLDOUT_CORPUS.length} parts never inspected`);
+  if (MODEL) {
+    console.log(
+      `Model cache: ${modelCacheDir()} (${cacheSize()} responses), mode ${CACHE_MODE}` +
+        (CACHE_MODE === "use" || CACHE_MODE === "refresh" ? " [may spend]" : " [no spend]")
+    );
+  }
+  console.log();
 
   if (FETCH) {
     let got = 0;
@@ -206,6 +263,8 @@ async function main(): Promise<void> {
   const shipRefusals = new Map<string, string[]>();
   /** Which fields the model filled that the parser could not, per part. */
   const modelFilled = new Map<string, string[]>();
+/** Fields where the code and the model both answered and disagreed. */
+const modelConflicts = new Map<string, PartRecord["conflicts"]>();
   /** Fields the model answered in a shape or with a citation that failed the check. */
   const modelRejected = new Map<string, string[]>();
 
@@ -229,33 +288,39 @@ async function main(): Promise<void> {
       record = deterministic;
 
       if (MODEL) {
-        const built = buildExtractionRequest(deterministic, doc, `${part.partNumber}.pdf`);
-        const model = await makeExtractionModel("commercial");
-        if (built && model) {
-          const request = await withRenderedPages(
-            built,
-            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-          );
+        const model = await benchModel();
+        if (model) {
+          currentLabel = part.partNumber;
           try {
-            const outcome = mergeModelValues(
+            const outcome = await runExtraction(
               deterministic,
               doc,
-              await model.extract(request),
-              model.name,
-              request.images.map((image) => image.page)
+              bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+              model,
+              `${part.partNumber}.pdf`
             );
-            record = outcome.part;
-            if (outcome.filled.length > 0) modelFilled.set(part.partNumber, outcome.filled);
-            if (outcome.rejected.length > 0) {
-              modelRejected.set(part.partNumber, outcome.rejected.map((entry) => entry.field));
+            if (outcome) {
+              record = outcome.part;
+              if (outcome.part.conflicts.length > 0) modelConflicts.set(part.partNumber, outcome.part.conflicts);
+              if (outcome.filled.length > 0) modelFilled.set(part.partNumber, outcome.filled);
+              if (outcome.rejected.length > 0) {
+                modelRejected.set(part.partNumber, outcome.rejected.map((entry) => entry.field));
+              }
             }
           } catch (error) {
             // A model failure must not cost the deterministic row, exactly as in
             // the parse route. Recorded so the run is not silently partial.
-            modelRejected.set(part.partNumber, [`ERROR:${error instanceof Error ? error.name : "unknown"}`]);
+            modelRejected.set(part.partNumber, [
+              error instanceof ModelCacheMiss
+                ? "UNCACHED"
+                : `ERROR:${error instanceof Error ? error.name : "unknown"}`
+            ]);
           }
-          // Free-tier rate limits are per minute; without this the run 429s.
-          await new Promise((resolve) => setTimeout(resolve, MODEL_DELAY_MS));
+          // Free-tier rate limits are per minute; without this the run 429s. A
+          // replayed answer touched no network, so it does not need the wait.
+          // Pacing lives in `cachingModel` now, against a rolling window that
+          // counts retries too. A flat sleep here cannot see them and so could not
+          // hold the limit; it is kept only as a floor between parts.
         }
       }
     } catch (error) {
@@ -313,12 +378,37 @@ async function main(): Promise<void> {
   }
 
   if (MODEL) {
+    const stats = (await benchModel())?.stats;
+    if (stats) {
+      console.log("\nModel cache:");
+      console.log(formatCacheStats(stats));
+      if (stats.skipped > 0) {
+        console.log(projectCost(stats.skipped));
+        console.log(`  ${stats.skipped} parts above ran WITHOUT a model answer.`);
+      }
+    }
+
     // Which FIELDS the model reached is the number that decides whether it leads
     // or follows, so it is reported per field rather than only per part.
     const byField = new Map<string, number>();
     for (const fields of modelFilled.values()) {
       for (const field of fields) byField.set(field, (byField.get(field) ?? 0) + 1);
     }
+    // The number that decides whether the model should ever outrank the code.
+    // Every row here is a field where both sides answered, both cited a real
+    // page, and they disagreed. Each one has to be settled by hand against the
+    // datasheet; there is no automatic verdict.
+    const conflictCount = [...modelConflicts.values()].reduce((sum, list) => sum + list.length, 0);
+    console.log(`\nCROSS-CHECK: ${conflictCount} disagreement(s) on ${modelConflicts.size}/${cached} parts`);
+    for (const [partNumber, list] of modelConflicts) {
+      for (const conflict of list) {
+        console.log(
+          `  ${partNumber} ${conflict.field}: code ${conflict.deterministic.display} (p${conflict.deterministic.page}) ` +
+            `vs model ${conflict.model.display} (p${conflict.model.page})`
+        );
+      }
+    }
+
     console.log(`\nMODEL: filled a field on ${modelFilled.size}/${cached} parts`);
     for (const [field, count] of [...byField].sort((a, b) => b[1] - a[1])) {
       console.log(`  ${String(count).padStart(3)}  ${field}`);

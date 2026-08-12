@@ -124,43 +124,6 @@ function buildDirectCandidates(partNumber: string, manufacturer?: string): strin
   return [...candidates];
 }
 
-function decodeDuckDuckGoRedirect(href: string): string | null {
-  try {
-    const normalized = href.replace(/&amp;/g, "&");
-    if (normalized.startsWith("//")) {
-      return `https:${normalized}`;
-    }
-
-    if (/^https?:\/\//i.test(normalized)) {
-      const parsed = new URL(normalized);
-      const redirected = parsed.searchParams.get("uddg");
-      return redirected ? decodeURIComponent(redirected) : normalized;
-    }
-
-    const parsed = new URL(normalized, "https://duckduckgo.com");
-    const redirected = parsed.searchParams.get("uddg");
-    if (redirected) {
-      return decodeURIComponent(redirected);
-    }
-
-    return /^https?:\/\//i.test(parsed.href) ? parsed.href : null;
-  } catch {
-    return null;
-  }
-}
-
-function extractSearchResultUrls(html: string): string[] {
-  const urls = new Set<string>();
-  for (const match of html.matchAll(/href="([^"]+)"/gi)) {
-    const candidate = decodeDuckDuckGoRedirect(match[1]);
-    if (candidate && /^https?:\/\//i.test(candidate)) {
-      urls.add(candidate);
-    }
-  }
-
-  return [...urls];
-}
-
 function extractPdfLinks(html: string, baseUrl: string): string[] {
   const links = new Set<string>();
   for (const match of html.matchAll(/href="([^"]+)"/gi)) {
@@ -195,24 +158,6 @@ function scoreCandidate(url: string, partNumber: string, manufacturer?: string):
   if (/alldatasheet|datasheetcatalog|digchip|elcodis|datasheets\.com|scribd/.test(lowerUrl)) score -= 30;
 
   return score;
-}
-
-async function fetchHtml(url: string): Promise<{ html: string; finalUrl: string; contentType: string }> {
-  const response = await fetchWithTimeout(
-    url,
-    { headers: { "User-Agent": userAgent, Accept: "text/html,application/xhtml+xml" }, redirect: "follow" },
-    SEARCH_TIMEOUT_MS
-  );
-
-  if (!response.ok) {
-    throw new Error(`Search request failed for ${url}: ${response.status}`);
-  }
-
-  return {
-    html: await response.text(),
-    finalUrl: response.url,
-    contentType: response.headers.get("content-type")?.toLowerCase() || ""
-  };
 }
 
 // Returns null for anything unusable so the caller simply tries the next candidate. These URLs come

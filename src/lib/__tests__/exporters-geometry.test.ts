@@ -23,6 +23,8 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
     manufacturer: "ACME",
     packageType: "8-pin SOIC",
     packageOutlineCode: null,
+    vendorLandPattern: null,
+    exposedPad: false,
     pinCount: 8,
     pins: pins(8),
     dimensions: {
@@ -32,7 +34,8 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       pitchMm: null,
       leadLengthMm: null,
       leadCount: 8,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null
+      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      thermalPadLengthMm: null, thermalPadWidthMm: null
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "ACME27524.pdf",
@@ -171,6 +174,27 @@ test("an uncharacterised package refuses the whole export", async () => {
       return true;
     }
   );
+});
+
+test("an exposed thermal pad refuses the footprint, on an otherwise buildable package", async () => {
+  // The refusal that used to live in `normalizeModelPins`, where it also threw
+  // away the pin table. Here the package is a plain characterised SOIC-8 and the
+  // pinout is complete, so nothing but the pad is stopping it: the pad alone has
+  // to be enough, because a footprint missing a mandatory soldered feature is a
+  // board that does not work.
+  await assert.rejects(
+    () => createExportZip(soicPart({ exposedPad: true }), "kicad"),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError);
+      assert.match(error.reason, /exposed thermal pad/);
+      return true;
+    }
+  );
+
+  // And the same part without the pad still builds, so the test above is really
+  // testing the pad rather than some other gap in the fixture.
+  const files = await filesFrom(soicPart());
+  assert.ok(files.size > 0);
 });
 
 test("an unknown package refuses rather than defaulting the pitch to 1.27", async () => {
@@ -432,7 +456,8 @@ function lqfpPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       pitchMm: null,
       leadLengthMm: null,
       leadCount: 80,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null
+      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      thermalPadLengthMm: null, thermalPadWidthMm: null
     },
     sourceFileName: "ACME430F5529.pdf",
     ...overrides
@@ -535,6 +560,82 @@ test("a quad package can never take a dual-row entry's geometry", async () => {
     (error: unknown) => {
       assert.ok(error instanceof FootprintUnavailableError);
       assert.match(error.message, /quad flat pack/);
+      return true;
+    }
+  );
+});
+
+// --- exposed thermal pads ------------------------------------------------------
+//
+// A thermal pad is a mandatory soldered feature, so a footprint that omits it is
+// wrong and a footprint that pastes it solid is also wrong. Both failures look
+// fine in CAD; the second one fails at reflow.
+
+function vqfnPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
+  return soicPart({
+    partNumber: "ACME8420",
+    packageType: "8-pin SOIC",
+    exposedPad: true,
+    dimensions: { ...soicPart().dimensions, thermalPadLengthMm: 2.1, thermalPadWidthMm: 1.8 },
+    ...overrides
+  });
+}
+
+test("an exposed pad whose size is unknown still refuses", async () => {
+  await assert.rejects(
+    () => createExportZip(soicPart({ exposedPad: true }), "kicad"),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError);
+      assert.match(error.reason, /size was not read/);
+      assert.match(error.reason, /D2 and E2/, "and says where to find it");
+      return true;
+    }
+  );
+});
+
+test("a sized exposed pad becomes a real land, numbered after the leads", async () => {
+  const files = await filesFrom(vqfnPart());
+  const footprint = files.get("acme8420.pretty/acme8420-soic-narrow.kicad_mod");
+  assert.ok(footprint, "the export succeeds once the pad can be built");
+
+  // Pad 9 on an 8-pin part: the convention every CAD tool expects.
+  const copper = /\(pad "9" smd roundrect \(at 0(?:\.0+)? 0(?:\.0+)?\) \(size ([\d.]+) ([\d.]+)\) \(layers "F\.Cu" "F\.Mask"\)/.exec(footprint);
+  assert.ok(copper, `a thermal land must be emitted; got:\n${footprint}`);
+  assert.equal(Number(copper[1]), 2.1, "the land is 1:1 with the exposed pad");
+  assert.equal(Number(copper[2]), 1.8);
+  assert.ok(!/\(pad "9" smd roundrect[^\n]*F\.Paste/.test(footprint), "the COPPER carries no paste");
+});
+
+test("the thermal land's paste is an array, covering well under 100%", async () => {
+  // The defect this prevents: a land pasted 1:1 floats the package on a bubble
+  // of solder, lifting the perimeter leads clean off their lands, and the excess
+  // escapes as balls. IPC-7093 puts the target between 50% and 80%.
+  const files = await filesFrom(vqfnPart());
+  const footprint = files.get("acme8420.pretty/acme8420-soic-narrow.kicad_mod")!;
+
+  const apertures = [...footprint.matchAll(/\(pad "9" smd rect \(at (-?[\d.]+) (-?[\d.]+)\) \(size ([\d.]+) ([\d.]+)\) \(layers "F\.Paste"\)/g)];
+  assert.ok(apertures.length > 1, `paste must be subdivided, got ${apertures.length} aperture(s)`);
+
+  const pasted = apertures.reduce((total, a) => total + Number(a[3]) * Number(a[4]), 0);
+  const coverage = pasted / (2.1 * 1.8);
+  assert.ok(coverage > 0.5 && coverage < 0.8, `coverage ${(coverage * 100).toFixed(0)}% must sit in the IPC-7093 band`);
+
+  // Every aperture sits inside the land. Paste at the very edge bridges to the
+  // perimeter lands.
+  for (const a of apertures) {
+    assert.ok(Math.abs(Number(a[1])) + Number(a[3]) / 2 <= 2.1 / 2 + 1e-9, "aperture within the land in x");
+    assert.ok(Math.abs(Number(a[2])) + Number(a[4]) / 2 <= 1.8 / 2 + 1e-9, "aperture within the land in y");
+  }
+});
+
+test("Altium refuses a windowed paste rather than pasting it solid", async () => {
+  // The writer cannot express paste that differs from copper. Emitting the pad
+  // anyway would produce a file that opens correctly and fails at reflow, so it
+  // refuses and names the format that can.
+  await assert.rejects(
+    () => createExportZip(vqfnPart(), "altium"),
+    (error: unknown) => {
+      assert.match((error as Error).message, /thermal pad|paste/i);
       return true;
     }
   );

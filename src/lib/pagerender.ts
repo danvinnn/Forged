@@ -131,7 +131,7 @@ export async function renderPages(
     const pageCount = document.countPages();
     const scale = dpi / 72;
 
-    // Deduplicated, but ORDER IS THE CALLER'S. `selectPages` already ranked by
+    // Deduplicated, but ORDER IS THE CALLER'S. The pages come from the model,
     // relevance, so when a budget cuts the list it must cut the least relevant
     // page rather than the last one in the document.
     for (const pageNumber of [...new Set(pages)]) {

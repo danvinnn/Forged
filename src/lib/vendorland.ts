@@ -156,8 +156,36 @@ export interface LandCrossCheck {
 }
 
 /** Whether any vendor dimension sits within tolerance of a computed value. */
-function matched(dimensions: VendorLandDimension[], value: number, toleranceMm: number): boolean {
-  return dimensions.some((dimension) => Math.abs(dimension.valueMm - value) <= toleranceMm);
+function matched(values: readonly number[], value: number, toleranceMm: number): boolean {
+  return values.some((printed) => Math.abs(printed - value) <= toleranceMm);
+}
+
+/** How far a computed land may sit from the vendor's printed one, in mm. */
+export const LAND_AGREEMENT_TOLERANCE_MM = 0.12;
+
+/**
+ * The three numbers a printed land pattern has to account for, unmatched ones
+ * first. Empty means the computed land agrees with the page.
+ *
+ * Doc-free on purpose. `crossCheckLandPattern` below uses it to write a note
+ * while the document is still open; `packages.ts` uses it at EXPORT time, from
+ * values carried on the record, to refuse a land pattern derived from a drawing
+ * that the vendor's own page contradicts. Both must ask the same question, so
+ * they ask the same function.
+ */
+export function landDisagreements(
+  printedMm: readonly number[],
+  computed: LandPattern,
+  toleranceMm = LAND_AGREEMENT_TOLERANCE_MM
+): string[] {
+  const checks: Array<{ what: string; value: number }> = [
+    { what: "land length", value: computed.padLengthMm },
+    { what: "land width", value: computed.padWidthMm },
+    { what: "centre-to-centre span", value: computed.padCentreMm * 2 }
+  ];
+  return checks
+    .filter((check) => !matched(printedMm, check.value, toleranceMm))
+    .map((check) => `${check.what} ${check.value.toFixed(3)} mm`);
 }
 
 /**
@@ -172,7 +200,7 @@ export function crossCheckLandPattern(
   doc: DatasheetText,
   computed: LandPattern,
   family?: string,
-  toleranceMm = 0.12
+  toleranceMm = LAND_AGREEMENT_TOLERANCE_MM
 ): LandCrossCheck {
   const vendor = findVendorLandPattern(doc, family);
   if (!vendor) {
@@ -195,14 +223,11 @@ export function crossCheckLandPattern(
     };
   }
 
-  const centreToCentre = computed.padCentreMm * 2;
-  const checks: Array<{ what: string; value: number }> = [
-    { what: "land length", value: computed.padLengthMm },
-    { what: "land width", value: computed.padWidthMm },
-    { what: "centre-to-centre span", value: centreToCentre }
-  ];
-
-  const missing = checks.filter((check) => !matched(vendor.dimensions, check.value, toleranceMm));
+  const missing = landDisagreements(
+    vendor.dimensions.map((dimension) => dimension.valueMm),
+    computed,
+    toleranceMm
+  );
   const printed = vendor.dimensions
     .map((dimension) => `${dimension.repeat ? `${dimension.repeat}X ` : ""}${dimension.valueMm}`)
     .join(", ");
@@ -218,8 +243,6 @@ export function crossCheckLandPattern(
   return {
     agreement: "differs",
     page: vendor.page,
-    detail: `Differs from the land pattern printed on page ${vendor.page} (${printed}) in: ${missing
-      .map((check) => `${check.what} ${check.value.toFixed(3)} mm`)
-      .join(", ")}. IPC-7351B and a vendor house rule can both be correct and still disagree; check which your process requires.`
+    detail: `Differs from the land pattern printed on page ${vendor.page} (${printed}) in: ${missing.join(", ")}. IPC-7351B and a vendor house rule can both be correct and still disagree; check which your process requires.`
   };
 }

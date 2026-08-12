@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { citationAt, extractDatasheetText, type DatasheetText } from "./pdftext";
 import { extractPinFigureByGeometry } from "./pinfigure";
-import { extractPinTableByGeometry } from "./pintable";
+import { extractPinTableByGeometry, packageFamilies } from "./pintable";
+import { findVendorLandPattern } from "./vendorland";
 import { readDrawingDimensions, type DrawnDimensions } from "./drawingdimensions";
 import {
   declaredLeadCount,
@@ -10,7 +11,7 @@ import {
   namesPackageFamily,
   selectSinglePackage,
   soleDeclaredLeadCount,
-  type PackageVariant
+  type PackageVariant,
 } from "./packagevariants";
 import {
   extractedValue,
@@ -329,7 +330,25 @@ const PACKAGE_DESIGNATOR_PATTERNS: RegExp[] = [
 
 function findPackageType(doc: DatasheetText, variants?: PackageVariant[]): Extracted<string> {
   const scope = doc.text.slice(0, frontMatterEnd(doc));
+  const offered = variants ?? findPackageVariants(doc.text, frontMatterEnd(doc));
 
+
+  // NOTE: this scan takes the FIRST package-shaped token in the front matter,
+  // which on a multi-package part is whichever the vendor listed first rather
+  // than the one the caller is holding. That is a guess wearing a citation, and
+  // choosing a package is properly the caller's decision, not ours.
+  //
+  // Gating it on "does the document offer several packages" was measured on
+  // 2026-08-09 and REVERTED the same day: reachable parts fell from 17/44 to
+  // 13/44, because refusing to guess only helps if the choice we put in front of
+  // the user contains the right answer, and today it often does not. An AD590
+  // offers FLATPACK, TO-52, SC-11 and Ceramic Flat, and the two packages whose
+  // pinouts this parser can actually read, the 8-lead SOIC and the 4-lead LFCSP,
+  // are in neither the list nor the front matter.
+  //
+  // The order of work is therefore: make `packageVariants` list the packages the
+  // document DRAWS, then stop guessing here. Doing the second first swaps a
+  // lucky guess for a dead end.
   for (const pattern of PACKAGE_DESIGNATOR_PATTERNS) {
     for (const match of allMatches(scope, pattern)) {
       const candidate = cleanValue(match.groups[0] ?? match.text);
@@ -348,7 +367,7 @@ function findPackageType(doc: DatasheetText, variants?: PackageVariant[]): Extra
   // together, `64 Ld EP-TQFP` is a thermal table entry, `16-Lead TSSOP` is on
   // page 8. The variant reader finds all of them, and answers here only when the
   // document describes ONE package; otherwise the choice goes to the caller.
-  const single = selectSinglePackage(variants ?? findPackageVariants(doc.text, frontMatterEnd(doc)));
+  const single = selectSinglePackage(offered);
   if (!single) return unknown<string>();
 
   const escaped = single.designator.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -883,7 +902,9 @@ function extractPins(
    * between number columns that have each already proved themselves; see
    * `readContinuedTable`. It never vouches for a column.
    */
-  declaredCount?: number | null
+  declaredCount?: number | null,
+  /** Whether `packageType` came from the caller rather than from the document. */
+  packageRequested = false
 ): {
   pins: PinRecord[];
   citation: Citation | null;
@@ -928,7 +949,7 @@ function extractPins(
   // has the table reader find one and the designator declare the other, and the
   // part comes back with a pinout it refuses to count.
   if (geometry && declaredCount != null && geometry.pins.length !== declaredCount) {
-    const corroborated = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount);
+    const corroborated = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount, packageRequested);
     if (corroborated && corroborated.pins.length === declaredCount) {
       return {
         pins: corroborated.pins.map((pin) => ({
@@ -944,7 +965,57 @@ function extractPins(
     }
   }
 
-  if (geometry) {
+  // An UNCAPTIONED table that contradicts the document's own declared count is
+  // not evidence, and keeping it here was producing fabricated pinouts.
+  //
+  // Measured on LP5907, found by cross-checking against a model on 2026-08-11.
+  // Page 17 is `7.4 Layout / Layout Guidelines` and carries an application
+  // circuit; the reader took the symbol's callouts as a three-row table and the
+  // record shipped pins named `VINCIN`, `GND`, `Enable` at confidence 0.9,
+  // citing a layout page. The document declares a 4-pin DSBGA and page 3 draws
+  // the real pinout.
+  //
+  // The type-column proxy cannot catch this and never could: on a schematic the
+  // pin labels ARE the type vocabulary, so `IN`, `GND`, `EN` scores three out of
+  // three. What the fabrication cannot fake is agreement with a count the
+  // document states somewhere else.
+  //
+  // Narrow on purpose, in both directions. A CAPTIONED table is the vendor
+  // saying "these rows are the pinout", and it is allowed to disagree with a
+  // designator, which is the existing behaviour for the multi-package documents
+  // where the caption is the only thing that distinguishes siblings. And where
+  // no count is declared there is nothing to contradict, so nothing changes.
+  // An uncaptioned table that agrees with NOTHING in the document is dropped.
+  //
+  // By this point the table contradicts the declared count and no figure matched
+  // the COUNT. One case remains where keeping it is right: a figure that
+  // independently resolves to the TABLE's length, two readers agreeing against a
+  // designator, which is the measured tie-break above and is worth a part.
+  //
+  // What is left over is a table agreeing with nobody, and that is where the
+  // fabrications live. LP5907's page 17 is `7.4 Layout / Layout Guidelines` with
+  // an application circuit on it; the reader took the symbol callouts as three
+  // rows and the record shipped pins named `VINCIN`, `GND`, `Enable` at
+  // confidence 0.9. The document declares a 4-pin DSBGA and page 3 draws the
+  // real pinout, so the table matched neither.
+  //
+  // The type-column proxy cannot catch this and never could: on a schematic the
+  // pin labels ARE the type vocabulary, so `IN`, `GND`, `EN` scores three out of
+  // three. Agreement with an independent reading is what a fabrication cannot
+  // fake.
+  //
+  // Narrow in both directions. A CAPTIONED table is the vendor saying "these
+  // rows are the pinout" and may still disagree with a designator, which is what
+  // separates siblings on a multi-package document. Where no count is declared
+  // there is nothing to contradict and nothing changes.
+  const uncorroborated =
+    geometry !== null &&
+    !geometry.claimed &&
+    declaredCount != null &&
+    geometry.pins.length !== declaredCount &&
+    extractPinFigureByGeometry(doc, partNumber, packageType, null)?.pins.length !== geometry.pins.length;
+
+  if (geometry && !uncorroborated) {
     return {
       pins: geometry.pins.map((pin) => ({
         number: pin.number,
@@ -1006,7 +1077,7 @@ function extractPins(
     // `SOT-23 (DBV)` gets a five-pin figure captioned for that package and
     // nothing else in the document to corroborate it with, since the front matter
     // describes the eight-pin SOIC.
-    const figure = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount);
+    const figure = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount, packageRequested);
     if (figure) {
       return {
         pins: figure.pins.map((pin) => ({
@@ -1042,7 +1113,7 @@ function extractPins(
   // SN74LVC1G08 draws its DBV, DRL, DSF, YZP and DRY packages on one page, two of
   // them five-pin and two six-pin, so without it the figures disagree, no names
   // supersede, and pin 6 goes back to the `V` the flattened text gives.
-  const geometryFigure = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount);
+  const geometryFigure = extractPinFigureByGeometry(doc, partNumber, packageType, declaredCount, packageRequested);
   if (geometryFigure && geometryFigure.pins.length === diagram.pins.length) {
     const byNumber = new Map(geometryFigure.pins.map((pin) => [String(pin.number), pin.name]));
     return {
@@ -1126,81 +1197,34 @@ function withDrawnDimensions(
   return { ...dimensions, pitchMm: pitch, leadWidthMm: leadWidth };
 }
 
-/**
- * How far either side of a millimetre pair a package family name may sit before
- * the pair stops being evidence about a body. Wide enough to span a device
- * information row (`TSSOP (38) 9.70 mm x 4.40 mm`), tight enough that a family
- * named in a different sentence does not vouch for it.
- */
-const BODY_CONTEXT_REACH = 60;
-
-/** A body written as `3 mm x 5 mm`, which is how most front matter states one. */
-const BODY_PAIR = /\b(\d+(?:\.\d+)?)\s*mm\s*[×x]\s*(\d+(?:\.\d+)?)\s*mm\b/i;
-
-/**
- * The body size, and ONLY where the document states one.
- *
- * The same rule as `findDimension`, applied to the two-number form. This is the
- * source for most parts that have a body at all, and taking the first match on a
- * family datasheet returns whichever package the document mentions first. A body
- * is per-package: an STM32 document states its LQFP, its WLCSP and its BGA
- * bodies, and they are different sizes.
- */
-function findSoleBodyPair(doc: DatasheetText): { lengthMm: number; widthMm: number; citation: Citation | null } | null {
-  const seen = new Map<string, RawMatch>();
-  for (const match of allMatches(doc.text, BODY_PAIR)) {
-    const lengthMm = Number(match.groups[0]);
-    const widthMm = Number(match.groups[1]);
-    if (!Number.isFinite(lengthMm) || !Number.isFinite(widthMm)) continue;
-    if (lengthMm <= 0 || widthMm <= 0) continue;
-
-    // A pair of millimetre figures is not a body unless something nearby says it
-    // is a PACKAGE, which is the same test `findPackageType` applies to a
-    // designator and for the same reason: the shape alone means nothing. An
-    // ISO7841 was reporting a 10.30 x 10.30 body for a sixteen-pin SOIC, which
-    // is square and no SOIC is, off a line reading `CSA Component Acceptance
-    // Notice 5A, IEC 10.30mm x 10.30mm`. That is a certification clause, and the
-    // part ships, so it was shipping a wrong body outline.
-    const context = doc.text.slice(
-      Math.max(0, match.index - BODY_CONTEXT_REACH),
-      match.index + match.length + BODY_CONTEXT_REACH
-    );
-    // A family name OR the word `package`. The second is what an LSM6DSO needs,
-    // whose front matter reads `2.5 x 3 x 0.83 mm package` and names its LGA
-    // somewhere else entirely; requiring the family alone threw away a correct
-    // body. It is the same guard the declared pin count uses, and it is what the
-    // certification clause above lacks.
-    if (!namesPackageFamily(context) && !/\bpackage\b/i.test(context)) continue;
-
-    const key = `${lengthMm}x${widthMm}`;
-    if (!seen.has(key)) seen.set(key, match);
-  }
-
-  if (seen.size !== 1) return null;
-  const [[key, match]] = [...seen];
-  const [lengthMm, widthMm] = key.split("x").map(Number);
-  return { lengthMm, widthMm, citation: cite(doc, match) };
-}
-
 function parseDimensions(doc: DatasheetText, leadCount: Extracted<number>): PackageDimensions {
-  const pair = findSoleBodyPair(doc);
-
+  // A LABELLED body dimension only. The two-number front-matter pair used to
+  // fill these and it is not a body, which cross-checking against the model
+  // caught on 2026-08-11 in two different ways at once:
+  //
+  //   INA226   "PACKAGE SIZE     VSSOP (10)  3.00mm x 4.90mm"
+  //            4.90 is the LEAD SPAN. The body is 3.0 x 3.0 (drawing DGS0010A,
+  //            page 37). The second number is not a body dimension at all.
+  //   PCM1808  "BODY SIZE (NOM)  TSSOP (14)  4.40 mm x 5.00 mm"
+  //            both ARE body dimensions, printed WIDTH FIRST. The drawing
+  //            PW0014A on page 27 gives length 5.0 (note 3) and width 4.4
+  //            (note 4), so the pair assigned both the wrong way round.
+  //
+  // A third instance was already on record: DRV8825 prints 9.70 x 6.40 against
+  // its own GENERIC PACKAGE VIEW of 4.4 x 9.7. Three for three, and the two
+  // failures are different, so no ordering rule and no header test recovers it.
+  // The header does not even agree between the two documents above.
+  //
+  // Dropped rather than demoted. A value at confidence 0.5 still reaches the
+  // courtyard and the silkscreen outline, and "usually wrong" is not a weaker
+  // version of right. The labelled prose forms below say which dimension they
+  // are, and the mechanical drawing remains the source that can be checked.
   const bodyLength = findDimension(doc, /body\s*length[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i);
   const bodyWidth = findDimension(doc, /body\s*width[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i);
 
   return {
-    bodyLengthMm:
-      bodyLength.value !== null
-        ? bodyLength
-        : pair
-          ? extractedValue(pair.lengthMm, 0.5, pair.citation)
-          : unknown<number>(),
-    bodyWidthMm:
-      bodyWidth.value !== null
-        ? bodyWidth
-        : pair
-          ? extractedValue(pair.widthMm, 0.5, pair.citation)
-          : unknown<number>(),
+    bodyLengthMm: bodyLength,
+    bodyWidthMm: bodyWidth,
     bodyHeightMm: findDimension(doc, /body\s*height[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i),
     pitchMm: findDimension(doc, PROSE_PITCH, 0.6),
     leadLengthMm: findDimension(doc, /lead\s*length[^\d]{0,20}(\d+(?:\.\d+)?)\s*mm/i),
@@ -1209,6 +1233,11 @@ function parseDimensions(doc: DatasheetText, leadCount: Extracted<number>): Pack
     leadWidthMm: unknown<LeadWidth>(),
     leadSpanMm: unknown<LeadWidth>(),
     leadContactMm: unknown<LeadWidth>(),
+    // No deterministic reader either. The exposed pad is dimensioned D2/E2 on a
+    // drawing, which is arrows, so only a reader that can SEE the page supplies
+    // these. Absent means a part with a pad is refused, which is correct.
+    thermalPadLengthMm: unknown<number>(),
+    thermalPadWidthMm: unknown<number>(),
     leadCount
   };
 }
@@ -1482,7 +1511,15 @@ export function buildPartRecord(
     selfVerified,
     needsCorroboration,
     fromTable
-  } = extractPins(doc, partNumber.value ?? undefined, packageType.value ?? undefined, declared);
+  } = extractPins(
+    doc,
+    partNumber.value ?? undefined,
+    packageType.value ?? undefined,
+    declared,
+    // `method: "user"` is exactly the marker for a package the caller named; see
+    // the hint handling above, which is the only place that sets it.
+    packageType.method === "user"
+  );
 
   // Two independent signals, the package designator and the pin table, either
   // corroborate each other or they do not. When they disagree, at least one is
@@ -1606,6 +1643,14 @@ export function buildPartRecord(
   const dimensions = withDrawnDimensions(parseDimensions(doc, declaredPinCount), drawn);
   const radiation = extractRadiationData(doc);
 
+  const resolvedFamily = resolvedPackageType.value
+    ? (packageFamilies(resolvedPackageType.value)[0] ?? resolvedPackageType.value)
+    : null;
+  const printed = resolvedFamily ? findVendorLandPattern(doc, resolvedFamily) : null;
+  const printedLand = printed
+    ? { page: printed.page, valuesMm: printed.dimensions.map((dimension) => dimension.valueMm) }
+    : null;
+
   const notes: string[] = [`PDF pages: ${doc.pageCount}`];
   if (doc.truncated) {
     notes.push(`Only the first ${doc.pages.length} pages were parsed (page cap ${MAX_PAGES}).`);
@@ -1648,6 +1693,19 @@ export function buildPartRecord(
     // wrong answer dressed as a choice: an OPA2277 is an eight-pin part and its
     // document also describes the quad's `14-Pin SOIC`. A variant that declares
     // no count is kept, because it contradicts nothing.
+    // The land pattern this datasheet PRINTS for the resolved package.
+    //
+    // Read here rather than in the HTTP route because it is document evidence
+    // like everything else on this record, and because a caller using this
+    // function directly must get the same guard: the bench does, and with the
+    // read in the route it shipped an ADS1115 footprint the route would have
+    // refused.
+    //
+    // Filtered on the FAMILY token, not the designator. `findVendorLandPattern`
+    // matches against the name in the drawing header, which reads `DYN0010A SOT`;
+    // asking it for `SOT-10` matches nothing and returns no land pattern at all,
+    // which would disable the guard on exactly the parts that need it.
+    vendorLandPattern: printedLand,
     packageVariants: packageVariants
       .filter(
         (variant) =>
@@ -1670,6 +1728,11 @@ export function buildPartRecord(
       : unknown<string>(),
     pinCount,
     pins: pins.length > 0 ? extractedValue(pins, pinConfidence, pinCitation) : unknown<PinRecord[]>(),
+    // The deterministic readers all prove a gap-free 1..N, so a pad terminal can
+    // never reach them; only the model pass sets this. See `normalizeModelPins`.
+    exposedPad: false,
+    // Filled only by the model pass; the deterministic reader has nothing to disagree with.
+    conflicts: [],
     dimensions,
     radiation,
     sourceFileName: fileName,

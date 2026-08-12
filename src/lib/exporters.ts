@@ -1,10 +1,22 @@
 import JSZip from "jszip";
-import { type ExportFormat, type PinRecord, type ResolvedPart } from "./types";
-import { computeLandPattern, LandPatternError, type DensityLevel, type LandPattern } from "./ipc7351";
+import {
+  resolveForExport,
+  type ExportFormat,
+  type PartRecord,
+  type PinRecord,
+  type ResolvedPart
+} from "./types";
+import {
+  computeLandPattern,
+  LandPatternError,
+  thermalPadLand,
+  type DensityLevel,
+  type LandPattern,
+  type ThermalPadLand
+} from "./ipc7351";
 import { resolvePackageDefinition, SUPPORTED_PACKAGE_FAMILIES, type PackageDefinition } from "./packages";
 import {
   type FootprintGeometry,
-  type FootprintProvenance,
   type Pad,
   type SymbolGeometry,
   type SymbolPin
@@ -67,12 +79,6 @@ export class FootprintUnavailableError extends Error {
 // control characters (which have no valid place in these identifiers) are stripped.
 function stepString(value: string): string {
   return value.replace(/[\r\n\t]+/g, " ").replace(/'/g, "''");
-}
-
-// KiCad s-expression strings are double-quoted with backslash escaping. Escape backslash and quote,
-// and strip raw newlines so a value cannot open a new token on its own line.
-function kicadString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
 }
 
 function slugify(value: string): string {
@@ -262,25 +268,6 @@ function pinByNumber(part: ResolvedPart): Map<string, PinRecord> {
   return new Map(part.pins.map((pin) => [String(pin.number), pin]));
 }
 
-function kicadPinType(pinType: PinRecord["electricalType"]): string {
-  switch (pinType) {
-    case "power":
-      return "power_in";
-    case "input":
-      return "input";
-    case "output":
-      return "output";
-    case "bidirectional":
-      return "bidirectional";
-    case "passive":
-      return "passive";
-    case "nc":
-      return "not_connected";
-    default:
-      return "unspecified";
-  }
-}
-
 /**
  * Builds the format-neutral symbol description.
  *
@@ -344,6 +331,24 @@ function buildFootprintGeometry(
   densityLevel: DensityLevel,
   formedLeadSpanMm?: number
 ): FootprintGeometry {
+  // An exposed thermal pad is laid out when its size is known, and refused when
+  // it is not. It is a mandatory soldered feature: the numbered lands alone are
+  // a footprint the board house builds wrong.
+  //
+  // Refusing outright is what this did until the pad could actually be built.
+  // The size comes from drawing dimensions D2 and E2, which are arrows, so only
+  // a reader that can see the page supplies them.
+  if (part.exposedPad) {
+    const length = part.dimensions.thermalPadLengthMm;
+    const width = part.dimensions.thermalPadWidthMm;
+    if (length === null || width === null) {
+      throw new FootprintUnavailableError(
+        `${part.partNumber} has an exposed thermal pad and its size was not read. The pad is a mandatory soldered feature, so the numbered pins alone would be a footprint missing it, and no footprint is generated. The size is drawing dimensions D2 and E2 on the package outline.`,
+        SUPPORTED_PACKAGE_FAMILIES
+      );
+    }
+  }
+
   // The package, checked against this part's own mechanical drawing. Shared with
   // the parse route so the land pattern the UI reports on is the one the export
   // actually builds; see resolvePackageDefinition.
@@ -353,7 +358,8 @@ function buildFootprintGeometry(
     leadWidthMm: part.dimensions.leadWidthMm,
     leadSpanMm: part.dimensions.leadSpanMm,
     leadLengthMm: part.dimensions.leadLengthMm,
-    leadContactMm: part.dimensions.leadContactMm
+    leadContactMm: part.dimensions.leadContactMm,
+    vendorLandMm: part.vendorLandPattern?.valuesMm ?? null
   });
   if (!lookup.ok) throw new FootprintUnavailableError(lookup.failure.reason, lookup.failure.supported);
 
@@ -454,6 +460,42 @@ function buildFootprintGeometry(
     });
   };
 
+  // The thermal land, last, so its pad number follows the numbered leads.
+  //
+  // Numbered from the pin table where the datasheet gives the pad a designator,
+  // and `pinCount + 1` where it does not, which is the convention every CAD tool
+  // expects. The paste is an ARRAY rather than the copper outline; see
+  // `thermalPadLand` for why 1:1 paste is a defect rather than a simplification.
+  const emitThermalPad = () => {
+    if (!part.exposedPad) return;
+    const length = part.dimensions.thermalPadLengthMm;
+    const width = part.dimensions.thermalPadWidthMm;
+    if (length === null || width === null) return;
+
+    let thermal: ThermalPadLand;
+    try {
+      thermal = thermalPadLand(length, width);
+    } catch (error) {
+      if (error instanceof LandPatternError) throw new FootprintUnavailableError(error.message);
+      throw error;
+    }
+
+    const designator = part.pins.find((pin) => !/^\d+$/.test(pin.number))?.number;
+    pads.push({
+      number: designator ?? String(part.pinCount + 1),
+      centre: { xMm: 0, yMm: 0 },
+      widthMm: thermal.widthMm,
+      heightMm: thermal.heightMm,
+      shape: "roundrect",
+      mounting: "smd",
+      pasteApertures: thermal.apertures.map((aperture) => ({
+        centre: { xMm: aperture.xMm, yMm: aperture.yMm },
+        widthMm: aperture.widthMm,
+        heightMm: aperture.heightMm
+      }))
+    });
+  };
+
   /** Position of the nth lead along its own side, measured from the centre. */
   const step = (index: number) => -rowSpanMm / 2 + index * definition.pitchMm;
 
@@ -472,6 +514,8 @@ function buildFootprintGeometry(
     left.forEach((number, index) => push(number, -land.padCentreMm, step(index), "x"));
     right.forEach((number, index) => push(number, land.padCentreMm, step(index), "x"));
   }
+
+  emitThermalPad();
 
   // The silkscreen body follows the extracted dimensions where they are known and
   // the land extents otherwise. It is decoration; the pads are the instruction.
@@ -665,5 +709,143 @@ export async function createExportZip(
     stepNote: stepModel.note,
     footprint: footprint.provenance,
     files: files.map((file) => file.name)
+  };
+}
+/**
+ * What clicking a package in the chooser would actually do.
+ *
+ * ## Why this exists
+ *
+ * The chooser was offering packages nobody could build. Measured over the 45
+ * cached datasheets on 2026-08-09: of 95 offered designators, 21 produced a
+ * bundle, 7 produced one after a single number, and **67 produced nothing at
+ * all**. Twenty-one parts offered a choice in which EVERY option was dead. A
+ * TSV321 listed six packages and no click on any of them yielded a file.
+ *
+ * That is a worse failure than refusing outright. A refusal is information; a
+ * live-looking dropdown that cannot answer is a promise the product does not
+ * keep, and the user only finds out after choosing.
+ *
+ * ## What the measurement actually showed
+ *
+ * The obvious fix was to drop the dead entries, on the reasoning that we should
+ * only offer packages the datasheet covers. The reason that is NOT what this
+ * does is that none of the 67 were the datasheet's fault. They split two ways:
+ *
+ *   37  the record itself is incomplete (`pinCount,pins` or `pins`), so nothing
+ *       would ship whichever package were picked. Not a property of the option.
+ *   30  the family has no characterised land pattern here: QFN, SON, LGA, BGA,
+ *       SOT, PDIP, MiniSO. Ours to close, and the datasheet describes them fine.
+ *
+ * So hiding them would hide our own two gaps behind a story about the document,
+ * and the count of what we cannot build would stop being visible anywhere. The
+ * honest version is to keep every package the document offers and say what each
+ * one will do, which is what a person reading the datasheet themselves would
+ * know before they clicked.
+ *
+ * ## Why it runs the real generator
+ *
+ * `buildFootprintGeometry` is the function the export calls. Asking it is the
+ * only way this cannot drift from what actually happens on click; a predicate
+ * that reimplemented the family table would eventually disagree with it, and it
+ * would disagree by promising a footprint that then fails.
+ */
+export type PackageOptionStatus =
+  /** Produces a bundle now. */
+  | "ships"
+  /** Produces one once the caller supplies `needs`. */
+  | "needs-input"
+  /** Cannot be built, for the reason given. */
+  | "unsupported";
+
+export interface PackageOption {
+  designator: string;
+  family: string;
+  leadCount: number | null;
+  status: PackageOptionStatus;
+  /** Populated for `needs-input`, empty otherwise. */
+  needs: RequiredInput[];
+  /** Populated for `unsupported`, null otherwise. */
+  reason: string | null;
+}
+
+export type PackageChoice =
+  /**
+   * The record cannot export whatever is chosen, so there is no choice to put.
+   * `blockedBy` names the fields, which is what to show instead of a dropdown.
+   */
+  | { ok: false; blockedBy: string[] }
+  | { ok: true; options: PackageOption[] };
+
+/**
+ * Runs the real footprint build for one designator and classifies the outcome.
+ */
+function optionFor(
+  part: ResolvedPart,
+  variant: { designator: string; family: string; leadCount: number | null },
+  drawingIsThisPackage: boolean,
+  formedLeadSpanMm?: number
+): PackageOption {
+  // The outline code and the drawn pitch and width were read off the ONE drawing
+  // confirmed to match the extracted designator. Against a different package
+  // they describe the wrong part of the document, so they are dropped there.
+  // Keeping them for the package the record already resolved to is not
+  // symmetry-breaking for its own sake: that is the package they were verified
+  // against, and dropping them would report a worse answer than the export gives.
+  const candidate: ResolvedPart = drawingIsThisPackage
+    ? { ...part, packageType: variant.designator }
+    : {
+        ...part,
+        packageType: variant.designator,
+        packageOutlineCode: null,
+        // Read for the RESOLVED package, so against a different one it is a
+        // different drawing's land and would refuse a correct pattern.
+        vendorLandPattern: null,
+        dimensions: { ...part.dimensions, pitchMm: null, leadWidthMm: null }
+      };
+
+  const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
+  try {
+    buildFootprintGeometry(candidate, "B", formedLeadSpanMm);
+    return { ...base, status: "ships", needs: [], reason: null };
+  } catch (error) {
+    if (error instanceof FootprintUnavailableError) {
+      return error.needs.length > 0
+        ? { ...base, status: "needs-input", needs: error.needs, reason: null }
+        : { ...base, status: "unsupported", needs: [], reason: error.reason };
+    }
+    // Anything else is a defect rather than a refusal, and reporting it as an
+    // unbuildable package would bury it. It is still not allowed to fail the
+    // parse, so it is reported in the option's own reason.
+    return {
+      ...base,
+      status: "unsupported",
+      needs: [],
+      reason: error instanceof Error ? error.message : "The footprint generator failed."
+    };
+  }
+}
+
+/**
+ * Every package the document offers this part, each with what it would produce.
+ *
+ * The record-level check runs ONCE rather than per option, because nothing in
+ * `resolveForExport` reads the designator: a missing pin table blocks every
+ * package equally, and reporting that against each option in turn would present
+ * one problem as several and imply a different choice might avoid it.
+ */
+export function packageOptions(record: PartRecord, formedLeadSpanMm?: number): PackageChoice {
+  const resolved = resolveForExport(record);
+  if (!resolved.ok) {
+    const blocked = resolved.missing.length > 0 ? resolved.missing : (resolved.untraceable ?? []);
+    return { ok: false, blockedBy: blocked };
+  }
+
+  const chosen = record.packageType.value;
+  return {
+    ok: true,
+    options: record.packageVariants.map((variant) =>
+      optionFor(resolved.part, variant, variant.designator === chosen, formedLeadSpanMm)
+    )
   };
 }

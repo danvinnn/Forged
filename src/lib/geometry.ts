@@ -37,6 +37,18 @@ export interface Pad {
   shape: "roundrect";
   /** Surface mount is the only mounting these families use. */
   mounting: "smd";
+  /**
+   * Solder paste apertures, when paste must NOT follow the copper.
+   *
+   * Absent on every lead land, where 1:1 is correct. Present only on an exposed
+   * thermal pad, where 1:1 is a defect rather than a simplification: the solder
+   * volume under a large land floats the package, lifting the perimeter leads
+   * off their lands, and the excess escapes as balls. See `thermalPadLand`.
+   *
+   * An emitter that ignores this produces a footprint that looks right in CAD
+   * and fails at reflow, so every emitter must either honour it or refuse.
+   */
+  pasteApertures?: Array<{ centre: Point; widthMm: number; heightMm: number }>;
 }
 
 /** What the footprint was computed from, carried through to every output. */
