@@ -33,6 +33,7 @@ function record(overrides: Partial<PartRecord> = {}): PartRecord {
     manufacturer: cited("ACME"),
     packageType: cited("SOIC-8"),
     packageOutlineCode: nothing<string>(),
+    jedecOutline: nothing<string>(),
     packageVariants: [],
     pinCount: cited(8),
     pins: cited(pins(8)),
@@ -47,7 +48,17 @@ function record(overrides: Partial<PartRecord> = {}): PartRecord {
       leadSpanMm: nothing(),
       leadContactMm: nothing(),
       thermalPadLengthMm: nothing(),
-      thermalPadWidthMm: nothing()
+      thermalPadWidthMm: nothing(),
+      landPadLengthMm: nothing(),
+      landPadWidthMm: nothing(),
+      landSpanMm: nothing(),
+      leadSides: nothing(),
+      leadForm: nothing(),
+      vacantLeadSlot: nothing(),
+      solderMaskExpansionMm: nothing(),
+      solderMaskDefined: nothing(),
+      thermalViaDiameterMm: nothing(),
+      thermalViaPitchMm: nothing()
     },
     radiation: { tid: nothing(), see: nothing(), sel: nothing(), qmlClass: nothing() },
     sourceFileName: "ACME358.pdf",
@@ -75,10 +86,13 @@ test("a characterised package reports that it ships", () => {
   assert.equal(choice.options[0].reason, null);
 });
 
-test("an uncharacterised family reports that it cannot be built, and says why", () => {
-  // The larger half of the 67: QFN, SON, LGA, BGA, SOT, PDIP and MiniSO have no
-  // characterised land pattern here. The refusal is OURS, and the reason has to
-  // travel with the option or the user is left to guess whose gap it is.
+test("an uncharacterised family becomes a QUESTION, not a dead option", () => {
+  // Was "reports that it cannot be built": QFN, SON, LGA, BGA, SOT, PDIP and
+  // MiniSO had no characterised land pattern and the option was `unsupported`,
+  // with the refusal described as ours. Since 2026-08-13 the exporter asks for
+  // the land pattern instead of refusing, because the alternative is typing
+  // invented lead dimensions into a family table, and the chooser reflects that
+  // automatically. The user can now pick one of these and answer for it.
   const choice = packageOptions(
     record({ packageVariants: [variant("SOIC-8", "SOIC"), variant("VQFN-8", "VQFN")] })
   );
@@ -86,8 +100,12 @@ test("an uncharacterised family reports that it cannot be built, and says why", 
   assert.equal(choice.ok, true);
   if (!choice.ok) return;
   const qfn = choice.options.find((option) => option.designator === "VQFN-8");
-  assert.equal(qfn?.status, "unsupported");
-  assert.ok(qfn && qfn.reason && qfn.reason.length > 0, "an unbuildable package must explain itself");
+  assert.equal(qfn?.status, "needs-input");
+  assert.ok(qfn && qfn.needs.length > 0, "and it says what to supply");
+  assert.ok(
+    qfn.needs.every((need) => need.why.length > 0),
+    "each with a reason the document cannot answer it"
+  );
 });
 
 test("a flat pack reports that one number would unblock it, and names the number", () => {
@@ -170,6 +188,7 @@ test("drawing evidence is not carried onto a package it was never checked agains
   const part = record({
     packageType: cited("SOIC-8"),
     packageOutlineCode: cited("DW0008A"),
+    jedecOutline: nothing<string>(),
     packageVariants: [variant("SOIC-8", "SOIC"), variant("TSSOP-8", "TSSOP")]
   });
 

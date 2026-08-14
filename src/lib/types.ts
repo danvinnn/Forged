@@ -165,6 +165,132 @@ export const packageDimensionsSchema = z.object({
     confidence: null,
     method: null,
     citation: null
+  }),
+  /**
+   * The land pattern the datasheet PRINTS, off its own recommended footprint
+   * drawing. Where these are present they ARE the pads: no IPC-7351B, no
+   * hand-typed family table, no other vendor's house rule.
+   *
+   * Defaulted like the rest, so a record written before this existed still
+   * validates as what it is: a record with no printed pattern read.
+   */
+  landPadLengthMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  landPadWidthMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /** Centre to centre between opposing rows of lands. */
+  landSpanMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * How the leads leave the package: formed out and down, or a pad underneath.
+   *
+   * Decides which land-pattern model applies, and IPC-7351B only publishes
+   * fillet goals for gull-wing in this codebase. Read off the drawing rather
+   * than guessed from the package name, because the name is a designator and
+   * the drawing is the thing that shows the lead.
+   */
+  leadForm: extracted(z.enum(["gullwing", "nolead"])).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * On a two-row package whose rows are unequal, the grid position on the
+   * SHORTER row that carries no lead, counted from the pin 1 end, 1-based.
+   *
+   * An odd lead count means one row is one lead short, and where that gap sits
+   * is drawn on the pinout. Until this was read the generator refused every odd
+   * package outright, which is 2 of 37 corpus parts but a much larger share of
+   * real designs: 5- and 6-pin SOT-23 is where a great many op-amps, references
+   * and regulators live.
+   *
+   * Refusing was the right call while the position was unknown. Putting a lead
+   * in the wrong slot is a miswired board that looks correct in CAD.
+   */
+  vacantLeadSlot: extracted(z.number().int().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * Solder mask clearance around each land, in millimetres.
+   *
+   * Printed on 20 of 46 corpus land-pattern drawings, right beside the pad
+   * dimensions we already read, e.g. "0.05 MIN ALL AROUND". Both KiCad and
+   * Altium carry a per-pad mask expansion, and we were emitting footprints with
+   * none, so the board house applied its own default to copper the datasheet
+   * had already specified.
+   */
+  solderMaskExpansionMm: extracted(z.number().nonnegative()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * Whether the pad's size is set by the copper or by the mask opening.
+   *
+   * Stated in words on the same drawing, usually as a labelled pair with one
+   * marked preferred. It changes what the fabricator builds, so guessing it is
+   * not available; unread means unread.
+   */
+  solderMaskDefined: extracted(z.enum(["solder-mask-defined", "non-solder-mask-defined"])).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * Thermal via drill diameter and grid pitch under an exposed pad.
+   *
+   * Printed on 30 of 46. A part with an exposed pad is soldered through these,
+   * and a footprint that lays the pad without them is missing the feature that
+   * carries the heat out.
+   */
+  thermalViaDiameterMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  thermalViaPitchMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * How many SIDES of the package carry leads, counted off the drawing.
+   *
+   * 2 for a dual package, 4 for a quad. Read rather than looked up, because the
+   * only other source for it was a hand-typed family table, and a table that
+   * has never heard of SOT-23 refused a datasheet that prints its own footprint
+   * in full. The package's own drawing shows how many sides have leads; nothing
+   * about that needs a standard or a vendor convention.
+   *
+   * Constrained to 2 or 4 because those are the arrangements the pad placement
+   * can build. A part with leads on one or three sides is refused rather than
+   * approximated.
+   */
+  leadSides: extracted(z.union([z.literal(2), z.literal(4)])).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
   })
 });
 
@@ -205,6 +331,24 @@ export const partSchema = z.object({
    * its presence is itself the evidence that it can be believed.
    */
   packageOutlineCode: extracted(z.string().min(1)).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * The JEDEC outline registration the drawing cites, e.g. `MO-153 AA`.
+   *
+   * Distinct from `packageOutlineCode`, which is the VENDOR's own code
+   * (`PW0008A`, `DW0016B`) and means nothing outside that vendor. The JEDEC
+   * registration is the industry-wide identity of the package, printed on 21 of
+   * 46 corpus drawings as "Reference JEDEC registration MO-153, variation AA".
+   *
+   * Recorded because it is the canonical answer to "which package is this",
+   * which a hand-typed family table was previously guessing at from the
+   * designator text.
+   */
+  jedecOutline: extracted(z.string().min(1)).default({
     value: null,
     confidence: null,
     method: null,
@@ -314,6 +458,28 @@ export type PackageDimensions = {
   leadContactMm: Extracted<LeadWidth>;
   thermalPadLengthMm: Extracted<number>;
   thermalPadWidthMm: Extracted<number>;
+  /**
+   * The land pattern the datasheet PRINTS, read off its own recommended
+   * footprint drawing. Where these are present they ARE the footprint: no
+   * standard, no family table, no other vendor's house rule.
+   */
+  landPadLengthMm: Extracted<number>;
+  landPadWidthMm: Extracted<number>;
+  /** Centre to centre between opposing rows of lands. */
+  landSpanMm: Extracted<number>;
+  /** Sides of the package carrying leads: 2 for dual, 4 for quad. Read off the drawing. */
+  leadSides: Extracted<2 | 4>;
+  /** How the leads leave the package. Decides which land-pattern model applies. */
+  leadForm: Extracted<"gullwing" | "nolead">;
+  /** Grid position on the shorter row that carries no lead, 1-based from pin 1. */
+  vacantLeadSlot: Extracted<number>;
+  /** Solder mask clearance around each land, mm. Printed beside the land pattern. */
+  solderMaskExpansionMm: Extracted<number>;
+  /** Whether the pad is defined by copper or by the mask opening. */
+  solderMaskDefined: Extracted<"solder-mask-defined" | "non-solder-mask-defined">;
+  /** Thermal via drill diameter and grid pitch under an exposed pad, mm. */
+  thermalViaDiameterMm: Extracted<number>;
+  thermalViaPitchMm: Extracted<number>;
 };
 
 export type RadiationData = {
@@ -358,6 +524,8 @@ export type PartRecord = {
   manufacturer: Extracted<string>;
   packageType: Extracted<string>;
   packageOutlineCode: Extracted<string>;
+  /** JEDEC outline registration, e.g. `MO-153 AA`. Vendor-independent package identity. */
+  jedecOutline: Extracted<string>;
   packageVariants: PackageVariantRecord[];
   vendorLandPattern: { page: number; valuesMm: number[] } | null;
   pinCount: Extracted<number>;
@@ -403,6 +571,7 @@ export interface ResolvedPart {
   packageType: string;
   /** Null when the datasheet prints no drawing we could confirm as this part's. */
   packageOutlineCode: string | null;
+  jedecOutline: string | null;
   /** The land pattern the datasheet prints for this package, in mm. */
   vendorLandPattern: { page: number; valuesMm: number[] } | null;
   pinCount: number;
@@ -421,6 +590,16 @@ export interface ResolvedPart {
     leadContactMm: LeadWidth | null;
     thermalPadLengthMm: number | null;
     thermalPadWidthMm: number | null;
+    landPadLengthMm: number | null;
+    landPadWidthMm: number | null;
+    landSpanMm: number | null;
+    leadSides: 2 | 4 | null;
+    leadForm: "gullwing" | "nolead" | null;
+    vacantLeadSlot: number | null;
+    solderMaskExpansionMm: number | null;
+    solderMaskDefined: "solder-mask-defined" | "non-solder-mask-defined" | null;
+    thermalViaDiameterMm: number | null;
+    thermalViaPitchMm: number | null;
   };
   radiation: {
     tid: string | null;
@@ -543,6 +722,7 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
       manufacturer: part.manufacturer.value ?? "Unknown",
       packageType: part.packageType.value ?? "Unknown package",
       packageOutlineCode: part.packageOutlineCode.value,
+      jedecOutline: part.jedecOutline.value,
       vendorLandPattern: part.vendorLandPattern,
       pinCount: pinCount as number,
       pins,
@@ -558,7 +738,17 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
         leadSpanMm: part.dimensions.leadSpanMm.value,
         leadContactMm: part.dimensions.leadContactMm.value,
         thermalPadLengthMm: part.dimensions.thermalPadLengthMm.value,
-        thermalPadWidthMm: part.dimensions.thermalPadWidthMm.value
+        thermalPadWidthMm: part.dimensions.thermalPadWidthMm.value,
+        landPadLengthMm: part.dimensions.landPadLengthMm.value,
+        landPadWidthMm: part.dimensions.landPadWidthMm.value,
+        landSpanMm: part.dimensions.landSpanMm.value,
+        leadSides: part.dimensions.leadSides.value,
+        leadForm: part.dimensions.leadForm.value,
+        vacantLeadSlot: part.dimensions.vacantLeadSlot.value,
+        solderMaskExpansionMm: part.dimensions.solderMaskExpansionMm.value,
+        solderMaskDefined: part.dimensions.solderMaskDefined.value,
+        thermalViaDiameterMm: part.dimensions.thermalViaDiameterMm.value,
+        thermalViaPitchMm: part.dimensions.thermalViaPitchMm.value
       },
       radiation: {
         tid: part.radiation.tid.value,

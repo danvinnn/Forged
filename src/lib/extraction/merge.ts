@@ -29,8 +29,16 @@ function fieldAt(part: PartRecord, field: ExtractionField): Extracted<unknown> {
       return part.pinCount;
     case "pins":
       return part.pins;
+    case "jedecOutline":
+      return part.jedecOutline;
     default: {
+      // Guarded because the failure mode is silent and total. A top-level field
+      // added to `extractionFields` without a case above falls here, splits to
+      // `[name, undefined]`, indexes to `undefined`, and every caller throws on
+      // `.value`. That is what `jedecOutline` did on 2026-08-13: it typechecked
+      // cleanly and broke 30 tests at runtime.
       const [group, key] = field.split(".") as ["dimensions" | "radiation", string];
+      if (key === undefined) throw new Error(`extraction field "${field}" has no case in fieldAt`);
       return (part[group] as Record<string, Extracted<unknown>>)[key];
     }
   }
@@ -52,6 +60,9 @@ function setFieldAt(part: PartRecord, field: ExtractionField, value: Extracted<u
       return;
     case "pins":
       part.pins = value as Extracted<PinRecord[]>;
+      return;
+    case "jedecOutline":
+      part.jedecOutline = value as Extracted<string>;
       return;
     default: {
       const [group, key] = field.split(".") as ["dimensions" | "radiation", string];

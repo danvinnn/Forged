@@ -1,0 +1,116 @@
+
+> forged@0.1.0 bench:holdout
+> tsx src/lib/__bench__/holdout.ts --model --verbose
+
+Hold-out corpus: 59 parts never inspected
+Model cache: /Users/anthonytang/Desktop/Forged/Forged/.model-cache (229 responses), mode use [may spend]
+
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 21
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 22
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 21
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+cached:    38/59
+READ:      30/38  (79%)  <- the number that predicts a stranger's datasheet
+SHIPS:     14/38  (37%)
+
+Why parts did not read:
+    4  no pins, no count
+       TPS7A4700, LP5907, SN74AUP1G04, TL431
+    4  count but no pins
+       CD4017B, TSZ121, LD39050, STM32L476RG
+
+Read but no bundle:
+   16  no land pattern
+       TLV9002, LMV321, THS3491, DAC8552, TPS54360, SN74HC595, SN74LVC245A, TCA9548A, TPD4E1U06, REF3025, TS922, LSM6DSO, AD620, AD9833, LTC2400, ADXL345
+
+By kind:
+  converter   6/6
+  interface   4/4
+  logic       2/4
+  mcu         2/3
+  opamp       7/8
+  power       5/8
+  reference   1/2
+  sensor      3/3
+
+Model cache:
+  cache hits      50
+  live calls      25 (9 FAILED)
+  INCOMPLETE      9 call(s) never answered, so every number below is a floor.
+  spent THIS RUN  350,404 in, 78,874 out (~$0.30)
+  spent IN TOTAL  ~$4.02 over 245 cached call(s), all runs ever (a floor: failed calls are billed and not cached)
+  tokens saved    1,233,905 in, 262,724 out (~$1.03)
+
+CROSS-CHECK: 0 disagreement(s) on 0/38 parts
+
+MODEL: filled a field on 37/38 parts
+   37  manufacturer
+   34  pinCount
+   31  dimensions.leadCount
+   30  pins
+   28  packageType
+   22  dimensions.bodyLengthMm
+   22  dimensions.bodyWidthMm
+   21  dimensions.pitchMm
+   20  dimensions.bodyHeightMm
+   20  dimensions.leadWidthMm
+   20  dimensions.leadContactMm
+   17  dimensions.landPadLengthMm
+   17  dimensions.landPadWidthMm
+   16  dimensions.landSpanMm
+   15  dimensions.leadSpanMm
+    9  dimensions.leadLengthMm
+    7  dimensions.thermalPadLengthMm
+    7  dimensions.thermalPadWidthMm
+       OPA192: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       TLV9002: manufacturer, pinCount, pins
+       LMV321: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       INA333: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       THS3491: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       INA226: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       ADS1220: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       DAC8552: manufacturer, packageType, pinCount, pins, dimensions.leadCount
+       PCM1808: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       TPS62130: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       TPS54360: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       LM5117: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       LP5907: manufacturer
+       UCC28C43: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       SN74HC595: manufacturer, pinCount, pins
+       SN74LVC245A: manufacturer, pinCount, pins, dimensions.leadCount
+       SN74AUP1G04: manufacturer
+       CD4017B: manufacturer, pinCount, dimensions.leadCount
+       TCA9548A: manufacturer, packageType, pinCount, pins, dimensions.leadCount
+       SN65HVD72: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       ISO7841: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       TPD4E1U06: manufacturer, packageType, pinCount, pins
+       TMP117: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm
+       REF3025: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       TL431: manufacturer
+       MSP430FR2433: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       TS922: manufacturer, pinCount, pins, dimensions.leadCount
+       TSZ121: manufacturer, packageType, pinCount, dimensions.leadCount
+       LD39050: manufacturer, packageType, pinCount, dimensions.leadCount
+       ST1S10: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadContactMm, dimensions.thermalPadLengthMm, dimensions.thermalPadWidthMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm
+       LSM6DSO: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.leadCount
+       STM32L476RG: manufacturer, packageType, pinCount, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       STM32F030C8: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadLengthMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm
+       AD620: manufacturer, pinCount, pins, dimensions.leadCount
+       AD9833: manufacturer, packageType, pinCount, pins, dimensions.leadCount
+       LTC2400: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.leadWidthMm, dimensions.leadSpanMm, dimensions.leadContactMm
+       ADXL345: manufacturer, packageType, pinCount, pins, dimensions.bodyLengthMm, dimensions.bodyWidthMm, dimensions.bodyHeightMm, dimensions.pitchMm, dimensions.leadCount, dimensions.landPadLengthMm, dimensions.landPadWidthMm, dimensions.landSpanMm

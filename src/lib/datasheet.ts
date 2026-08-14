@@ -1236,6 +1236,16 @@ function parseDimensions(doc: DatasheetText, leadCount: Extracted<number>): Pack
     // No deterministic reader either. The exposed pad is dimensioned D2/E2 on a
     // drawing, which is arrows, so only a reader that can SEE the page supplies
     // these. Absent means a part with a pad is refused, which is correct.
+    landPadLengthMm: unknown<number>(),
+    landPadWidthMm: unknown<number>(),
+    landSpanMm: unknown<number>(),
+    leadSides: unknown<2 | 4>(),
+    leadForm: unknown<"gullwing" | "nolead">(),
+    vacantLeadSlot: unknown<number>(),
+    solderMaskExpansionMm: unknown<number>(),
+    solderMaskDefined: unknown<"solder-mask-defined" | "non-solder-mask-defined">(),
+    thermalViaDiameterMm: unknown<number>(),
+    thermalViaPitchMm: unknown<number>(),
     thermalPadLengthMm: unknown<number>(),
     thermalPadWidthMm: unknown<number>(),
     leadCount
@@ -1401,12 +1411,77 @@ const MAX_PACKAGE_HINT_LENGTH = 64;
  * 38, and it is a click, not a lookup: the candidates are the ones this document
  * printed.
  */
+/**
+ * A record with NOTHING read from the document, so the model supplies all of it.
+ *
+ * The switch behind `FORGE_MODEL_ONLY`. Every coverage number this project has
+ * ever produced was the model and this parser MERGED, so what the model reads on
+ * its own has never been measured, and "delete the parser" cannot be decided
+ * without that number. Turning the parser off is the measurement.
+ *
+ * The part number still comes from the FILE NAME, which is not parsing: it is
+ * what the caller said they were looking for. Its method is `user` for the same
+ * reason, since claiming a citation for it would be inventing provenance.
+ */
+function blankRecord(fileName: string): PartRecord {
+  const named = fileName.replace(/\.pdf$/i, "").trim();
+  return {
+    id: randomUUID(),
+    partNumber: named
+      ? { value: named, confidence: 1, method: "user", citation: null }
+      : unknown<string>(),
+    manufacturer: unknown<string>(),
+    packageType: unknown<string>(),
+    packageOutlineCode: unknown<string>(),
+    jedecOutline: unknown<string>(),
+    packageVariants: [],
+    vendorLandPattern: null,
+    exposedPad: false,
+    conflicts: [],
+    pinCount: unknown<number>(),
+    pins: unknown<PinRecord[]>(),
+    dimensions: {
+      bodyLengthMm: unknown<number>(),
+      bodyWidthMm: unknown<number>(),
+      bodyHeightMm: unknown<number>(),
+      pitchMm: unknown<number>(),
+      leadLengthMm: unknown<number>(),
+      leadCount: unknown<number>(),
+      leadWidthMm: unknown<LeadWidth>(),
+      leadSpanMm: unknown<LeadWidth>(),
+      leadContactMm: unknown<LeadWidth>(),
+      landPadLengthMm: unknown<number>(),
+      landPadWidthMm: unknown<number>(),
+      landSpanMm: unknown<number>(),
+      leadSides: unknown<2 | 4>(),
+      leadForm: unknown<"gullwing" | "nolead">(),
+      vacantLeadSlot: unknown<number>(),
+      solderMaskExpansionMm: unknown<number>(),
+      solderMaskDefined: unknown<"solder-mask-defined" | "non-solder-mask-defined">(),
+      thermalViaDiameterMm: unknown<number>(),
+      thermalViaPitchMm: unknown<number>(),
+      thermalPadLengthMm: unknown<number>(),
+      thermalPadWidthMm: unknown<number>()
+    },
+    radiation: {
+      tid: unknown<string>(),
+      see: unknown<string>(),
+      sel: unknown<string>(),
+      qmlClass: unknown<string>()
+    },
+    sourceFileName: fileName,
+    notes: ["Deterministic reader disabled (FORGE_MODEL_ONLY): every value here came from the model."]
+  };
+}
+
 export function buildPartRecord(
   doc: DatasheetText,
   fileName: string,
   sourceUrl?: string,
   hints?: ExtractionHints
 ): PartRecord {
+  if (process.env.FORGE_MODEL_ONLY) return blankRecord(fileName);
+
   const partNumber = findPartNumber(doc, fileName);
   const manufacturer = findManufacturer(doc);
 
@@ -1726,6 +1801,11 @@ export function buildPartRecord(
           region: null
         })
       : unknown<string>(),
+    // Not read deterministically. The JEDEC registration is a line of prose on
+    // the drawing ("Reference JEDEC registration MO-153, variation AA") rather
+    // than a dimension, so the model reads it; this keeps the field present and
+    // honestly empty rather than absent.
+    jedecOutline: unknown<string>(),
     pinCount,
     pins: pins.length > 0 ? extractedValue(pins, pinConfidence, pinCitation) : unknown<PinRecord[]>(),
     // The deterministic readers all prove a gap-free 1..N, so a pad terminal can

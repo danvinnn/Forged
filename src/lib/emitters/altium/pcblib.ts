@@ -168,6 +168,25 @@ function padRecord(pad: Pad, seed: string): Buffer {
   }
   main.writeInt32LE(0, 45); // no hole: this is a surface-mount land
   main.writeDoubleLE(0, 52); // no rotation: the land pattern is already axis-aligned
+
+  // The solder mask clearance the DATASHEET stated, where it stated one.
+  //
+  // Two fields, and both are needed: the value at 94, and the "manual" flag at
+  // 106 that tells Altium to use it instead of the rule from the board's design
+  // rules. Writing the value without the flag stores a number Altium ignores.
+  //
+  // Offsets are from the byte map in ALTIUM.md and check out against the three
+  // this file already writes blind: hole_size at 45, rotation at 52 and the v7
+  // layer id at 114 all fall exactly where that map puts them.
+  //
+  // Left untouched when the datasheet said nothing, so the board's own rule
+  // applies. That is a different instruction from a clearance of zero, and the
+  // KiCad emitter draws the same distinction.
+  if (pad.solderMaskMarginMm !== undefined) {
+    main.writeInt32LE(toAltiumUnits(pad.solderMaskMarginMm), 94);
+    main[106] = 1;
+  }
+
   main.writeUInt32LE(v7LayerId(LAYER.topCopper), 114);
   identityGuid(`${seed}:pad:${pad.number}`).copy(main, 126);
   identityGuid(`${seed}:stack`).copy(main, 142);

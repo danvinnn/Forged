@@ -24,6 +24,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { extractionFields } from "../extraction/contracts";
 import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "../extraction/contracts";
 import { buildPrompt } from "../extraction/models/prompt";
 
@@ -79,8 +80,99 @@ interface CacheEntry {
   /** Recorded so an entry can be traced back to a part by hand. */
   label: string;
   storedAt: string;
+  /** False when the free tier served this call, so it cost nothing to fetch. */
+  billed?: boolean;
+  /**
+   * Which QUESTION TEMPLATE this answer was stored under. See
+   * `promptFingerprint`. Absent on entries written before 2026-08-13, which is
+   * why the census below reports "unknown" as its own bucket rather than
+   * guessing.
+   */
+  prompt?: string;
   usage?: { inputTokens: number; outputTokens: number };
   result: ExtractionResult;
+}
+
+/**
+ * A fingerprint of the QUESTION, with no document in it.
+ *
+ * The cache key is a hash of the whole request, so a change to the prompt
+ * wording strands every entry on disk at once. That is correct, and it is also
+ * the single most expensive thing that can happen here: $4.04 went on nineteen
+ * runs where the cache was cold not because the corpus had grown but because
+ * the prompt had been edited, and nothing said so. The run just quietly re-asked
+ * all 76 questions and looked exactly like a run that hit.
+ *
+ * This is the part of the key that is the same for every part, so it can be
+ * compared against what is on disk WITHOUT parsing a single PDF or rendering a
+ * single page. That is what makes a pre-run warning possible: the answer is
+ * available before anything has been spent.
+ *
+ * Several shapes are hashed together because the prompt branches: the first
+ * pass asks which pages to render and the second does not, and the package hint
+ * and the candidate list each add their own paragraph. Hashing one shape would
+ * miss an edit made to any of the others.
+ */
+export function promptFingerprint(): string {
+  const base: ExtractionRequest = {
+    pages: [],
+    images: [],
+    fileName: "fingerprint.pdf",
+    fields: [...extractionFields]
+  };
+  const shapes: ExtractionRequest[] = [
+    base,
+    { ...base, partNumber: "PART", packageType: "PKG (8)" },
+    { ...base, partNumber: "PART", packageCandidates: ["PKG-A", "PKG-B"] },
+    // The second pass: images present, so the render request drops out.
+    {
+      ...base,
+      partNumber: "PART",
+      images: [{ page: 1, mimeType: "image/png", base64: "", widthPx: 1, heightPx: 1 }]
+    }
+  ];
+  const hash = createHash("sha256");
+  hash.update(`v${CACHE_VERSION}\n`);
+  for (const shape of shapes) hash.update(`${buildPrompt(shape)}\n`);
+  return hash.digest("hex").slice(0, 16);
+}
+
+/**
+ * The most this cache may EVER have cost, in USD, across every run.
+ *
+ * Cumulative, not per-run, and the difference is the whole point. The first
+ * version of this capped a single run, which was the wrong scope and would have
+ * prevented nothing: $4.04 was spent across NINETEEN runs whose largest was
+ * $1.02, so a $2 per-run ceiling never once fired. The damage was the sum of
+ * many individually reasonable runs, each re-asking everything because a prompt
+ * change invalidates every cached answer by design.
+ *
+ * Capping the total is what actually intervenes: it stops at the point where
+ * someone should decide whether the project is worth more money, rather than at
+ * a point no single run reaches.
+ *
+ * Set to 0 to disable, or raise it deliberately when the answer is yes.
+ */
+function spendLimitUsd(): number {
+  const raw = Number(process.env.FORGE_SPEND_LIMIT_USD);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 10;
+}
+
+/**
+ * Thrown when a run hits its spend ceiling. Distinct from a quota error: this
+ * one is OUR limit, the money is still available, and the fix is to decide the
+ * run is worth it rather than to add credit.
+ */
+export class SpendLimitReached extends Error {
+  constructor(readonly spentUsd: number, readonly limitUsd: number) {
+    super(
+      `Stopped: this cache has now cost about $${spentUsd.toFixed(2)} in total, over the ` +
+        `$${limitUsd.toFixed(2)} limit. That is EVERY run, not this one. Answers already ` +
+        `fetched are cached, so a re-run continues from here. Decide whether it is worth ` +
+        `more, then raise it with FORGE_SPEND_LIMIT_USD=<usd>, or 0 to disable.`
+    );
+    this.name = "SpendLimitReached";
+  }
 }
 
 /** Thrown when an offline run has no cached answer. Distinguishable in reports. */
@@ -382,6 +474,18 @@ export function cachingModel(inner: ExtractionModel, mode: CacheMode, labelFor: 
       const cached = mode === "refresh" ? null : readEntry(path);
       if (cached) {
         lastWasHit = true;
+        // A HIT proves this entry was stored under the prompt we just built,
+        // because the prompt is part of the key. So an entry written before
+        // fingerprints existed can be stamped here rather than left "unknown"
+        // forever, and one free `--offline` pass backfills the whole cache.
+        // Only ever fills a blank: an existing fingerprint is never rewritten.
+        if (!cached.prompt) {
+          try {
+            writeFileSync(path, JSON.stringify({ ...cached, prompt: promptFingerprint() }, null, 2));
+          } catch {
+            // Cosmetic. A cache that cannot be re-written still answers.
+          }
+        }
         stats.hits += 1;
         stats.savedInputTokens += cached.usage?.inputTokens ?? 0;
         stats.savedOutputTokens += cached.usage?.outputTokens ?? 0;
@@ -422,10 +526,27 @@ export function cachingModel(inner: ExtractionModel, mode: CacheMode, labelFor: 
         model: inner.name,
         label,
         storedAt: new Date().toISOString(),
+        prompt: promptFingerprint(),
+        billed: !freeTier(),
         usage: result.usage,
         result
       };
       writeFileSync(path, JSON.stringify(entry, null, 2));
+
+      // Stop the run the moment it has spent more than it was allowed to.
+      //
+      // Deliberately AFTER the entry is written: the call that trips the limit
+      // has already been paid for, so discarding its answer would mean paying
+      // for it again on the re-run. The first version of this threw before the
+      // write and did exactly that.
+      if (wasPaidFor(inner.name, !freeTier())) {
+        const limit = spendLimitUsd();
+        // Everything the cache has ever cost, this call included, since the
+        // entry above is already written.
+        const spent = cumulativeSpend().usd;
+        if (limit > 0 && spent > limit) throw new SpendLimitReached(spent, limit);
+      }
+
       return result;
     }
   };
@@ -448,7 +569,43 @@ export function cacheSize(): number {
 const USD_PER_M_INPUT = 0.3;
 const USD_PER_M_OUTPUT = 2.5;
 
-/** Everything the cache has ever been paid for, summed across every run. */
+/**
+ * Whether an entry cost money at all.
+ *
+ * A locally hosted model is free, and pricing its tokens at the cloud model's
+ * rate reports a bill nobody was sent. Caught on the first local run: two calls
+ * against Ollama were reported as `~$0.02`. The whole point of the running
+ * total is that it matches what the account was charged, so an entry that was
+ * never charged must not appear in it.
+ */
+function wasPaidFor(model: string | undefined, billed?: boolean): boolean {
+  // An explicit `false` means the account was on the free tier when this answer
+  // was fetched, so it cost nothing however many tokens it burned. Absent means
+  // billed, which is right for every entry written before this existed.
+  if (billed === false) return false;
+  // Prefix, not equality: the name now carries the model id and thinking budget
+  // when either is overridden, e.g. `gemini:gemini-3.5-flash:think512`. An exact
+  // match would have quietly priced every measurement run at zero, which is the
+  // same class of mistake as pricing free local calls at cloud rates.
+  return model?.startsWith("gemini") ?? false;
+}
+
+/**
+ * Whether this account is on the free tier, where requests are rate limited but
+ * not charged.
+ *
+ * Declared rather than detected, because nothing in a response says which tier
+ * served it. It matters because the cost report and the spend ceiling would
+ * otherwise treat a free measurement run as money spent: the ceiling would stop
+ * a run that cost nothing, and the running total would report a bill the account
+ * never received. Reporting spend that did not happen is the same failure as
+ * missing spend that did, and this project has already made the second one.
+ */
+function freeTier(): boolean {
+  return process.env.FORGE_FREE_TIER === "1";
+}
+
+/** Everything the cache has ever been PAID for, summed across every run. */
 export function cumulativeSpend(): { usd: number; calls: number } {
   const dir = modelCacheDir();
   if (!existsSync(dir)) return { usd: 0, calls: 0 };
@@ -457,7 +614,7 @@ export function cumulativeSpend(): { usd: number; calls: number } {
   let calls = 0;
   for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
     const entry = readEntry(join(dir, file));
-    if (!entry?.usage) continue;
+    if (!entry?.usage || !wasPaidFor(entry.model, entry.billed)) continue;
     input += entry.usage.inputTokens;
     output += entry.usage.outputTokens;
     calls += 1;
@@ -489,7 +646,11 @@ export function projectCost(calls: number): string {
   let sampled = 0;
   for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
     const entry = readEntry(join(dir, file));
-    if (!entry?.usage) continue;
+    // PAID entries only. A local model reports usage too, and averaging its
+    // calls in with the cloud model's prices a run off calls that cost nothing,
+    // which drags the projection down by however much local iteration has been
+    // done. The figure has to match what the account would be charged.
+    if (!entry?.usage || !wasPaidFor(entry.model, entry.billed)) continue;
     input += entry.usage.inputTokens;
     output += entry.usage.outputTokens;
     sampled += 1;
@@ -506,6 +667,120 @@ export function projectCost(calls: number): string {
     `  measured average ${Math.round(avgIn).toLocaleString()} in / ${Math.round(avgOut).toLocaleString()} out per call, over ${sampled} paid calls`,
     `  projected ~$${usd.toFixed(2)}`
   ].join("\n");
+}
+
+/** What is on disk, sorted by whether this run's prompt can still reach it. */
+export interface CacheCensus {
+  /** Stored under the prompt we are about to send. These are the only ones that can hit. */
+  reachable: number;
+  /** Paid for under a DIFFERENT prompt. Money already spent that this run cannot use. */
+  stranded: number;
+  /** Written before the fingerprint existed. Might hit, might not; not guessed at. */
+  unknown: number;
+}
+
+export function cacheCensus(): CacheCensus {
+  const dir = modelCacheDir();
+  const census: CacheCensus = { reachable: 0, stranded: 0, unknown: 0 };
+  if (!existsSync(dir)) return census;
+  const current = promptFingerprint();
+  for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+    const entry = readEntry(join(dir, file));
+    if (!entry) continue;
+    if (!entry.prompt) census.unknown += 1;
+    else if (entry.prompt === current) census.reachable += 1;
+    else census.stranded += 1;
+  }
+  return census;
+}
+
+/**
+ * What this run is about to cost, printed BEFORE it spends anything.
+ *
+ * The ceiling in this file is a backstop: it stops a run after the money is
+ * gone, and a hold-out run stopped halfway is worth nothing because the score
+ * needs every part. It never saves anything. This does, and it is the honest
+ * answer to "how does a ceiling save money": it does not, foresight does.
+ *
+ * The failure it addresses is specific and it happened nineteen times. A change
+ * to the prompt invalidates every cached answer by design, so the next run
+ * silently re-asks the entire corpus. Nothing about that run looks different
+ * from one that hits the cache until the bill arrives, and the bill arrived
+ * three runs late. The one fact that would have stopped it is knowable for free
+ * before the first call: the prompt on disk is not the prompt about to be sent.
+ *
+ * Costs nothing to produce, reads no PDF and calls nothing. It does not block:
+ * the operator reads it and decides, or does not, and the ceiling still catches
+ * what they miss.
+ */
+export function preRunProjection(options: {
+  /** Documents this run will visit. */
+  parts: number;
+  /** Model calls each part can make. Two here: the text pass and the render pass. */
+  callsPerPart: number;
+  /** The model that will actually be called, so a free one is not priced as a paid one. */
+  modelName: string;
+}): string {
+  const { parts, callsPerPart, modelName: model } = options;
+  const census = cacheCensus();
+  const ceiling = parts * callsPerPart;
+  const paid = wasPaidFor(model, !freeTier());
+  const lines = [`Before spending, ${model}:`];
+
+  lines.push(`  corpus          ${parts} parts, up to ${callsPerPart} call(s) each (${ceiling} at most)`);
+  lines.push(
+    `  cached answers  ${census.reachable} reachable, ${census.stranded} stranded` +
+      (census.unknown > 0 ? `, ${census.unknown} unknown (stored before this was recorded)` : "")
+  );
+
+  if (!paid) {
+    lines.push(
+      freeTier() && model.startsWith("gemini")
+        ? "  cost            $0.00, free tier. Rate limited, not charged."
+        : "  cost            $0.00, this model is local"
+    );
+    return lines.join("\n");
+  }
+
+  // The live-call count is a CEILING, not a prediction. Which requests hit
+  // cannot be known without building every one of them, which means parsing and
+  // rendering the whole corpus; the point of this is to be free. So it reports
+  // the worst case and says that is what it is.
+  lines.push(projectCost(ceiling).replace(/^ {2}(\d+) live calls needed$/m, "  at most $1 live calls"));
+
+  const total = cumulativeSpend();
+  const limit = spendLimitUsd();
+  lines.push(
+    `  spent already   ~$${total.usd.toFixed(2)} over ${total.calls} call(s)` +
+      (limit > 0 ? `, ceiling $${limit.toFixed(2)}` : ", no ceiling set")
+  );
+
+  // The diagnosis, which is the part worth printing. A cold cache is normal on a
+  // new corpus and a warning sign after a prompt edit, and the two are
+  // indistinguishable from the run itself.
+  if (census.stranded > 0 && census.reachable === 0) {
+    lines.push(
+      `  WHY IT IS COLD  the prompt changed: all ${census.stranded} stored answers were paid for ` +
+        `under a different question and CANNOT be hit. This run re-asks everything.`
+    );
+  } else if (census.stranded > census.reachable && census.stranded > 0) {
+    lines.push(
+      `  NOTE            ${census.stranded} answers are stranded under older prompts, ` +
+        `so most of what is on disk cannot help.`
+    );
+  } else if (census.reachable === 0 && census.unknown === 0 && census.stranded === 0) {
+    lines.push("  WHY IT IS COLD  the cache is empty. A first run pays for everything.");
+  } else if (census.unknown > census.reachable) {
+    // Answerable for free, so say how rather than guessing. `--offline` replays
+    // the corpus without calling anything and stamps every entry it hits, which
+    // turns this line into a real reachable/stranded split.
+    lines.push(
+      `  UNSURE          ${census.unknown} answers predate the fingerprint, so how much of this ` +
+        `run hits is unknown. \`--offline\` costs nothing and settles it.`
+    );
+  }
+
+  return lines.join("\n");
 }
 
 export function formatCacheStats(stats: CacheStats): string {

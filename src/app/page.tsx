@@ -51,6 +51,7 @@ const defaultPart: PartRecord = {
   manufacturer: nothing<string>(),
   packageType: nothing<string>(),
   packageOutlineCode: nothing<string>(),
+  jedecOutline: nothing<string>(),
   packageVariants: [],
   vendorLandPattern: null,
   exposedPad: false,
@@ -67,7 +68,17 @@ const defaultPart: PartRecord = {
     leadWidthMm: nothing<LeadWidth>(),
     leadSpanMm: nothing<LeadWidth>(), leadContactMm: nothing<LeadWidth>(),
     thermalPadLengthMm: nothing<number>(),
-    thermalPadWidthMm: nothing<number>()
+    thermalPadWidthMm: nothing<number>(),
+    landPadLengthMm: nothing<number>(),
+    landPadWidthMm: nothing<number>(),
+    landSpanMm: nothing<number>(),
+    leadSides: nothing<2 | 4>(),
+    leadForm: nothing<"gullwing" | "nolead">(),
+    vacantLeadSlot: nothing<number>(),
+    solderMaskExpansionMm: nothing<number>(),
+    solderMaskDefined: nothing<"solder-mask-defined" | "non-solder-mask-defined">(),
+    thermalViaDiameterMm: nothing<number>(),
+    thermalViaPitchMm: nothing<number>()
   },
   radiation: {
     tid: nothing<string>(),

@@ -20,11 +20,8 @@ export async function makeExtractionModel(mode: DeploymentMode): Promise<Extract
       if (model.isConfigured()) return model;
     }
     // A commercial deploy may still prefer a self-hosted model.
-    if (process.env.FORGE_LOCAL_MODEL_URL) {
-      const { LocalExtractionModel } = await import("./models/local");
-      const model = new LocalExtractionModel();
-      if (model.isConfigured()) return model;
-    }
+    const local = await makeLocalModel();
+    if (local) return local;
     return null;
   }
 
@@ -32,11 +29,32 @@ export async function makeExtractionModel(mode: DeploymentMode): Promise<Extract
   // endpoint must resolve to a private address. Controlled datasheets cannot
   // leave the customer network, so a public endpoint here is a misconfiguration
   // that the model itself refuses (see models/local.ts).
-  if (process.env.FORGE_LOCAL_MODEL_URL) {
-    const { LocalExtractionModel } = await import("./models/local");
-    const model = new LocalExtractionModel();
-    if (model.isConfigured()) return model;
+  return (await makeLocalModel()) ?? null;
+}
+
+/**
+ * The local model, in whichever shape the environment asked for.
+ *
+ * One function rather than the same block written twice, because it WAS written
+ * twice and the two copies drifted: the focused variant was wired into the
+ * commercial branch only, so an air-gapped run silently used the wide-question
+ * model and the split looked like it had failed.
+ */
+async function makeLocalModel(): Promise<ExtractionModel | null> {
+  if (!process.env.FORGE_LOCAL_MODEL_URL) return null;
+
+  // Opt-in only. A small local model answers a NARROW question far better than a
+  // wide one (measured on qwen2.5vl:7b: nothing at all for the whole prompt over
+  // the whole document, 8/8 pin names for the pin table over one page), but it
+  // costs one call per group, so it is never the default and never the cloud
+  // model's problem. Nothing downstream can tell the two apart.
+  if (process.env.FORGE_LOCAL_FOCUSED) {
+    const { FocusedLocalExtractionModel } = await import("./models/local-focused");
+    const focused = new FocusedLocalExtractionModel();
+    if (focused.isConfigured()) return focused;
   }
 
-  return null;
+  const { LocalExtractionModel } = await import("./models/local");
+  const model = new LocalExtractionModel();
+  return model.isConfigured() ? model : null;
 }

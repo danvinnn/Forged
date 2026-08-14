@@ -106,7 +106,7 @@ const NOLEAD_TOE_BEYOND_BODY_MM = 0.2;
 /**
  * Courtyard excess in mm beyond the land extents, per IPC-7351B density level.
  */
-const COURTYARD_EXCESS: Record<DensityLevel, number> = { A: 0.5, B: 0.25, C: 0.12 };
+export const COURTYARD_EXCESS: Record<DensityLevel, number> = { A: 0.5, B: 0.25, C: 0.12 };
 
 /**
  * Board fabrication and placement allowances in mm.
@@ -168,6 +168,17 @@ export interface LandPattern {
   /** Half-extent of the courtyard from the centre line, mm. */
   courtyardHalfMm: number;
   densityLevel: DensityLevel;
+  /**
+   * Where the pattern came from, so nothing downstream can describe it wrongly.
+   *
+   * `printed` means the datasheet drew this footprint itself and these are its
+   * numbers; the density level then applies ONLY to the courtyard margin, which
+   * is a board convention rather than part data. Absent or `ipc7351b` means the
+   * pattern was computed here. The generated file states which, because "the
+   * vendor recommends this" and "we derived this from a standard" are different
+   * claims and a reviewer is entitled to tell them apart.
+   */
+  source?: "printed" | "ipc7351b";
 }
 
 export interface LandPatternOptions {

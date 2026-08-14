@@ -18,6 +18,7 @@ function record(over: Record<string, unknown> = {}): PartRecord {
     pinCount: field<number>(),
     pins: field<PinRecord[]>(),
     packageOutlineCode: field<string>(),
+    jedecOutline: field<string>(),
     packageVariants: [],
     notes: [],
     dimensions: {
@@ -31,7 +32,17 @@ function record(over: Record<string, unknown> = {}): PartRecord {
       leadSpanMm: field<{ minMm: number; maxMm: number }>(),
       leadContactMm: field<{ minMm: number; maxMm: number }>(),
       thermalPadLengthMm: field<number>(),
-      thermalPadWidthMm: field<number>()
+      thermalPadWidthMm: field<number>(),
+      landPadLengthMm: field<number>(),
+      landPadWidthMm: field<number>(),
+      landSpanMm: field<number>(),
+      leadSides: field<2 | 4>(),
+      leadForm: field<"gullwing" | "nolead">(),
+      vacantLeadSlot: field<number>(),
+      solderMaskExpansionMm: field<number>(),
+      solderMaskDefined: field<"solder-mask-defined" | "non-solder-mask-defined">(),
+      thermalViaDiameterMm: field<number>(),
+      thermalViaPitchMm: field<number>()
     },
     radiation: {
       tid: field<string>(),

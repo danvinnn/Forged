@@ -1,0 +1,55 @@
+
+> forged@0.1.0 bench:extraction
+> tsx src/lib/__bench__/extraction.ts --model --parts ADS8688,LIS3DH,LM358,SN65HVD230,UCC27524,INA240,OPA333,ADR4525,AD8232,ADG5412 --refresh
+
+
+Extraction coverage: 10 parts (10 named)
+Cache: /Users/anthonytang/Desktop/Forged/Forged/.bench-cache (46 PDFs)
+Model cache: /Users/anthonytang/Desktop/Forged/Forged/.model-cache (257 responses), mode refresh [may spend]
+
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+category              pdf    ident  pkg    geom   rad    cited  fields ships
+----------------------------------------------------------------------------
+analog                8/8     56%     4%     8%    19%     4%     0%     0%
+power-discrete        1/1     50%     0%     0%     0%     0%     0%     0%
+logic-interface       1/1     50%     0%     0%     0%     0%     0%     0%
+----------------------------------------------------------------------------
+TOTAL                 10/10   55%     3%     7%    15%     3%     0%     0%
+
+Parse latency over 10 parts: p50 43462ms, p95 78050ms, max 78050ms
+Slowest: LM358 78050ms/68p, INA240 45243ms/39p, SN65HVD230 44032ms/43p
+
+Fields complete:  0/10 parsed parts (0%)
+SHIPS A BUNDLE:   0/10 parsed parts (0%)   <- the product
+10/10 of the corpus had a datasheet at all.
+
+PIN NAMES:        0/1 parts match the hand-read oracle (38 parts have an entry)
+  LM358              pin 2   got "IN1+" want "IN1-"
+  LM358              pin 3   got "IN1-" want "IN1+"
+PACKAGE FAMILY:   0/0 designators name a package the datasheet describes (28 parts have an entry)
+
+Blocked by:
+    9  missing pinCount,pins: OPA333, INA240, LIS3DH, ADS8688, ADG5412, ADR4525, AD8232, UCC27524, SN65HVD230
+    1  missing pinCount: LM358
+
+Model cache:
+  cache hits      0
+  live calls      10
+  spent THIS RUN  0 in, 0 out (~$0.00)
+  spent IN TOTAL  ~$4.04 over 246 cached call(s), all runs ever (a floor: failed calls are billed and not cached)
+
+Model pass: filled at least one field on 3/10 parts.
+    3  radiation.tid
+    1  manufacturer
+    1  pins
+    1  dimensions.bodyLengthMm
+    1  dimensions.bodyWidthMm
+    1  dimensions.bodyHeightMm
+    1  dimensions.leadWidthMm
+    1  dimensions.leadSpanMm
+    1  radiation.see
+    1  radiation.sel
+    1  radiation.qmlClass
+

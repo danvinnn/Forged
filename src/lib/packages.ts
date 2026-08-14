@@ -640,6 +640,16 @@ const MAX_LEAD_WIDTH_FRACTION_OF_PITCH = 0.75;
 export interface DrawnPackageEvidence {
   /** Code printed on the drawing, e.g. `DW0016B`. */
   outlineCode?: string | null;
+  /**
+   * The lead form READ off the drawing, when it was read.
+   *
+   * Outranks the package-name guess below. Until 2026-08-13 the form was
+   * inferred purely from the designator matching `NO_LEAD_FAMILY`, so a part
+   * whose drawing plainly showed pads underneath but whose name did not contain
+   * QFN, DFN or SON was laid out with the gull-wing model. A name is a
+   * designator; the drawing is the thing that shows the lead.
+   */
+  leadForm?: "gullwing" | "nolead" | null;
   /** Pitch read off the drawing, used to check the family rather than to place pads. */
   pitchMm?: number | null;
   /** Lead width read off the drawing, used in place of the family's. */
@@ -650,6 +660,16 @@ export interface DrawnPackageEvidence {
   leadLengthMm?: number | null;
   /** Lead contact length as the drawing prints it, min to max. Preferred. */
   leadContactMm?: LeadWidth | null;
+  /**
+   * Body size, which for a NO-LEAD package is what the land is placed against.
+   *
+   * A gull-wing package is laid out from the lead span, tip to tip. A no-lead
+   * package has no leads to span anything: its terminals end at the body edge,
+   * so the body IS the span. That is the only reason these are here, and the
+   * gull-wing path deliberately ignores them.
+   */
+  bodyLengthMm?: number | null;
+  bodyWidthMm?: number | null;
   /**
    * The land pattern callouts the datasheet PRINTS, in mm. Checked against a
    * pattern derived from this part's own drawing; see `packageFromDrawing`.
@@ -673,6 +693,29 @@ export interface DrawnPackageEvidence {
  */
 const GULLWING_FAMILY =
   /\b(?:SOIC|SOP|SSOP|TSSOP|HTSSOP|VSSOP|HVSSOP|MSOP|MINISO|TSOT|SOT|LQFP|TQFP|PQFP|HTQFP|QFP|CFP|GFP|FLATPACK|FLAT)\b/i;
+
+/**
+ * Families whose terminals END AT THE BODY EDGE: QFN, DFN, SON and their
+ * prefixed spellings (VQFN, WSON, VSON, UQFN).
+ *
+ * These exist so no-lead packages stop being refused for lacking a dimension
+ * they cannot have. A gull-wing land is placed from the lead span, tip to tip;
+ * a no-lead package has no leads, so the body edge is the reference and the
+ * rule is the one already recovered in `ipc7351.ts` from four TI drawings.
+ *
+ * Deliberately NOT a new entry in the family table. The table holds hand-read
+ * constants per family and needs a person for every new one, which is why 16
+ * parts that parse completely still produce nothing. This route needs no
+ * per-family work at all: the drawing states the four numbers and the same
+ * deterministic arithmetic runs.
+ *
+ * The leading `[A-Z]{0,2}` covers the vendor prefixes without enumerating them,
+ * and the trailing `\d*` covers a glued terminal count (`QFN16`, `DFN6`).
+ */
+const NO_LEAD_FAMILY = /\b[A-Z]{0,2}(?:QFN|DFN|SON)\d*\b/i;
+
+/** Bodies squarer than this are treated as square; see `noLeadFromDrawing`. */
+const SQUARE_BODY_TOLERANCE_MM = 0.05;
 
 /**
  * `SOT` is on that list even though the name does not name a lead form, and the
@@ -720,11 +763,181 @@ const GULLWING_FAMILY =
  * them. A single missing or implausible value means no footprint, which is the
  * same answer the caller got before this existed.
  */
+/**
+ * The terminal length as a single nominal, which is what both routes want.
+ *
+ * `leadLengthMm` is the nominal where a reader found one printed and
+ * `leadContactMm` is the min-max pair. Only the rendered-page reader fills the
+ * pair, which is why the fallback matters: on 2026-08-10 it filled
+ * `leadContactMm` on 4 of 4 parts and `leadLengthMm` on none.
+ */
+function terminalLength(drawn: DrawnPackageEvidence): LeadWidth | null {
+  const printed = drawn.leadContactMm;
+  const nominal =
+    drawn.leadLengthMm && drawn.leadLengthMm > 0
+      ? drawn.leadLengthMm
+      : printed && printed.minMm > 0 && printed.maxMm >= printed.minMm
+        ? (printed.minMm + printed.maxMm) / 2
+        : null;
+  // A zero-width range is the honest translation of a single printed figure:
+  // widening it would invent a tolerance the document does not state.
+  return nominal !== null ? { minMm: nominal, maxMm: nominal } : null;
+}
+
+/**
+ * A no-lead land, derived from this part's own drawing.
+ *
+ * Same shape and same guards as the gull-wing route, with one dimension
+ * swapped: the BODY replaces the lead span, because a no-lead terminal ends at
+ * the body edge and there is nothing to measure tip to tip. The arithmetic is
+ * `noLeadLandPattern` in `ipc7351.ts`, recovered from four TI drawings, and
+ * nothing here computes geometry of its own.
+ *
+ * This exists so that adding QFN support does not mean adding QFN-16, QFN-20,
+ * QFN-24 and DFN-6 to a hand-read table one at a time. There is no per-family
+ * work: the drawing states the numbers and the same code runs for all of them.
+ *
+ * REFUSES A RECTANGULAR BODY, deliberately. One `LandPattern` describes one
+ * opposing pair of rows, and on a square package the other pair is the same
+ * pattern turned 90 degrees. On a rectangular one it is not, so accepting it
+ * would put two of the four rows in the wrong place. That is the same
+ * restriction the characterised quad entries carry.
+ */
+function noLeadFromDrawing(
+  packageType: string,
+  pinCount: number,
+  drawn: DrawnPackageEvidence
+): PackageDefinition | null {
+  const width = drawn.leadWidthMm;
+  const pitch = drawn.pitchMm;
+  const contact = terminalLength(drawn);
+  const bodyLength = drawn.bodyLengthMm;
+  const bodyWidth = drawn.bodyWidthMm;
+
+  // All five or nothing, exactly as the gull-wing route demands all four. This
+  // has no JEDEC outline behind it to fall back on.
+  if (!width || !contact || !pitch || !bodyLength || !bodyWidth) return null;
+  if (bodyLength <= 0 || bodyWidth <= 0 || pitch <= 0) return null;
+  if (width.minMm <= 0 || width.maxMm < width.minMm) return null;
+
+  // QFN is four rows; DFN and SON are two.
+  const quad = QUAD_FLAT_PACK.test(packageType);
+  const perSide = quad ? pinCount / 4 : Math.ceil(pinCount / 2);
+  if (!Number.isInteger(perSide) || perSide < 2) return null;
+
+  const across = Math.min(bodyLength, bodyWidth);
+  const along = Math.max(bodyLength, bodyWidth);
+
+  // A QUAD package must be square, and a DUAL one need not be.
+  //
+  // One `LandPattern` describes one opposing PAIR of rows. On a square quad the
+  // other pair is the same pattern turned 90 degrees; on a rectangular one it is
+  // not, and it also needs the per-side terminal counts, which the pin count
+  // cannot give: 20 terminals on a 4.5 x 3.5 body is not 5 a side. Both of those
+  // are readable off the drawing and neither is read today, so it refuses.
+  //
+  // A DUAL package has only ONE pair of rows, so a rectangular body is not just
+  // acceptable, it is the normal case: every SOIC and every DFN is longer than
+  // it is wide. Requiring square here refused correct packages for no reason.
+  if (quad && Math.abs(bodyLength - bodyWidth) > SQUARE_BODY_TOLERANCE_MM) return null;
+
+  // Which dimension the rows sit ACROSS, taken from the geometry rather than
+  // from the labels. `bodyLengthMm` and `bodyWidthMm` are not reliably the long
+  // and the short one: an INA226 prints "3.00 mm x 4.90 mm" where 4.90 is the
+  // lead span, and a PCM1808 prints its width first. The rows have to fit along
+  // the longer side, so the shorter one is what they sit across.
+  const body = quad ? (bodyLength + bodyWidth) / 2 : across;
+
+  // The row must actually fit on the side it runs along.
+  if (!quad && (perSide - 1) * pitch >= along) return null;
+
+  // The same plausibility checks the gull-wing route uses, and for the same
+  // reasons: a terminal cannot occupy most of the pitch beside it, and two
+  // terminals cannot be longer than the body they both sit inside.
+  if (width.maxMm > MAX_LEAD_WIDTH_FRACTION_OF_PITCH * pitch) return null;
+  if (2 * contact.maxMm >= body) return null;
+
+  const lead: LeadDimensions = {
+    form: "nolead",
+    span: { minMm: body, maxMm: body },
+    contact,
+    width
+  };
+
+  // The datasheet's own printed land pattern is the only independent check this
+  // route has, so a disagreement is a refusal rather than a note.
+  const printed = drawn.vendorLandMm;
+  if (printed && printed.length > 0) {
+    try {
+      if (landDisagreements(printed, computeLandPattern(lead)).length > 0) return null;
+    } catch {
+      return null;
+    }
+  }
+
+  return {
+    family: `${packageType} (from drawing)`,
+    arrangement: quad ? "quad" : "dual",
+    pitchMm: pitch,
+    pinCounts: { min: pinCount, max: pinCount },
+    source:
+      `Derived from this part's own package drawing rather than from a characterised family: ` +
+      `body ${body} mm square, terminal width ${width.minMm}-${width.maxMm} mm, terminal length ` +
+      `${contact.minMm} mm, pitch ${pitch} mm. Laid out by the no-lead rule read off four TI ` +
+      `drawings (land span = body + 0.4 mm, pad length = terminal + 0.2 mm), which reproduces ` +
+      `TI's published patterns exactly and is a vendor house rule rather than IPC-7351B.`,
+    lead,
+    // Never used: built FOR a known designator rather than selected by matching.
+    match: /(?!)/
+  };
+}
+
 function packageFromDrawing(
   packageType: string,
   pinCount: number,
   drawn: DrawnPackageEvidence
 ): PackageDefinition | null {
+  // The form the drawing states, where it was read, otherwise the designator's
+  // guess. A read beats an inference.
+  const form = drawn.leadForm ?? (NO_LEAD_FAMILY.test(packageType) ? "nolead" : null);
+
+  // A no-lead package is laid out from the BODY, so it takes its own route
+  // before the gull-wing gate below refuses it for lacking a lead span, which
+  // is a dimension it cannot have.
+  // A no-lead package is NOT laid out from an invented rule.
+  //
+  // `noLeadFromDrawing` was recovered by reverse-engineering four TI package
+  // drawings, because IPC-7351B's own no-lead fillet goals are not transcribed
+  // in `ipc7351.ts` and inventing them is the failure that module exists to
+  // prevent. It reproduces those four drawings exactly and has no standing on
+  // anyone else's silicon, so applying it to an ADI or ST part is one vendor's
+  // house rule imposed on another's.
+  //
+  // Retired on 2026-08-13 under the rule the project now works to: everything
+  // about the part comes from its datasheet, everything about the joint comes
+  // from the datasheet where it printed a footprint and otherwise from a
+  // setting defaulting to the industry standard, and nothing is invented. This
+  // was the last invented thing.
+  //
+  // What it costs: measured beforehand, 0 of the 12 parts then shipping from the
+  // tuned corpus reached a bundle through it. A no-lead package whose datasheet
+  // prints its own footprint still builds from that, which is the common case.
+  // One that prints neither now ASKS, which is the honest answer to a number
+  // nobody has.
+  //
+  // What would bring it back properly: transcribing IPC-7351B's published
+  // no-lead goals from the standard itself, and pinning the result to a known
+  // land pattern in a test, exactly as the gull-wing table was.
+  if (form === "nolead") return null;
+
+  // An UNREAD form is not an assumption of gull-wing. The gull-wing model
+  // applied to a no-lead package computes a fillet around a lead that does not
+  // exist, and the result looks entirely plausible in CAD. Only proceed where
+  // the drawing said so, or where the designator names a gull-wing family
+  // outright and the drawing offers a lead span, which a no-lead package cannot
+  // have.
+  if (form === null && !drawn.leadSpanMm) return null;
+
   const span = drawn.leadSpanMm;
   const width = drawn.leadWidthMm;
   const pitch = drawn.pitchMm;
@@ -752,15 +965,7 @@ function packageFromDrawing(
   // fallback is what lets a model-read drawing produce a footprint at all: on
   // 2026-08-10 it filled `leadContactMm` on 4 of 4 parts and `leadLengthMm` on
   // none, so every one of them stopped here.
-  const printedL = drawn.leadContactMm;
-  const nominalL =
-    drawn.leadLengthMm && drawn.leadLengthMm > 0
-      ? drawn.leadLengthMm
-      : printedL && printedL.minMm > 0 && printedL.maxMm >= printedL.minMm
-        ? (printedL.minMm + printedL.maxMm) / 2
-        : null;
-  const contact: LeadWidth | null =
-    nominalL !== null ? { minMm: nominalL, maxMm: nominalL } : null;
+  const contact = terminalLength(drawn);
 
   if (!span || !width || !contact || !pitch) return null;
   if (!GULLWING_FAMILY.test(packageType)) return null;

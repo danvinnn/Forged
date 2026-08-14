@@ -1818,21 +1818,7 @@ function readSideBySideTable(
   };
 }
 
-/**
- * Aggregate diagnostic: which gate refused a page, counted across a corpus.
- *
- * Gated on an env var and off in every normal run. It exists so the hold-out can
- * be studied as a STATISTIC without opening any document in it, which is the only
- * way to work that corpus without burning it.
- */
-const REFUSALS: string[] = [];
-export function drainRefusals(): string[] {
-  const drained = [...REFUSALS];
-  REFUSALS.length = 0;
-  return drained;
-}
 function refuse(reason: string, page?: number): null {
-  if (process.env.FORGE_DEBUG_REFUSAL) REFUSALS.push(`${page ?? "?"}|${reason}`);
   return null;
 }
 

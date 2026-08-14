@@ -12,7 +12,7 @@
  * That is a debugging convenience, not a position in the pipeline.
  */
 
-import { type FootprintGeometry, type SymbolGeometry } from "../geometry";
+import { type FootprintGeometry, type Pad, type SymbolGeometry } from "../geometry";
 import { type PinRecord } from "../types";
 
 /**
@@ -43,6 +43,18 @@ export interface KicadLinks {
  */
 function kicadString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
+}
+
+/**
+ * The datasheet's own solder mask clearance, when it stated one.
+ *
+ * Emitted as `solder_mask_margin`, which KiCad applies per pad and which
+ * overrides the board default. Omitted entirely when the datasheet was silent,
+ * so a board house default still applies; writing 0 there would be a different
+ * and much stronger instruction than "not stated".
+ */
+function maskMargin(pad: Pad): string {
+  return pad.solderMaskMarginMm === undefined ? "" : ` (solder_mask_margin ${mm(pad.solderMaskMarginMm)})`;
 }
 
 function mm(value: number): string {
@@ -89,7 +101,7 @@ export function emitKicadFootprint(geometry: FootprintGeometry, links: KicadLink
     // paste it 1:1, which on a thermal pad floats the package off its leads.
     if (pad.pasteApertures && pad.pasteApertures.length > 0) {
       lines.push(
-        `  (pad "${kicadString(pad.number)}" smd ${pad.shape} (at ${mm(pad.centre.xMm)} ${mm(pad.centre.yMm)}) (size ${mm(pad.widthMm)} ${mm(pad.heightMm)}) (layers "F.Cu" "F.Mask") (roundrect_rratio 0.25))`
+        `  (pad "${kicadString(pad.number)}" smd ${pad.shape} (at ${mm(pad.centre.xMm)} ${mm(pad.centre.yMm)}) (size ${mm(pad.widthMm)} ${mm(pad.heightMm)}) (layers "F.Cu" "F.Mask")${maskMargin(pad)} (roundrect_rratio 0.25))`
       );
       for (const aperture of pad.pasteApertures) {
         lines.push(
@@ -99,7 +111,20 @@ export function emitKicadFootprint(geometry: FootprintGeometry, links: KicadLink
       continue;
     }
     lines.push(
-      `  (pad "${kicadString(pad.number)}" smd ${pad.shape} (at ${mm(pad.centre.xMm)} ${mm(pad.centre.yMm)}) (size ${mm(pad.widthMm)} ${mm(pad.heightMm)}) (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.25))`
+      `  (pad "${kicadString(pad.number)}" smd ${pad.shape} (at ${mm(pad.centre.xMm)} ${mm(pad.centre.yMm)}) (size ${mm(pad.widthMm)} ${mm(pad.heightMm)}) (layers "F.Cu" "F.Paste" "F.Mask")${maskMargin(pad)} (roundrect_rratio 0.25))`
+    );
+  }
+
+  // Thermal vias, as the datasheet's own land pattern drawing dimensions them.
+  //
+  // Emitted with an EMPTY pad number on every copper layer, which is how KiCad
+  // represents a via inside a footprint. They must not carry the thermal pad's
+  // number: that would make each one a separate terminal in the netlist, and a
+  // ratsnest of phantom connections is worse than no vias at all.
+  for (const via of geometry.thermalVias) {
+    lines.push(
+      `  (pad "" thru_hole circle (at ${mm(via.centre.xMm)} ${mm(via.centre.yMm)}) ` +
+        `(size ${mm(via.padMm)} ${mm(via.padMm)}) (drill ${mm(via.drillMm)}) (layers "*.Cu" "*.Mask"))`
     );
   }
 

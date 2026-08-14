@@ -29,6 +29,34 @@ const FIELD_GUIDE: Record<ExtractionField, string> = {
     "length of the EXPOSED THERMAL PAD on the underside of the package (drawing dimension D2 or E2, sometimes labelled 'exposed pad' or 'thermal pad'), in millimetres, as a number. Null if the package has no exposed pad.",
   "dimensions.thermalPadWidthMm":
     "width of the EXPOSED THERMAL PAD on the underside of the package, in millimetres, as a number. Null if the package has no exposed pad.",
+  // The three below come off the datasheet's OWN recommended footprint drawing,
+  // which is a different page from the package outline: the outline dimensions
+  // the PART, this dimensions the COPPER the part is soldered to. Vendors
+  // dimension it differently (TI prints pad size and centre span, ST prints the
+  // inner gap and the outer extent), so the guide asks for the three numbers a
+  // footprint needs rather than for a particular vendor's callouts.
+  "dimensions.landPadLengthMm":
+    "from the datasheet's OWN RECOMMENDED FOOTPRINT / LAND PATTERN drawing (a separate page from the package outline, captioned e.g. 'LAND PATTERN EXAMPLE', 'RECOMMENDED FOOTPRINT' or 'Footprint example'): the length of ONE land, in millimetres, measured along the direction the lead points. Null if the datasheet prints no such drawing.",
+  "dimensions.landPadWidthMm":
+    "from the same RECOMMENDED FOOTPRINT drawing: the width of ONE land, in millimetres, across the lead. This is the SMALLER of the two land dimensions on a gull-wing package. Null if the datasheet prints no such drawing.",
+  "dimensions.landSpanMm":
+    "from the same RECOMMENDED FOOTPRINT drawing: the CENTRE-TO-CENTRE distance between the two opposing rows of lands, in millimetres. Some vendors print this directly; others print the inner gap and the outer extent instead, in which case it is the average of those two. Null if the datasheet prints no such drawing.",
+  "dimensions.leadSides":
+    "how many SIDES of the package carry leads, counted on the package outline drawing: 2 for a package with two opposing rows (SOIC, TSSOP, SOT-23, SON), 4 for one with leads or pads on all four sides (QFP, QFN, LFCSP). Return the number 2 or 4. Null if the drawing does not show it.",
+  "dimensions.leadForm":
+    "how the leads leave the package, from the package outline drawing. Answer exactly 'gullwing' for leads formed out and down onto the board (SOIC, TSSOP, SOT, QFP, SSOP), or 'nolead' for flat pads on the underside of the body with no formed lead (QFN, DFN, SON, LGA). Null if the drawing does not make it clear.",
+  "dimensions.vacantLeadSlot":
+    "ONLY for a two-row package whose rows hold different numbers of leads, e.g. a 5-lead SOT-23 with 3 leads on one side and 2 on the other. Counting lead positions along the SHORTER row from the pin 1 end starting at 1, which position has no lead? On a standard 5-lead SOT-23 the answer is 2, because the middle position of the two-lead side is empty. Null when both rows carry the same number of leads.",
+  "dimensions.solderMaskExpansionMm":
+    "from the RECOMMENDED FOOTPRINT / LAND PATTERN drawing's solder mask details: the solder mask clearance around each land in millimetres, printed as e.g. '0.05 MIN ALL AROUND' or '0.07 MAX ALL AROUND'. Null if the drawing does not state it.",
+  "dimensions.solderMaskDefined":
+    "from the same solder mask details: whether the land is defined by the copper or by the mask opening. Answer exactly 'non-solder-mask-defined' or 'solder-mask-defined'. Drawings often show both and mark one PREFERRED; report the preferred one. Null if not stated.",
+  "dimensions.thermalViaDiameterMm":
+    "drill diameter of the thermal vias under the exposed pad, in millimetres, from the land pattern drawing, printed as e.g. 'VIA (0.35)'. Null if the package has no exposed pad or the drawing shows no vias.",
+  "dimensions.thermalViaPitchMm":
+    "centre-to-centre spacing of the thermal via grid under the exposed pad, in millimetres. Null if not shown.",
+  jedecOutline:
+    "the JEDEC outline registration the package drawing cites, e.g. 'MO-153 AA' or 'MS-012 AA', usually printed as 'Reference JEDEC registration ...'. This is the industry-wide package identity, NOT the vendor's own outline code such as PW0008A. Null if the drawing cites none.",
   "radiation.tid": "total ionizing dose rating, e.g. '100krad(Si)'",
   "radiation.see": "single event effects rating",
   "radiation.sel": "single event latch-up rating",
@@ -109,7 +137,16 @@ ${wantsDrawing ? "- the package outline / mechanical drawing page for THIS part'
 Name at most 8 pages, fewest first, and only pages you actually saw in this document. Return an
 empty list if the text alone was enough. Answer every field you already can; a page request is not
 a reason to leave a field null.
-`;
+${
+  wantsPins
+    ? `
+Also return "pinTablePages": the page number(s) carrying the PIN TABLE or terminal-function table
+for the requested part. This is usually NOT the same page as the mechanical drawing. If the document
+covers several packages with different pin assignments, name the page for EACH of them rather than
+choosing between them here.
+`
+    : ""
+}`;
 }
 
 function imageGuidance(pageNumbers: number[]): string {
@@ -152,7 +189,7 @@ export function buildPrompt(request: ExtractionRequest): string {
 
   const contract = `Respond with JSON only, no markdown fences and no commentary, in exactly this shape:
 {"values": {"<field>": {"value": <value or null>, "page": <page number or null>}}, "notes": ["<observation>"]${
-    askPages ? ', "pagesWorthRendering": [<page number>, ...]' : ""
+    askPages ? ', "pagesWorthRendering": [<page number>, ...], "pinTablePages": [<page number>, ...]' : ""
   }}`;
 
   return `You are extracting structured data from an electronics datasheet for a rad-hard component intake tool. Accuracy matters more than completeness: a wrong value is far worse than no value.
@@ -222,18 +259,87 @@ function coercePage(raw: unknown): number | null {
  * does not fit the contract. A malformed field is dropped, never coerced into a
  * plausible-looking value.
  */
+/**
+ * Completes a response that was cut off, WITHOUT inventing any part of a value.
+ *
+ * Measured on 2026-08-13 against `gemini-3.5-flash` with unbounded thinking: the
+ * model returned all three requested fields correctly and then stopped one
+ * character short of closing its JSON, reproducibly, with `finishReason: STOP`.
+ * A complete, correct, already-paid-for answer was discarded over a missing
+ * brace. The production model does not do this (0 parse failures in 246 cached
+ * calls), so this is insurance, not a fix for a live defect.
+ *
+ * The safety rule is what matters here, because a repaired value that is WRONG
+ * is far worse than no value: this rewinds to the last point at which a
+ * container was CLOSED, and appends only the brackets still open at that point.
+ * A field cut off mid-number is therefore dropped whole rather than completed,
+ * so `"value": 4.9` truncated from `4.95` can never survive as 4.9. Nothing is
+ * ever added except `}` and `]`.
+ */
+function closeTruncatedJson(text: string): string | null {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  // Index just past the last bracket that closed while outside a string, and
+  // the stack as it stood at that moment.
+  let safeEnd = -1;
+  let safeStack: string[] = [];
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{" || char === "[") stack.push(char === "{" ? "}" : "]");
+    else if (char === "}" || char === "]") {
+      if (stack.pop() === undefined) return null;
+      safeEnd = i + 1;
+      safeStack = [...stack];
+    }
+  }
+
+  if (safeEnd === -1 || safeStack.length === 0) return null;
+  return text.slice(0, safeEnd) + safeStack.reverse().join("");
+}
+
 export function parseModelResponse(text: string): ExtractionResult {
+  const unreadable = (): ExtractionResult => ({
+    values: {},
+    notes: [`Model response was not valid JSON (${text.length} characters); it was discarded.`]
+  });
+
+  // No JSON at all, e.g. a model that answered in prose. Still a failure to read
+  // the model, not a refusal by it, so it is reported the same way.
   const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return { values: {} };
+  if (!jsonMatch) return text.trim().length === 0 ? { values: {} } : unreadable();
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonMatch[0]);
   } catch {
-    return { values: {} };
+    // Cut off rather than malformed, perhaps. Retry on the completed form, and
+    // if that fails too say so in a note: a response that could not be read is
+    // NOT the same event as a model that read the page and declined, and until
+    // now both arrived as an empty result with nothing to tell them apart.
+    const repaired = closeTruncatedJson(text);
+    if (repaired === null) return unreadable();
+    try {
+      parsed = JSON.parse(repaired);
+    } catch {
+      return unreadable();
+    }
   }
 
-  const root = parsed as { values?: Record<string, unknown>; notes?: unknown; pagesWorthRendering?: unknown };
+  const root = parsed as {
+    values?: Record<string, unknown>;
+    notes?: unknown;
+    pagesWorthRendering?: unknown;
+    pinTablePages?: unknown;
+  };
   const values: Partial<Record<ExtractionField, ModelValue>> = {};
 
   for (const [key, raw] of Object.entries(root.values ?? {})) {
@@ -275,5 +381,13 @@ export function parseModelResponse(text: string): ExtractionResult {
         .filter((page) => Number.isInteger(page) && page > 0)
     : undefined;
 
-  return { values, notes, pagesWorthRendering };
+  // Same treatment as the render list: page numbers only, and the caller checks
+  // them against the document's real pages before anything is sent.
+  const pinTablePages = Array.isArray(root.pinTablePages)
+    ? root.pinTablePages
+        .map((page) => (typeof page === "number" ? page : Number(page)))
+        .filter((page) => Number.isInteger(page) && page > 0)
+    : undefined;
+
+  return { values, notes, pagesWorthRendering, pinTablePages };
 }

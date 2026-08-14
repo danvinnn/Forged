@@ -100,3 +100,71 @@ test("an enormous field value is not silently accepted as a pin table", () => {
     "an uncitable model value must be flagged as untraceable"
   );
 });
+
+// ---------------------------------------------------------------------------
+// Truncated responses.
+//
+// Measured 2026-08-13: `gemini-3.5-flash` with unbounded thinking returned all
+// three requested fields correctly and stopped one character short of closing
+// its JSON, reproducibly. The whole answer was discarded over a missing brace.
+// ---------------------------------------------------------------------------
+
+test("a response cut off after a complete field is recovered, not discarded", () => {
+  // Exactly the shape measured: valid through the last field, then nothing.
+  const truncated =
+    '{\n  "values": {\n    "manufacturer": {\n      "value": "Texas Instruments",\n      "page": 1\n    },\n' +
+    '    "pinCount": {\n      "value": 8,\n      "page": 1\n    }\n  },\n  "notes": [],\n  "pagesWorthRendering": []';
+
+  const result = parseModelResponse(truncated);
+  assert.equal(result.values.manufacturer?.value, "Texas Instruments");
+  assert.equal(result.values.pinCount?.value, 8);
+});
+
+test("a value cut off MID-NUMBER is dropped whole, never completed", () => {
+  // The hazard the repair exists to avoid. A body length of 4.95 mm cut after
+  // "4.9" must not reach copper as 4.9: it is a different package. The rewind
+  // goes back to the last CLOSED container, so the incomplete field cannot
+  // survive at all.
+  const truncated =
+    '{\n  "values": {\n    "manufacturer": {\n      "value": "Texas Instruments",\n      "page": 1\n    },\n' +
+    '    "dimensions.bodyLengthMm": {\n      "value": 4.9';
+
+  const result = parseModelResponse(truncated);
+  assert.equal(result.values.manufacturer?.value, "Texas Instruments", "the complete field survives");
+  assert.equal(
+    result.values["dimensions.bodyLengthMm"],
+    undefined,
+    "a half-read number must never become a value"
+  );
+});
+
+test("a response cut off MID-STRING drops that field too", () => {
+  const truncated =
+    '{\n  "values": {\n    "pinCount": {\n      "value": 8,\n      "page": 1\n    },\n' +
+    '    "packageType": {\n      "value": "TSSO';
+
+  const result = parseModelResponse(truncated);
+  assert.equal(result.values.pinCount?.value, 8);
+  assert.equal(result.values.packageType, undefined, "'TSSO' is not a package");
+});
+
+test("an unreadable response says so, so a refusal and a failure are not the same event", () => {
+  // Before this they were indistinguishable: both arrived as an empty result.
+  // One means the model read the page and declined, which is a fact about the
+  // datasheet; the other means we could not read the model, which is a fact
+  // about us, and only the second is a bug.
+  const result = parseModelResponse("I am afraid I cannot help with that request.");
+  assert.deepEqual(result.values, {});
+  assert.match(result.notes?.join(" ") ?? "", /not valid JSON/);
+});
+
+test("a genuine refusal is still reported with the model's own reasons", () => {
+  const refusal = JSON.stringify({
+    values: {},
+    notes: ["The document specifies multiple package options, so dimensions cannot be assigned."]
+  });
+  const result = parseModelResponse(refusal);
+  assert.deepEqual(result.values, {});
+  assert.match(result.notes?.join(" ") ?? "", /multiple package options/);
+  assert.doesNotMatch(result.notes?.join(" ") ?? "", /not valid JSON/);
+});

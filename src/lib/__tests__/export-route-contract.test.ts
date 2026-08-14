@@ -38,6 +38,7 @@ function exportablePart(packageType: string, pinCount: number): PartRecord {
     manufacturer: citedValue("ACME"),
     packageType: citedValue(packageType),
     packageOutlineCode: unknown<string>(),
+    jedecOutline: unknown<string>(),
     packageVariants: [],
   vendorLandPattern: null,
   exposedPad: false,
@@ -54,7 +55,17 @@ function exportablePart(packageType: string, pinCount: number): PartRecord {
       leadWidthMm: citedValue({ minMm: 0.35, maxMm: 0.5 }),
       leadSpanMm: citedValue({ minMm: 5.8, maxMm: 6.2 }), leadContactMm: citedValue({ minMm: 0.4, maxMm: 0.625 }),
       thermalPadLengthMm: unknown<number>(),
-      thermalPadWidthMm: unknown<number>()
+      thermalPadWidthMm: unknown<number>(),
+      landPadLengthMm: unknown<number>(),
+      landPadWidthMm: unknown<number>(),
+      landSpanMm: unknown<number>(),
+      leadSides: unknown<2 | 4>(),
+      leadForm: unknown<"gullwing" | "nolead">(),
+      vacantLeadSlot: unknown<number>(),
+      solderMaskExpansionMm: unknown<number>(),
+      solderMaskDefined: unknown<"solder-mask-defined" | "non-solder-mask-defined">(),
+      thermalViaDiameterMm: unknown<number>(),
+      thermalViaPitchMm: unknown<number>()
     },
     radiation: {
       tid: unknown<string>(),
@@ -100,13 +111,38 @@ test("supplying the value over the wire produces the bundle", async () => {
   assert.ok(bytes.byteLength > 0);
 });
 
-test("a refusal the user cannot answer is not dressed up as one they can", async () => {
+test("an uncharacterised package asks for the land pattern instead of dead-ending", async () => {
+  // Inverted deliberately on 2026-08-13. This asserted an EMPTY needs array, on
+  // the reasoning that a missing land pattern was our gap rather than the user's
+  // input. Measurement changed the reasoning: every shipping part was being fed
+  // by a hand-typed family table, and closing the gap that way means inventing
+  // numbers about parts. Asking is the only honest option left.
   const response = await POST(post({ part: exportablePart("12-Pin BGA", 12), format: "kicad" }));
   const payload = await response.json();
 
   assert.equal(response.status, 422);
-  assert.equal(payload.code, "PACKAGE_NOT_CHARACTERISED");
-  assert.deepEqual(payload.needs, [], "an empty needs array is what stops the UI prompting");
+  // INPUT_REQUIRED, not PACKAGE_NOT_CHARACTERISED: the route already told those
+  // two apart by whether `needs` was populated, so making the refusal answerable
+  // moved it into the answerable bucket on its own.
+  assert.equal(payload.code, "INPUT_REQUIRED");
+  assert.ok(payload.needs.length > 0, "the UI has something to prompt for");
+});
+
+test("a land pattern the user supplies is validated before it becomes copper", async () => {
+  // As strictly as formedLeadSpanMm, and for the same reason: these are emitted
+  // as pads. A units mistake would be built faithfully.
+  for (const bad of [0, -1, 500, "1.1"]) {
+    const response = await POST(
+      post({ part: exportablePart("12-Pin BGA", 12), format: "kicad", landPadLengthMm: bad })
+    );
+    assert.equal(response.status, 400, `landPadLengthMm ${JSON.stringify(bad)} must be rejected`);
+  }
+  for (const bad of [1, 3, 8, "2"]) {
+    const response = await POST(
+      post({ part: exportablePart("12-Pin BGA", 12), format: "kicad", leadSides: bad })
+    );
+    assert.equal(response.status, 400, `leadSides ${JSON.stringify(bad)} must be rejected`);
+  }
 });
 
 test("a nonsense lead span is refused before it reaches the generator", async () => {

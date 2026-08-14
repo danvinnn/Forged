@@ -379,30 +379,6 @@ export function soleDeclaredLeadCount(variants: PackageVariant[]): number | null
  * So there is no tie-break at all. Anything ambiguous goes to the caller as a
  * list, which is what the product's input model is for: one click beats a guess.
  */
-/**
- * Whether the document genuinely offers a CHOICE, meaning two packages that
- * would produce different footprints.
- *
- * Distinct from `selectSinglePackage`, which asks whether one package can be
- * picked out, and answers no whenever the prose reader has written the same
- * package two ways. `SOIC` and `8-Lead SOIC` are one package with and without
- * its count, and treating that as a choice put a question to the user that the
- * document had already answered: gating on it cost four parts outright.
- *
- * So a count of `null` is not evidence of a second package. What counts is a
- * second FAMILY, or a second lead COUNT within one family, because either
- * changes the pads.
- */
-export function offersSeveralPackages(variants: PackageVariant[]): boolean {
-  const families = new Set(variants.map((variant) => variant.family));
-  if (families.size > 1) return true;
-
-  const counts = new Set(
-    variants.map((variant) => variant.leadCount).filter((count): count is number => count !== null)
-  );
-  return counts.size > 1;
-}
-
 export function selectSinglePackage(variants: PackageVariant[]): PackageVariant | null {
   if (variants.length === 0) return null;
 

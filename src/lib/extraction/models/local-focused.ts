@@ -1,0 +1,209 @@
+/**
+ * The local model, asked SEVERAL NARROW QUESTIONS instead of one wide one.
+ *
+ * ## Why this exists
+ *
+ * Measured on 2026-08-12 against `qwen2.5vl:7b` on an M2 Pro, which is about
+ * the largest vision model 16 GB will hold:
+ *
+ *   the production prompt (~23 fields, whole document)   0 fields returned
+ *   the pin table alone, asked on its own                8/8 names, exact
+ *   the printed land pattern alone                       2 of 3 numbers
+ *   the package drawing's dimensions alone               1 of 3
+ *
+ * The same model that answers nothing when asked everything answers a pin table
+ * perfectly when asked only that. A 7B has the capability and not the capacity
+ * to hold twenty-three simultaneous questions, and pin tables are the field that
+ * blocks more parts than any other.
+ *
+ * ## Why it is a separate model rather than a flag
+ *
+ * The split is a bad trade for the cloud model, which answers everything in one
+ * call and would simply pay N times for the privilege of being asked N times. So
+ * it lives entirely INSIDE an `ExtractionModel`, where nothing downstream can
+ * tell the difference: the caller sends one request and gets one
+ * `ExtractionResult`. `run.ts`, `request.ts`, `merge.ts` and the exporters are
+ * untouched, and the existing cloud path cannot regress because no code it runs
+ * has changed.
+ *
+ * ## The property that makes this better than one call, beyond accuracy
+ *
+ * A group that fails loses only itself. One wide call is all-or-nothing: a
+ * malformed pin table costs the dimensions too. Here the pin table can fail and
+ * the land pattern still arrives.
+ */
+
+import type { ExtractionField, ExtractionModel, ExtractionRequest, ExtractionResult } from "../contracts";
+import { callLocalModel, endpoint, modelName } from "./local";
+
+/**
+ * Fields grouped by the question a person would ask to find them.
+ *
+ * Grouped by WHERE THE ANSWER LIVES rather than by type, because that is what
+ * makes a question narrow: identity is on the front page, the pin table is one
+ * table, the land pattern is its own drawing on its own page. Asking for the
+ * body dimensions and the land pattern together is two drawings and two
+ * conventions in one question, which is the wide-question failure in miniature.
+ *
+ * Order matters only for reporting: the earliest groups are the ones measured
+ * to work best, so a run killed halfway still has the useful half.
+ */
+export interface FieldGroup {
+  readonly fields: readonly ExtractionField[];
+  /**
+   * How to find the PAGES that answer this group, by the heading a datasheet
+   * prints above them. Not a parser: it locates a section, it does not read one.
+   */
+  readonly locate: RegExp;
+}
+
+export const FIELD_GROUPS: readonly FieldGroup[] = [
+  {
+    fields: ["partNumber", "manufacturer", "packageType", "pinCount"],
+    locate: /package|device information|ordering|features/i
+  },
+  { fields: ["pins"], locate: /pin\s+(?:functions?|descriptions?|configuration)|terminal\s+functions?/i },
+  {
+    fields: [
+      "dimensions.bodyLengthMm",
+      "dimensions.bodyWidthMm",
+      "dimensions.bodyHeightMm",
+      "dimensions.pitchMm",
+      "dimensions.leadCount"
+    ],
+    locate: /package\s+outline|mechanical\s+(?:data|drawing)|outline\s+dimensions/i
+  },
+  {
+    fields: [
+      "dimensions.leadLengthMm",
+      "dimensions.leadWidthMm",
+      "dimensions.leadSpanMm",
+      "dimensions.leadContactMm"
+    ],
+    locate: /package\s+outline|mechanical\s+(?:data|drawing)|outline\s+dimensions/i
+  },
+  {
+    fields: ["dimensions.landPadLengthMm", "dimensions.landPadWidthMm", "dimensions.landSpanMm"],
+    locate: /land\s+pattern|recommended\s+(?:pcb\s+)?(?:land|footprint|pad)|footprint\s+example/i
+  },
+  {
+    fields: ["dimensions.thermalPadLengthMm", "dimensions.thermalPadWidthMm"],
+    locate: /thermal\s+pad|exposed\s+pad|package\s+outline/i
+  },
+  {
+    fields: ["radiation.tid", "radiation.see", "radiation.sel", "radiation.qmlClass"],
+    locate: /radiation|total\s+ionizing|single[\s-]event|rad[\s-]hard/i
+  }
+];
+
+/**
+ * How many pages one narrow question may carry.
+ *
+ * Measured on qwen2.5vl:7b, and this is the whole reason this model exists: the
+ * pin table asked over ONE page of text came back 8/8 correct, and the identical
+ * question over the whole 68k-character document produced a paragraph about
+ * drawings and no answer at all. The blocker is context size, not the number of
+ * fields, so narrowing the fields without narrowing the pages changes nothing.
+ */
+const MAX_PAGES_PER_QUESTION = 1;
+
+/** The groups this request actually needs, with nothing empty. */
+export function groupsFor(fields: readonly ExtractionField[]): FieldGroup[] {
+  const wanted = new Set(fields);
+  const groups = FIELD_GROUPS.map((group) => ({
+    ...group,
+    fields: group.fields.filter((field) => wanted.has(field))
+  })).filter((group) => group.fields.length > 0);
+
+  // Anything not named in a group above still has to be asked about, or adding a
+  // field to `contracts.ts` would silently stop it ever being requested here.
+  const grouped = new Set(groups.flatMap((group) => group.fields));
+  const ungrouped = [...wanted].filter((field) => !grouped.has(field));
+  return ungrouped.length > 0 ? [...groups, { fields: ungrouped, locate: /(?:)/ }] : groups;
+}
+
+/**
+ * The page that answers this group: the BEST match, not the first ones found.
+ *
+ * Ranked rather than filtered, because taking matches in document order is what
+ * broke this. Measured on LM358, whose pin table is on page 3: the locator also
+ * matched pages 2 and 31, all three went in document order, and asked over those
+ * 10k characters the model returned invented placeholders, `Pin 1`, `Pin 2`,
+ * `Pin 3`. Asked over page 3 ALONE it returned the real names. The wrong pages
+ * did not dilute the answer, they replaced it.
+ *
+ * The score is how often the section's own heading appears, then SHORTNESS as
+ * the tie-break. A page whose heading occurs repeatedly is the section itself; a
+ * long page mentioning it once is prose about it, and a datasheet's real pin
+ * table page is short because it is mostly table.
+ */
+export function pagesFor(
+  group: FieldGroup,
+  pages: ExtractionRequest["pages"]
+): ExtractionRequest["pages"] {
+  const anywhere = new RegExp(group.locate.source, "gi");
+  const scored = pages
+    .map((page) => ({ page, hits: (page.text.match(anywhere) ?? []).length }))
+    .filter((entry) => entry.hits > 0)
+    .sort((a, b) => b.hits - a.hits || a.page.text.length - b.page.text.length);
+
+  // Nothing announced itself. Send the shortest few rather than the first few:
+  // a wrong LONG page is what produces confident nonsense.
+  const fallback = [...pages].sort((a, b) => a.text.length - b.text.length);
+  const chosen = scored.length > 0 ? scored.map((entry) => entry.page) : fallback;
+  return chosen.slice(0, MAX_PAGES_PER_QUESTION);
+}
+
+export class FocusedLocalExtractionModel implements ExtractionModel {
+  readonly name = `local-focused:${modelName()}`;
+
+  isConfigured(): boolean {
+    return endpoint().length > 0;
+  }
+
+  async extract(request: ExtractionRequest): Promise<ExtractionResult> {
+    const groups = groupsFor(request.fields);
+    const values: ExtractionResult["values"] = {};
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let answered = 0;
+    const failed: string[] = [];
+
+    for (const group of groups) {
+      const fields = group.fields;
+      try {
+        // Narrow the PAGES as well as the fields. One without the other is the
+        // failure this model was built to fix.
+        const result = await callLocalModel({
+          ...request,
+          fields: [...fields],
+          pages: pagesFor(group, request.pages)
+        });
+        // Later groups never overwrite earlier ones. A group is asked only about
+        // its own fields, so an answer outside them is the model volunteering
+        // something it was not asked for, and the group that OWNS a field is the
+        // one whose question was aimed at it.
+        for (const [key, value] of Object.entries(result.values)) {
+          const field = key as ExtractionField;
+          if (!(field in values)) values[field] = value;
+        }
+        inputTokens += result.usage?.inputTokens ?? 0;
+        outputTokens += result.usage?.outputTokens ?? 0;
+        answered += 1;
+      } catch (error) {
+        // The whole point of splitting: one bad group must not cost the others.
+        // Recorded rather than swallowed, so a run cannot look complete when it
+        // is not.
+        failed.push(`${fields.join(",")}: ${error instanceof Error ? error.message : "failed"}`);
+      }
+    }
+
+    if (answered === 0) {
+      throw new Error(
+        `Every focused question failed against ${this.name}. ${failed.slice(0, 3).join(" | ")}`
+      );
+    }
+
+    return { values, usage: { inputTokens, outputTokens } };
+  }
+}

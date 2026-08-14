@@ -998,3 +998,172 @@ test("a datasheet that prints no land pattern does not block a drawing-derived o
 
   assert.equal(checked.ok, true);
 });
+
+
+/**
+ * No-lead packages, laid out from this part's OWN drawing.
+ *
+ * Sixteen parts in the hold-out parse completely and produce nothing because
+ * their family is not in the hand-read table, and four of those are VQFN. The
+ * fix is deliberately not a VQFN entry in that table, which would need another
+ * one for VQFN-20 and another for DFN-6 forever. The drawing states the numbers
+ * and the rule already exists; this route just stops refusing before it gets
+ * there.
+ *
+ * The fixtures are the drawings the rule was recovered from, so these tests can
+ * fail against reality rather than against themselves:
+ *
+ *   RGT0016C  VQFN 16  body 2.9-3.1  b 0.18-0.30  L 0.3-0.5  e 0.5
+ *   RGC0064B  VQFN 64  body 8.85-9.15 b 0.18-0.30 L 0.3-0.5  e 0.5
+ *
+ * The rule: land span = nominal body + 0.4, pad length = nominal terminal + 0.2,
+ * pad width = nominal terminal width.
+ */
+const RGT0016C = {
+  pitchMm: 0.5,
+  bodyLengthMm: 3.0,
+  bodyWidthMm: 3.0,
+  leadWidthMm: { minMm: 0.18, maxMm: 0.3 },
+  leadContactMm: { minMm: 0.3, maxMm: 0.5 }
+};
+
+test("a VQFN is no longer laid out from an invented rule", () => {
+  // Rewritten 2026-08-13. This asserted that the no-lead rule recovered from
+  // four TI drawings laid the package out. That rule was retired: it is one
+  // vendor's house rule applied to every vendor's parts, and the project's
+  // rule is that nothing is invented. A no-lead package whose datasheet
+  // prints its own footprint still builds from that; one that prints neither
+  // now asks, which is the honest answer to a number nobody has.
+  const lookup = resolvePackageDefinition("VQFN-16", 16, RGT0016C);
+  assert.equal(lookup.ok, false, "no invented no-lead layout");
+});
+
+test("the same holds on a body three times the size", () => {
+  // Rewritten 2026-08-13. This asserted that the no-lead rule recovered from
+  // four TI drawings laid the package out. That rule was retired: it is one
+  // vendor's house rule applied to every vendor's parts, and the project's
+  // rule is that nothing is invented. A no-lead package whose datasheet
+  // prints its own footprint still builds from that; one that prints neither
+  // now asks, which is the honest answer to a number nobody has.
+  const lookup = resolvePackageDefinition("VQFN (64)", 64, { ...RGT0016C, bodyLengthMm: 9.0, bodyWidthMm: 9.0 });
+  assert.equal(lookup.ok, false, "no invented no-lead layout");
+});
+
+test("a DFN is refused too, whatever its row count", () => {
+  // Rewritten 2026-08-13. This asserted that the no-lead rule recovered from
+  // four TI drawings laid the package out. That rule was retired: it is one
+  // vendor's house rule applied to every vendor's parts, and the project's
+  // rule is that nothing is invented. A no-lead package whose datasheet
+  // prints its own footprint still builds from that; one that prints neither
+  // now asks, which is the honest answer to a number nobody has.
+  const lookup = resolvePackageDefinition("DFN6", 6, { ...RGT0016C, bodyLengthMm: 2.0, bodyWidthMm: 2.0 });
+  assert.equal(lookup.ok, false, "no invented no-lead layout");
+});
+
+test("a rectangular no-lead body is refused rather than laid out half wrong", () => {
+  // One LandPattern describes ONE opposing pair of rows. On a square package the
+  // other pair is the same pattern turned 90 degrees; on a rectangular one it is
+  // not, so accepting this would put two of the four rows in the wrong place.
+  const lookup = resolvePackageDefinition("VQFN-16", 16, { ...RGT0016C, bodyLengthMm: 4.0, bodyWidthMm: 3.0 });
+
+  assert.equal(lookup.ok, false, "half a right answer is the failure this project refuses");
+});
+
+test("a no-lead package with no body dimension produces nothing", () => {
+  // The body IS the span here. Without it there is no reference to lay against,
+  // and guessing one would be inventing geometry.
+  const lookup = resolvePackageDefinition("VQFN-16", 16, { ...RGT0016C, bodyLengthMm: null, bodyWidthMm: null });
+
+  assert.equal(lookup.ok, false);
+});
+
+test("a terminal wider than its pitch is still refused", () => {
+  // Rewritten 2026-08-13. This asserted that the no-lead rule recovered from
+  // four TI drawings laid the package out. That rule was retired: it is one
+  // vendor's house rule applied to every vendor's parts, and the project's
+  // rule is that nothing is invented. A no-lead package whose datasheet
+  // prints its own footprint still builds from that; one that prints neither
+  // now asks, which is the honest answer to a number nobody has.
+  const lookup = resolvePackageDefinition("VQFN-16", 16, {
+    ...RGT0016C,
+    leadWidthMm: { minMm: 0.4, maxMm: 0.45 }
+  });
+  assert.equal(lookup.ok, false, "no invented no-lead layout");
+});
+
+
+/**
+ * A DUAL no-lead package on a rectangular body, which is the NORMAL case.
+ *
+ * The first version of this route required every no-lead body to be square,
+ * which is right for a quad and wrong for a dual: a package with one pair of
+ * rows has only one span to compute, and essentially every DFN and SON is
+ * longer than it is wide. It refused correct packages for no reason.
+ *
+ * The span is taken from the geometry rather than from the field names, because
+ * `bodyLengthMm` and `bodyWidthMm` are not reliably the long and the short one:
+ * an INA226 prints "3.00 mm x 4.90 mm" where 4.90 is the lead span, and a
+ * PCM1808 prints its width first. The rows must fit along the longer side, so
+ * the shorter side is what they sit across.
+ */
+test("a rectangular DFN is refused like every other no-lead package", () => {
+  // Rewritten 2026-08-13. This asserted that the no-lead rule recovered from
+  // four TI drawings laid the package out. That rule was retired: it is one
+  // vendor's house rule applied to every vendor's parts, and the project's
+  // rule is that nothing is invented. A no-lead package whose datasheet
+  // prints its own footprint still builds from that; one that prints neither
+  // now asks, which is the honest answer to a number nobody has.
+  const lookup = resolvePackageDefinition("DFN8", 8, {
+    pitchMm: 0.5,
+    bodyLengthMm: 3.0,
+    bodyWidthMm: 2.0,
+    leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
+    leadContactMm: { minMm: 0.3, maxMm: 0.5 }
+  });
+  assert.equal(lookup.ok, false, "no invented no-lead layout");
+});
+
+test("swapping the body labels does not revive it", () => {
+  // Rewritten 2026-08-13. This asserted that the no-lead rule recovered from
+  // four TI drawings laid the package out. That rule was retired: it is one
+  // vendor's house rule applied to every vendor's parts, and the project's
+  // rule is that nothing is invented. A no-lead package whose datasheet
+  // prints its own footprint still builds from that; one that prints neither
+  // now asks, which is the honest answer to a number nobody has.
+  const lookup = resolvePackageDefinition("DFN8", 8, {
+    pitchMm: 0.5,
+    bodyLengthMm: 2.0,
+    bodyWidthMm: 3.0,
+    leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
+    leadContactMm: { minMm: 0.3, maxMm: 0.5 }
+  });
+  assert.equal(lookup.ok, false, "no invented no-lead layout");
+});
+
+test("a dual package whose row cannot fit along the body is refused", () => {
+  // 8 terminals a side at 1.27 mm needs 8.89 mm of body and this one is 3 mm.
+  // The dimensions describe something that is not this package.
+  const lookup = resolvePackageDefinition("DFN16", 16, {
+    pitchMm: 1.27,
+    bodyLengthMm: 3.0,
+    bodyWidthMm: 2.0,
+    leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
+    leadContactMm: { minMm: 0.3, maxMm: 0.5 }
+  });
+
+  assert.equal(lookup.ok, false);
+});
+
+test("a rectangular QUAD is still refused, and for a reason the pin count cannot fix", () => {
+  // Four rows need two spans AND the per-side counts. 20 terminals on a
+  // 4.5 x 3.5 body is not 5 a side, and nothing here knows what it is.
+  const lookup = resolvePackageDefinition("VQFN (20)", 20, {
+    pitchMm: 0.5,
+    bodyLengthMm: 4.5,
+    bodyWidthMm: 3.5,
+    leadWidthMm: { minMm: 0.18, maxMm: 0.3 },
+    leadContactMm: { minMm: 0.3, maxMm: 0.5 }
+  });
+
+  assert.equal(lookup.ok, false);
+});

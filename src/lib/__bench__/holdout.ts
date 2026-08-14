@@ -44,6 +44,7 @@ import {
   cachingModel,
   cacheSize,
   formatCacheStats,
+  preRunProjection,
   projectCost,
   ModelCacheMiss,
   modelCacheDir,
@@ -51,6 +52,7 @@ import {
   type CachingModel
 } from "./modelcache";
 import { loadBenchEnv } from "./env";
+import { getDeploymentMode } from "../retrieval/deployment";
 
 loadBenchEnv();
 
@@ -96,7 +98,13 @@ let currentLabel = "";
 
 async function benchModel(): Promise<CachingModel | null> {
   if (sharedModel !== undefined) return sharedModel;
-  let inner = await makeExtractionModel("commercial");
+  // Whichever model the environment says, NOT a hardcoded cloud one.
+  //
+  // Both benches used to pass "commercial" literally, so `FORGE_DEPLOYMENT_MODE`
+  // had no effect here and a run intended for a local model silently went to
+  // Gemini and was billed. Measured 2026-08-12: a run launched to test Ollama
+  // produced 0 local cache entries and a $0.02 charge.
+  let inner = await makeExtractionModel(getDeploymentMode());
   if (!inner && (CACHE_MODE === "offline" || CACHE_MODE === "estimate")) {
     inner = {
       name: "gemini",
@@ -256,6 +264,19 @@ async function main(): Promise<void> {
       await sleep(FETCH_DELAY_MS);
     }
     console.log(`\ncached ${got}/${HOLDOUT_CORPUS.length}\n`);
+  }
+
+  // What this run is about to cost, before it costs it. See `preRunProjection`:
+  // the spend ceiling is a backstop and saves nothing, this is the part that
+  // can. Printed only when the run can actually spend, since `--offline` and
+  // `--estimate` cannot.
+  if (MODEL && (CACHE_MODE === "use" || CACHE_MODE === "refresh")) {
+    const model = await benchModel();
+    if (model) {
+      const willVisit = HOLDOUT_CORPUS.filter((part) => existsSync(cachePath(part.partNumber))).length;
+      console.log(preRunProjection({ parts: willVisit, callsPerPart: 2, modelName: model.name }));
+      console.log();
+    }
   }
 
   const reasons = new Map<string, string[]>();

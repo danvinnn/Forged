@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { createExportZip, FootprintUnavailableError, GeneratorUnavailableError } from "../../../lib/exporters";
+import {
+  createExportZip,
+  FootprintUnavailableError,
+  GeneratorUnavailableError,
+  type SuppliedDimensions
+} from "../../../lib/exporters";
 import { partSchema, resolveForExport } from "../../../lib/types";
 import { sanitizeFileName, clientKey, RateLimiter } from "../../../lib/retrieval";
 
@@ -129,12 +134,43 @@ export async function POST(request: Request) {
     );
   }
 
+  // The land pattern the user typed, when their datasheet did not print one.
+  //
+  // Validated exactly as strictly as the span above: these become copper. A
+  // millimetre figure outside this range is a units mistake or a typo, and
+  // either would be built faithfully by the generator.
+  const suppliedNumbers: Record<string, unknown> = {};
+  for (const field of ["landPadLengthMm", "landPadWidthMm", "landSpanMm"] as const) {
+    const value = (payload as Record<string, unknown>)[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 200) {
+      return NextResponse.json(
+        { error: `${field} must be a positive number of millimetres.` },
+        { status: 400 }
+      );
+    }
+    suppliedNumbers[field] = value;
+  }
+  const sides = (payload as Record<string, unknown>).leadSides;
+  if (sides !== undefined) {
+    if (sides !== 2 && sides !== 4) {
+      return NextResponse.json(
+        { error: "leadSides must be 2 (two opposing rows) or 4 (leads on all four sides)." },
+        { status: 400 }
+      );
+    }
+    suppliedNumbers.leadSides = sides;
+  }
+
   // A package with no characterised land pattern is a refusal, not a degraded
   // export. Emitting the symbol and the 3D body while silently dropping the
   // footprint would read as a success to anyone who did not check the file list.
   let bundle: Awaited<ReturnType<typeof createExportZip>>;
   try {
-    bundle = await createExportZip(part, format, { formedLeadSpanMm: formedSpan });
+    bundle = await createExportZip(part, format, {
+      formedLeadSpanMm: formedSpan,
+      supplied: suppliedNumbers as SuppliedDimensions
+    });
   } catch (error) {
     if (error instanceof GeneratorUnavailableError) {
       return NextResponse.json(

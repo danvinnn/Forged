@@ -1,0 +1,67 @@
+
+> forged@0.1.0 bench:extraction
+> tsx src/lib/__bench__/extraction.ts --model --parts ADS8688,LIS3DH,LM358,SN65HVD230,UCC27524,INA240,OPA333,ADR4525,AD8232,ADG5412 --refresh --verbose
+
+
+Extraction coverage: 10 parts (10 named)
+Cache: /Users/anthonytang/Desktop/Forged/Forged/.bench-cache (46 PDFs)
+Model cache: /Users/anthonytang/Desktop/Forged/Forged/.model-cache (248 responses), mode refresh [may spend]
+
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+Warning: TT: undefined function: 32
+category              pdf    ident  pkg    geom   rad    cited  fields ships
+----------------------------------------------------------------------------
+analog                8/8     63%    25%    17%     0%     8%    13%    13%
+power-discrete        1/1     50%     0%     0%     0%     0%     0%     0%
+logic-interface       1/1     50%     0%     0%     0%     0%     0%     0%
+----------------------------------------------------------------------------
+TOTAL                 10/10   60%    20%    13%     0%     7%    10%    10%
+
+Parse latency over 10 parts: p50 75712ms, p95 156630ms, max 156630ms
+Slowest: LM358 156630ms/68p, OPA333 106970ms/49p, ADR4525 98723ms/41p
+
+Fields complete:  1/10 parsed parts (10%)
+SHIPS A BUNDLE:   1/10 parsed parts (10%)   <- the product
+10/10 of the corpus had a datasheet at all.
+
+PIN NAMES:        0/2 parts match the hand-read oracle (38 parts have an entry)
+  LM358              pin 2   got "IN1±" want "IN1-"
+  LM358              pin 4   got "V±" want "V-"
+  LM358              pin 5   got "OUT2" want "IN2+"
+  LM358              pin 6   got "IN2±" want "IN2-"
+  LM358              pin 7   got "IN2+" want "OUT2"
+  LM358              pin 8   got "V–" want "V+"
+  OPA333             pin 1   got "+IN" want "NC"
+  OPA333             pin 3   got "OUT" want "+IN"
+  OPA333             pin 4   got "V+" want "V-"
+  OPA333             pin 5   got "V-" want "NC"
+  OPA333             pin 6   got "(absent)" want "OUT"
+  OPA333             pin 7   got "(absent)" want "V+"
+  OPA333             pin 8   got "(absent)" want "NC"
+PACKAGE FAMILY:   2/2 designators name a package the datasheet describes (28 parts have an entry)
+
+Blocked by:
+    8  missing pinCount,pins: INA240, LIS3DH, ADS8688, ADG5412, ADR4525, AD8232, UCC27524, SN65HVD230
+    1  untraceable dimensions.leadContactMm: OPA333
+
+Model cache:
+  cache hits      0
+  live calls      10
+  spent THIS RUN  0 in, 0 out (~$0.00)
+  spent IN TOTAL  ~$4.04 over 246 cached call(s), all runs ever (a floor: failed calls are billed and not cached)
+
+Model pass: filled at least one field on 2/10 parts.
+    2  manufacturer
+    2  packageType
+    2  pinCount
+    2  pins
+    2  dimensions.bodyLengthMm
+    2  dimensions.bodyHeightMm
+    2  dimensions.leadWidthMm
+    2  dimensions.leadSpanMm
+    2  dimensions.leadContactMm
+    1  dimensions.pitchMm
+    1  dimensions.leadCount
+    1  dimensions.bodyWidthMm
+

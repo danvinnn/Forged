@@ -151,6 +151,7 @@ function soicPart(): ResolvedPart {
     manufacturer: "ACME",
     packageType: "8-pin SOIC",
     packageOutlineCode: null,
+    jedecOutline: null,
   vendorLandPattern: null,
   exposedPad: false,
     pinCount: 8,
@@ -163,7 +164,17 @@ function soicPart(): ResolvedPart {
       leadLengthMm: null,
       leadCount: 8,
       leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
-      thermalPadLengthMm: null, thermalPadWidthMm: null
+      thermalPadLengthMm: null, thermalPadWidthMm: null,
+      landPadLengthMm: null,
+      landPadWidthMm: null,
+      landSpanMm: null,
+      leadSides: null,
+      leadForm: null,
+      vacantLeadSlot: null,
+      solderMaskExpansionMm: null,
+      solderMaskDefined: null,
+      thermalViaDiameterMm: null,
+      thermalViaPitchMm: null
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "ACME27524.pdf",
@@ -299,6 +310,7 @@ test("a footprint with no model given carries no body and no model store", () =>
     body: { halfWidthMm: 1.95, halfHeightMm: 2.45 },
     courtyard: { halfWidthMm: 3.2, halfHeightMm: 2.7 },
     pin1Marker: { xMm: -2.7, yMm: -2.2 },
+    thermalVias: [],
     provenance: {
       family: "test",
       source: "test",
@@ -336,6 +348,7 @@ test("a footprint written without a terminator byte is what a strict reader requ
     body: { halfWidthMm: 1.95, halfHeightMm: 2.45 },
     courtyard: { halfWidthMm: 3.2, halfHeightMm: 2.7 },
     pin1Marker: { xMm: -2.7, yMm: -2.2 },
+    thermalVias: [],
     provenance: {
       family: "test",
       source: "test",

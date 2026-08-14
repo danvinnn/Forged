@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "../extraction/contracts";
@@ -11,7 +11,10 @@ import {
   estimateUsd,
   formatCacheStats,
   slotDelayMs,
-  permanentQuotaFailure
+  permanentQuotaFailure,
+  promptFingerprint,
+  cacheCensus,
+  preRunProjection
 } from "../__bench__/modelcache";
 
 /**
@@ -364,4 +367,165 @@ test("each permanent kind is told apart from the others", () => {
     permanentQuotaFailure("[429] ...PerMinute... quota exceeded. Please retry in 56.7s"),
     null
   );
+});
+
+
+/**
+ * A run that spends more than it was allowed to stops itself.
+ *
+ * Measured, not hypothetical: $4.04 went on 245 calls in one day where a full
+ * run is 76 calls. Most of the excess was re-asks caused by changing the prompt
+ * between runs, which invalidates every cached answer by design. Nothing in the
+ * tool noticed, and the person paying found it before the report did.
+ */
+test("spending stops once the cache has cost more IN TOTAL than allowed", async () => {
+  // Cumulative, not per-run. A per-run cap was the first version and would have
+  // caught nothing: the $4.04 that prompted this was 19 runs whose largest was
+  // $1.02. The sum is what hurt, so the sum is what is capped.
+  // Its own cache directory: the limit is now CUMULATIVE, so a directory shared
+  // with the other tests here would already be over budget before this starts.
+  const own = mkdtempSync(join(tmpdir(), "forge-spend-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+  process.env.FORGE_SPEND_LIMIT_USD = "0.02";
+  const model = cachingModel(countingModel(ANSWER), "use", () => "spendy");
+
+  // One answer costs about $0.014, so the second call crosses $0.02.
+  // Varying the PACKAGE, because that is in the prompt and so in the cache key.
+  // Varying only the file name would make the second call a hit and spend nothing.
+  await model.extract(request({ packageType: "SOIC-8" }));
+  await assert.rejects(
+    () => model.extract(request({ packageType: "TSSOP-8" })),
+    (error: Error) => error.name === "SpendLimitReached"
+  );
+
+  // The call that tripped the limit is still CACHED, so a re-run continues from
+  // it rather than paying for it twice.
+  const replay = cachingModel(countingModel(ANSWER), "offline", () => "spendy");
+  await replay.extract(request({ packageType: "TSSOP-8" }));
+  assert.equal(replay.stats.hits, 1, "nothing already paid for is thrown away");
+
+  delete process.env.FORGE_SPEND_LIMIT_USD;
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+test("a free local model is never counted against the spend limit", async () => {
+  const ownFree = mkdtempSync(join(tmpdir(), "forge-free-"));
+  process.env.FORGE_MODEL_CACHE_DIR = ownFree;
+  process.env.FORGE_SPEND_LIMIT_USD = "0.001";
+  const local: ExtractionModel = {
+    name: "local:qwen2.5vl:7b",
+    isConfigured: () => true,
+    extract: async () => ANSWER
+  };
+  const model = cachingModel(local, "use", () => "free");
+
+  // Ollama costs nothing, so no number of calls may trip a spend ceiling.
+  for (let i = 0; i < 5; i += 1) await model.extract(request({ packageType: `QFN-${i}` }));
+
+  assert.equal(model.stats.misses, 5);
+  delete process.env.FORGE_SPEND_LIMIT_USD;
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(ownFree, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// The pre-run projection.
+//
+// The spend ceiling is a backstop and saves nothing: it stops a run after the
+// money is gone, and half a hold-out run scores nothing. These cover the part
+// that can actually save money, which is knowing BEFORE the first call that the
+// prompt changed and the whole cache is unreachable.
+// ---------------------------------------------------------------------------
+
+test("the prompt fingerprint is stable across calls and independent of the document", () => {
+  // Must not move on its own, or every run would report the cache as stranded.
+  assert.equal(promptFingerprint(), promptFingerprint());
+});
+
+test("the census sorts entries by whether this run's prompt can reach them", async () => {
+  const own = mkdtempSync(join(tmpdir(), "forge-census-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+
+  const model = cachingModel(countingModel(ANSWER), "use", () => "censused");
+  await model.extract(request({ packageType: "SOIC-8" }));
+
+  // Written by this build, so reachable by it.
+  assert.deepEqual(cacheCensus(), { reachable: 1, stranded: 0, unknown: 0 });
+
+  // An answer stored under a DIFFERENT question. This is the state that costs
+  // money: paid for, on disk, and impossible for this run to hit.
+  const [file] = readdirSync(own).filter((name) => name.endsWith(".json"));
+  const entry = JSON.parse(readFileSync(join(own, file), "utf8")) as Record<string, unknown>;
+  writeFileSync(join(own, "older-0000000000000000.json"), JSON.stringify({ ...entry, prompt: "an older prompt" }));
+  // And one from before fingerprints were recorded at all, which is neither.
+  delete entry.prompt;
+  writeFileSync(join(own, "ancient-1111111111111111.json"), JSON.stringify(entry));
+
+  assert.deepEqual(cacheCensus(), { reachable: 1, stranded: 1, unknown: 1 });
+
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+test("a cache hit stamps an unfingerprinted entry, so a free offline pass backfills", async () => {
+  const own = mkdtempSync(join(tmpdir(), "forge-backfill-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+
+  const model = cachingModel(countingModel(ANSWER), "use", () => "backfilled");
+  await model.extract(request({ packageType: "SOIC-8" }));
+
+  // Age the entry: strip the fingerprint the way every entry written before
+  // 2026-08-13 lacks one.
+  const [file] = readdirSync(own).filter((name) => name.endsWith(".json"));
+  const entry = JSON.parse(readFileSync(join(own, file), "utf8")) as Record<string, unknown>;
+  delete entry.prompt;
+  writeFileSync(join(own, file), JSON.stringify(entry));
+  assert.equal(cacheCensus().unknown, 1);
+
+  // Replaying it OFFLINE spends nothing, and a hit proves the entry was stored
+  // under this exact prompt, because the prompt is part of the key.
+  const replay = cachingModel(countingModel(ANSWER), "offline", () => "backfilled");
+  await replay.extract(request({ packageType: "SOIC-8" }));
+  assert.equal(replay.stats.hits, 1);
+  assert.deepEqual(cacheCensus(), { reachable: 1, stranded: 0, unknown: 0 });
+
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+test("the projection names a changed prompt as the reason a run will re-ask everything", async () => {
+  const own = mkdtempSync(join(tmpdir(), "forge-projection-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+
+  const model = cachingModel(countingModel(ANSWER), "use", () => "projected");
+  await model.extract(request({ packageType: "SOIC-8" }));
+
+  // Strand it, which is what editing the prompt does to every entry at once.
+  const [file] = readdirSync(own).filter((name) => name.endsWith(".json"));
+  const entry = JSON.parse(readFileSync(join(own, file), "utf8")) as Record<string, unknown>;
+  writeFileSync(join(own, file), JSON.stringify({ ...entry, prompt: "the prompt before the edit" }));
+
+  const report = preRunProjection({ parts: 38, callsPerPart: 2, modelName: "gemini" });
+  assert.match(report, /WHY IT IS COLD/);
+  assert.match(report, /prompt changed/);
+  assert.match(report, /at most 76 live calls/);
+  // Priced off real usage, so the figure is one to act on rather than a guess.
+  assert.match(report, /projected ~\$\d+\.\d\d/);
+
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+test("a local run is projected at nothing, whatever is on disk", async () => {
+  const own = mkdtempSync(join(tmpdir(), "forge-projection-local-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+
+  const report = preRunProjection({ parts: 38, callsPerPart: 7, modelName: "local-focused:qwen2.5vl:7b" });
+  assert.match(report, /\$0\.00, this model is local/);
+  // No ceiling talk and no projection: there is nothing to decide about.
+  assert.doesNotMatch(report, /projected/);
+
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
 });

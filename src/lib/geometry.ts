@@ -49,6 +49,39 @@ export interface Pad {
    * and fails at reflow, so every emitter must either honour it or refuse.
    */
   pasteApertures?: Array<{ centre: Point; widthMm: number; heightMm: number }>;
+  /**
+   * Solder mask clearance around this land, in millimetres, when the datasheet
+   * states one.
+   *
+   * Absent means the datasheet did not say and the board house's default
+   * applies, which is the correct behaviour for a number nobody stated. It is
+   * NOT a zero: a zero here is a mask opening exactly the size of the copper,
+   * which is a real and different instruction.
+   *
+   * Printed on 20 of 46 corpus land-pattern drawings, beside pad dimensions the
+   * generator was already reading, and emitted by nothing until 2026-08-13.
+   */
+  solderMaskMarginMm?: number;
+}
+
+/**
+ * A plated through hole under an exposed thermal pad.
+ *
+ * Not a `Pad`: it carries no pin, sits on every copper layer, and its job is to
+ * move heat into the board rather than to solder a lead. Emitting it as a pad
+ * would put it in the netlist as a terminal the part does not have.
+ *
+ * Read off the datasheet's own land pattern drawing, which states the drill
+ * diameter and the grid spacing (30 of 46 corpus datasheets do). Absent when the
+ * document did not say, which is not the same as "no vias are needed": it means
+ * we were not told, and the board designer decides.
+ */
+export interface ThermalVia {
+  centre: Point;
+  /** Finished drill diameter, mm. */
+  drillMm: number;
+  /** Annular copper diameter, mm. */
+  padMm: number;
 }
 
 /** What the footprint was computed from, carried through to every output. */
@@ -75,6 +108,8 @@ export interface FootprintGeometry {
   courtyard: Rect;
   /** Where the pin-1 dot goes. Without it a correct footprint can be placed rotated. */
   pin1Marker: Point;
+  /** Thermal vias under the exposed pad, when the datasheet stated them. Empty otherwise. */
+  thermalVias: ThermalVia[];
   provenance: FootprintProvenance;
 }
 

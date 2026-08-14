@@ -146,7 +146,7 @@ test("no request is built when the text pass resolved everything it can", () => 
   const part = deterministic();
   // Force every field resolved.
   const full = JSON.parse(JSON.stringify(part)) as PartRecord;
-  for (const key of ["partNumber", "manufacturer", "packageType", "pinCount"] as const) {
+  for (const key of ["partNumber", "manufacturer", "packageType", "pinCount", "jedecOutline"] as const) {
     full[key] = { value: key === "pinCount" ? 8 : "x", confidence: 1, method: "deterministic", citation: null } as never;
   }
   full.pins = { value: [{ number: "1", name: "A", electricalType: "unspecified" }], confidence: 1, method: "deterministic", citation: null };

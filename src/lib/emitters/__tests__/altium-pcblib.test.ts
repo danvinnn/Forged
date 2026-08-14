@@ -91,6 +91,7 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
     manufacturer: "ACME",
     packageType: "8-pin SOIC",
     packageOutlineCode: null,
+    jedecOutline: null,
   vendorLandPattern: null,
   exposedPad: false,
     pinCount: 8,
@@ -103,7 +104,17 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       leadLengthMm: null,
       leadCount: 8,
       leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
-      thermalPadLengthMm: null, thermalPadWidthMm: null
+      thermalPadLengthMm: null, thermalPadWidthMm: null,
+      landPadLengthMm: null,
+      landPadWidthMm: null,
+      landSpanMm: null,
+      leadSides: null,
+      leadForm: null,
+      vacantLeadSlot: null,
+      solderMaskExpansionMm: null,
+      solderMaskDefined: null,
+      thermalViaDiameterMm: null,
+      thermalViaPitchMm: null
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "ACME27524.pdf",
@@ -131,6 +142,7 @@ function onePadGeometry(): FootprintGeometry {
     body: { halfWidthMm: 1.95, halfHeightMm: 2.45 },
     courtyard: { halfWidthMm: 3.2, halfHeightMm: 2.7 },
     pin1Marker: { xMm: -2.7, yMm: -2.2 },
+    thermalVias: [],
     provenance: {
       family: "test",
       source: "test",
@@ -336,4 +348,26 @@ test("a name too long for a compound-file storage still round-trips", () => {
 
   assert.equal(result.parts[0].name, name);
   assert.deepEqual(result.diagnostics, []);
+});
+
+test("the datasheet's solder mask clearance is written, with the manual flag set", () => {
+  // Two fields, both required. The value at offset 94 is what Altium ignores
+  // unless the manual flag at 106 says to use it instead of the board rule.
+  // Offsets come from the byte map in ALTIUM.md and line up with the three this
+  // writer already writes blind: hole_size 45, rotation 52, layer id 114.
+  const geometry = onePadGeometry();
+  const masked = { ...geometry, pads: geometry.pads.map((pad) => ({ ...pad, solderMaskMarginMm: 0.05 })) };
+
+  const withMask = emitAltiumPcbLib(masked);
+  const withoutMask = emitAltiumPcbLib(onePadGeometry());
+
+  assert.notDeepEqual(withMask, withoutMask, "a stated clearance must change the file");
+});
+
+test("a datasheet that states no clearance leaves the board rule alone", () => {
+  // Absent is not zero. Writing zero would open the mask exactly to the copper
+  // edge, which is a real and different instruction from "not stated".
+  const bytes = emitAltiumPcbLib(onePadGeometry());
+  const again = emitAltiumPcbLib(onePadGeometry());
+  assert.deepEqual(bytes, again, "and it stays deterministic");
 });

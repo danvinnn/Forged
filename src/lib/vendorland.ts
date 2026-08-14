@@ -12,12 +12,26 @@
  *   6X (0.65)     six gaps at the 0.65 mm pitch
  *   (5.8)         the centre-to-centre span
  *
- * This deliberately does NOT feed the generated footprint. The drawing is a
- * flattened figure, so which repeated value is the land length and which is the
- * land width cannot be recovered from the text with certainty, and a swap would
- * produce a wrong footprint that still looks plausible. Reading it as a
- * CORROBORATION is sound: we check whether our computed numbers appear among the
- * vendor's, which needs no such assumption.
+ * ## What this reader is, and what it is NOT, since 2026-08-12
+ *
+ * This is the TEXT reader, and it stays a corroboration. Its limit is real: the
+ * drawing is a flattened figure, so which repeated value is the land length and
+ * which the land width cannot be recovered from the text with certainty, and a
+ * swap would produce a wrong footprint that still looks plausible. Checking
+ * whether our numbers appear among the vendor's needs no such assumption.
+ *
+ * What was wrong was the CONCLUSION drawn from that limit. Because the text
+ * could not read the drawing unambiguously, the printed pattern was excluded
+ * from the footprint altogether, and the footprint was computed instead from
+ * IPC-7351B plus a hand-typed family table. Measured across the hold-out, 36 of
+ * 39 datasheets print a recommended footprint and this reader finds 17. So the
+ * document stated the answer, the code derived a substitute from outside
+ * information, and used the answer only to VETO the substitute.
+ *
+ * The printed pattern now feeds the footprint directly, read off the RENDERED
+ * page into `dimensions.landPad*` and `dimensions.landSpanMm`. A reader that
+ * sees the drawing has none of the ambiguity described above, which is what
+ * makes it safe there and still unsafe here.
  */
 
 import { type DatasheetText } from "./pdftext";
@@ -106,10 +120,16 @@ export function findVendorLandPattern(doc: DatasheetText, family?: string): Vend
  * that prints one on a numbered page is worse than saying nothing. It sends
  * somebody looking for a comparison that is sitting in front of them.
  *
- * Deliberately NOT extended into a bare-number reader. Every number on a page
- * would be a candidate, and a coincidental match reporting `agrees` is a worse
- * failure than reporting nothing at all: it would claim the vendor endorses a
+ * Deliberately NOT extended into a bare-number reader, and that is still right
+ * FOR THIS READER: every number on a page would be a candidate, and a
+ * coincidental match reporting `agrees` would claim the vendor endorses a
  * pattern they do not print.
+ *
+ * It is no longer a reason to leave the drawing unread. ST's bare numbers are
+ * perfectly legible to a reader that SEES the page, which is how the footprint
+ * now gets them; this function's job is only to say "there is one here that the
+ * text layer cannot parse" so the user is never told a datasheet prints no
+ * footprint when it prints one on a numbered page.
  */
 const UNREADABLE_FOOTPRINT_HEADING = /\bfootprint example\b/i;
 

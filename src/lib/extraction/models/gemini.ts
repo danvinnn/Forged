@@ -11,7 +11,56 @@ import { buildPrompt, parseModelResponse } from "./prompt";
  * check inside this file.
  */
 
-const MODEL_ID = "gemini-3.6-flash";
+/**
+ * Which Gemini model to call.
+ *
+ * Overridable because the free tier's request quota is PER MODEL, so a
+ * measurement that cannot run on the production model can run on a sibling of
+ * the same class with an untouched budget. It is not a tuning knob: the default
+ * is what production uses, and anything else has to be asked for.
+ */
+function modelId(): string {
+  return process.env.FORGE_GEMINI_MODEL || "gemini-3.6-flash";
+}
+
+/**
+ * How many tokens the model may spend THINKING before it answers.
+ *
+ * Unset by default, which is the model's own dynamic budget and what every
+ * number recorded so far was measured under. Set it to cap reasoning, or to 0
+ * to ask for none.
+ *
+ * Why it exists, measured over 246 cached calls on 2026-08-13:
+ *
+ *   billed output tokens     1,091,025    $2.73
+ *   tokens actually returned    ~88,734    $0.22
+ *   never returned to us     ~1,002,291    $2.51
+ *
+ * 92% of what we pay for on the output side is reasoning we are billed for and
+ * never see, and output is 68% of the whole bill. The clearest single case: a
+ * CD4017B call that returned thirteen characters of JSON was billed for 2,726
+ * output tokens.
+ *
+ * That makes this the largest cost lever in the product by a wide margin, and
+ * the only open question is whether the thinking is what makes the model read a
+ * mechanical drawing correctly. That is measurable, so it must be measured
+ * rather than assumed, which is what the knob is for.
+ *
+ * **Use 1, not 0, to turn thinking off on the 3.x flash models.** Measured
+ * against `gemini-3.6-flash` on 2026-08-13: a budget of 0 is rejected outright
+ * with `400 Bad Request: Request contains an invalid argument`, while a budget
+ * of 1 is accepted and reports `thoughtsTokenCount: 0`. Only some models, such
+ * as `gemini-3-flash-preview`, accept 0. Zero is still passed through as asked
+ * rather than quietly rewritten to 1, because a setting that silently becomes a
+ * different setting is how a measurement ends up describing a run that never
+ * happened.
+ */
+function thinkingBudget(): number | null {
+  const raw = process.env.FORGE_THINKING_BUDGET;
+  if (raw === undefined || raw === "") return null;
+  const budget = Number(raw);
+  return Number.isInteger(budget) && budget >= 0 ? budget : null;
+}
 
 /**
  * Generation settings, both of which are correctness requirements here rather
@@ -28,10 +77,19 @@ const MODEL_ID = "gemini-3.6-flash";
  * its answer in commentary or a markdown fence degraded to "no answer" silently.
  * Asking the API for JSON makes the shape the API's job.
  */
-const GENERATION_CONFIG = {
-  temperature: 0,
-  responseMimeType: "application/json"
-} as const;
+function generationConfig(): Record<string, unknown> {
+  const budget = thinkingBudget();
+  return {
+    temperature: 0,
+    responseMimeType: "application/json",
+    // The REST field is `generationConfig.thinkingConfig.thinkingBudget`. This
+    // SDK version predates it and has no type for it, but it forwards
+    // `generationConfig` verbatim, so the field reaches the API. Omitted
+    // entirely when unset, so the default request is byte-identical to the one
+    // every existing measurement was taken with.
+    ...(budget === null ? {} : { thinkingConfig: { thinkingBudget: budget } })
+  };
+}
 
 /**
  * Wall-clock ceiling for a model call. The SDK exposes no timeout, and Node's
@@ -101,7 +159,21 @@ function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T>
 }
 
 export class GeminiExtractionModel implements ExtractionModel {
-  readonly name = "gemini";
+  /**
+   * Carries the model id and the thinking budget, because the bench cache keys
+   * on this name and on the prompt, and on NOTHING else about the request.
+   *
+   * Without it, changing the thinking budget would leave every cache key
+   * identical, so a comparison run would replay answers taken under the old
+   * setting and report, confidently, that the knob changed nothing. A setting
+   * that alters the answer has to alter the key.
+   *
+   * Plain `gemini` when nothing is overridden, so the 246 entries already on
+   * disk stay reachable and every number measured so far still replays.
+   */
+  readonly name = ["gemini", process.env.FORGE_GEMINI_MODEL, thinkingBudget() === null ? null : `think${thinkingBudget()}`]
+    .filter(Boolean)
+    .join(":");
 
   isConfigured(): boolean {
     return Boolean(process.env.GOOGLE_GEMINI_API_KEY);
@@ -114,7 +186,7 @@ export class GeminiExtractionModel implements ExtractionModel {
     }
 
     const client = new GoogleGenerativeAI(apiKey);
-    const model = client.getGenerativeModel({ model: MODEL_ID, generationConfig: GENERATION_CONFIG });
+    const model = client.getGenerativeModel({ model: modelId(), generationConfig: generationConfig() });
 
     // Text first, then the renders in page order. The prompt names the pages
     // and says they are attached in that order, so the two must not diverge.

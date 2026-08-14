@@ -8,10 +8,12 @@ import {
 } from "./types";
 import {
   computeLandPattern,
+  COURTYARD_EXCESS,
   LandPatternError,
   thermalPadLand,
   type DensityLevel,
   type LandPattern,
+  type LeadDimensions,
   type ThermalPadLand
 } from "./ipc7351";
 import { resolvePackageDefinition, SUPPORTED_PACKAGE_FAMILIES, type PackageDefinition } from "./packages";
@@ -19,7 +21,8 @@ import {
   type FootprintGeometry,
   type Pad,
   type SymbolGeometry,
-  type SymbolPin
+  type SymbolPin,
+  type ThermalVia
 } from "./geometry";
 import { emitKicadFootprint, emitKicadSymbol } from "./emitters/kicad";
 import { emitAltiumPcbLib, emitAltiumSchLib } from "./emitters/altium";
@@ -39,8 +42,22 @@ import { emitAltiumPcbLib, emitAltiumSchLib } from "./emitters/altium";
  * a parsing gap rather than a permanent field.
  */
 export interface RequiredInput {
-  /** The `/api/export` request field that answers it. */
-  field: "formedLeadSpanMm";
+  /**
+   * The `/api/export` request field that answers it.
+   *
+   * The land-pattern three and `leadSides` were added on 2026-08-13, when the
+   * rule was settled: every number describing a part comes from that part's
+   * datasheet, and where the document genuinely does not carry one we ASK. Until
+   * then a package the family table had never heard of was a flat refusal, and
+   * a package it HAD heard of was quietly given that table's invented lead
+   * dimensions. Neither is the document speaking.
+   */
+  field:
+    | "formedLeadSpanMm"
+    | "landPadLengthMm"
+    | "landPadWidthMm"
+    | "landSpanMm"
+    | "leadSides";
   /** Label for the input, in the user's language rather than the standard's. */
   label: string;
   /** Why no datasheet can answer it. Shown, not logged. */
@@ -58,6 +75,89 @@ export interface RequiredInput {
  * package has no characterised land pattern, which is our gap to close and not
  * something they can type their way out of.
  */
+/**
+ * How much bigger than the package a printed land pattern may be.
+ *
+ * Lands sit a little outboard of the leads, so the pattern is always somewhat
+ * larger than the body; 2x its largest dimension is far beyond any real
+ * footprint and comfortably below a factor-of-ten misreading.
+ */
+const PRINTED_LAND_EXTENT_LIMIT = 2;
+
+/**
+ * The land pattern the datasheet PRINTS, turned into the shape the emitters use.
+ *
+ * Three numbers off the vendor's own recommended-footprint drawing: one land's
+ * length and width, and the centre-to-centre distance between opposing rows.
+ * Everything else follows arithmetically, so nothing is assumed and no standard
+ * is consulted.
+ *
+ * Returns null unless all three are present and physically consistent. A
+ * PARTIAL printed pattern is not a pattern: filling the gaps from a computed
+ * one would mix two sources into a footprint that claims to be the vendor's.
+ */
+function printedLand(part: ResolvedPart, densityLevel: DensityLevel): LandPattern | null {
+  const padLengthMm = part.dimensions.landPadLengthMm;
+  const padWidthMm = part.dimensions.landPadWidthMm;
+  const centreSpan = part.dimensions.landSpanMm;
+  if (!padLengthMm || !padWidthMm || !centreSpan) return null;
+  if (padLengthMm <= 0 || padWidthMm <= 0 || centreSpan <= 0) return null;
+
+  // Opposing lands must not meet in the middle. If they would, one of the three
+  // numbers describes something other than this footprint, and the drawing has
+  // been misread rather than the package being strange.
+  const gMinMm = centreSpan - padLengthMm;
+  if (gMinMm <= 0) return null;
+
+  // Two checks against the package's OWN dimensions, because nothing else looks
+  // at these numbers any more.
+  //
+  // Until this path existed, a printed pattern was only ever used to veto a
+  // computed one, so a misreading could not reach a board: the computation was
+  // the thing being emitted. Now the printed pattern IS what is emitted, and a
+  // decimal point read wrongly (1.5 as 15) would be emitted with it. These are
+  // the cheapest independent facts available, and both come off the mechanical
+  // drawing rather than from any standard.
+  // THE BAND CHECK, where the drawing gives enough to compute it. See
+  // `withinIpcBand`: a vendor pattern between Level C and Level A is a design
+  // choice, one outside it is a misread. This is the industry's bound and it
+  // supersedes the two invented ones below, which stay as a floor for documents
+  // that print a footprint but no lead dimensions.
+  const band = withinIpcBand(part, padLengthMm, centreSpan);
+  if (band === false) return null;
+
+  const pitchMm = part.dimensions.pitchMm;
+  // Neighbouring lands in one row sit a pitch apart, so a land WIDER than the
+  // pitch would merge with the one beside it. No footprint does this.
+  if (pitchMm && pitchMm > 0 && padWidthMm >= pitchMm) return null;
+
+  // And the whole pattern has to be the size of the part. A land span several
+  // times the package's largest dimension is a misread rather than a footprint.
+  const packageExtent = Math.max(
+    part.dimensions.bodyLengthMm ?? 0,
+    part.dimensions.bodyWidthMm ?? 0,
+    part.dimensions.leadSpanMm?.maxMm ?? 0
+  );
+  if (packageExtent > 0 && centreSpan + padLengthMm > packageExtent * PRINTED_LAND_EXTENT_LIMIT) {
+    return null;
+  }
+
+  const zMaxMm = centreSpan + padLengthMm;
+  return {
+    padWidthMm,
+    padLengthMm,
+    padCentreMm: centreSpan / 2,
+    zMaxMm,
+    gMinMm,
+    // The courtyard is a keep-out convention for the board, not a dimension of
+    // the part, and datasheets rarely print one. Derived the same way as for a
+    // computed pattern, which is the only thing the density level touches here.
+    courtyardHalfMm: zMaxMm / 2 + COURTYARD_EXCESS[densityLevel],
+    densityLevel,
+    source: "printed"
+  };
+}
+
 export class FootprintUnavailableError extends Error {
   constructor(
     readonly reason: string,
@@ -217,10 +317,18 @@ function buildStepModel(part: ResolvedPart): { content: string; note: string; su
  * top right where pin 8 belongs. Every part exported before this fix has its
  * second row reversed, which is a miswired board, not a cosmetic defect.
  */
-function dualRowSides(pinCount: number): { left: number[]; right: number[] } {
+function dualRowSides(
+  pinCount: number,
+  /**
+   * The grid position on the SHORTER row that carries no lead, 1-based in the
+   * same top-to-bottom order the rows are drawn in. Read off the pinout; see
+   * `dimensions.vacantLeadSlot`.
+   */
+  vacantSlot?: number | null
+): { left: Array<number | null>; right: Array<number | null> } {
   const perSide = Math.ceil(pinCount / 2);
-  const left: number[] = [];
-  const right: number[] = [];
+  const left: Array<number | null> = [];
+  const right: Array<number | null> = [];
 
   for (let number = 1; number <= pinCount; number += 1) {
     if (number <= perSide) left.push(number);
@@ -229,6 +337,16 @@ function dualRowSides(pinCount: number): { left: number[]; right: number[] } {
   // The right column is read bottom to top, so reverse it into top-to-bottom
   // drawing order. This single line is the counterclockwise convention.
   right.reverse();
+
+  // An odd lead count leaves the second row one short, and WHERE the gap sits
+  // is a fact about the package that the pitch does not imply. On a 5-lead
+  // SOT-23 the vacant position is the middle of the two-lead side: filling the
+  // row from the top instead would put pin 4 where the package has nothing and
+  // pin 5 where pin 4 belongs, which is a miswired board that looks correct in
+  // CAD. This used to be an outright refusal; now the position is read.
+  if (right.length < perSide && vacantSlot && vacantSlot >= 1 && vacantSlot <= perSide) {
+    right.splice(vacantSlot - 1, 0, null);
+  }
 
   return { left, right };
 }
@@ -278,6 +396,9 @@ function pinByNumber(part: ResolvedPart): Map<string, PinRecord> {
  * coordinate is a defect.
  */
 function buildSymbolGeometry(part: ResolvedPart): SymbolGeometry {
+  // No vacant slot is passed, deliberately. A gap in the LEAD grid is a fact
+  // about the package's physical layout; a schematic symbol has one pin per
+  // electrical pin and no holes in it.
   const { left, right } = dualRowSides(part.pinCount);
   const byNumber = pinByNumber(part);
   const rows = Math.max(left.length, right.length);
@@ -307,8 +428,8 @@ function buildSymbolGeometry(part: ResolvedPart): SymbolGeometry {
       });
     });
   };
-  collect(left, "left");
-  collect(right, "right");
+  collect(left.filter((n): n is number => n !== null), "left");
+  collect(right.filter((n): n is number => n !== null), "right");
 
   return {
     name: part.partNumber,
@@ -329,8 +450,10 @@ function buildSymbolGeometry(part: ResolvedPart): SymbolGeometry {
 function buildFootprintGeometry(
   part: ResolvedPart,
   densityLevel: DensityLevel,
-  formedLeadSpanMm?: number
+  formedLeadSpanMm?: number,
+  supplied?: SuppliedDimensions
 ): FootprintGeometry {
+  part = withSupplied(part, supplied);
   // An exposed thermal pad is laid out when its size is known, and refused when
   // it is not. It is a mandatory soldered feature: the numbered lands alone are
   // a footprint the board house builds wrong.
@@ -349,52 +472,83 @@ function buildFootprintGeometry(
     }
   }
 
+  // THE DATASHEET'S OWN FOOTPRINT, FIRST, AND WITHOUT CONSULTING ANY TABLE.
+  //
+  // The rule this obeys: every number describing a part comes from that part's
+  // datasheet, and where the document genuinely does not carry one we ask. A
+  // hand-typed family table supplying lead spans it invented is the opposite of
+  // that, and it was not a hypothetical: measured 2026-08-13, all 12 parts that
+  // shipped from the tuned corpus were fed by the table, and the table refused
+  // SOT-23, SOT-10, TSOT and LFCSP outright. TLV9061 prints its whole footprint
+  // (1.1 x 0.6 mm lands on a 1.9 mm centre span) and was refused for having a
+  // package name the table had never heard of, because the lookup below threw
+  // 77 lines before the printed pattern was ever consulted.
+  //
+  // When the document states the pads, their span, the pitch and how many sides
+  // carry leads, nothing is left for a table to contribute. IPC-7351B still
+  // computes the courtyard, which is arithmetic applied to these numbers rather
+  // than a claim about this part.
+  const printed = printedLand(part, densityLevel);
+  const fromDatasheet = printed ? datasheetLayout(part) : null;
+
+  if (printed && fromDatasheet) {
+    return assemble(part, densityLevel, printed, fromDatasheet);
+  }
+
+  // DERIVED FROM THIS PART'S OWN PACKAGE DRAWING, still without a table.
+  //
+  // The document prints a package outline but no recommended footprint, which
+  // is the common case: 40 of 46 corpus datasheets print an outline and only 27
+  // print a land pattern. An engineer in this position runs the IPC wizard in
+  // Altium or KiCad, types the drawing's dimensions in, and takes the result.
+  // This is that operation.
+  //
+  // Every input is from this datasheet. IPC-7351B supplies the arithmetic, not
+  // a claim about the part, which is the line that separates it from the family
+  // table it replaces: the table asserted lead spans it had invented.
+  const drawnLead = leadFromDrawing(part);
+  if (drawnLead && fromDatasheetLayoutOnly(part)) {
+    try {
+      const derived = computeLandPattern(drawnLead, { densityLevel });
+      return assemble(part, densityLevel, derived, {
+        ...fromDatasheetLayoutOnly(part)!,
+        source: `IPC-7351B density ${densityLevel}, computed from this datasheet's own package drawing`
+      });
+    } catch (error) {
+      if (!(error instanceof LandPatternError)) throw error;
+      // Fall through to the table, which may still know this family.
+    }
+  }
+
   // The package, checked against this part's own mechanical drawing. Shared with
   // the parse route so the land pattern the UI reports on is the one the export
   // actually builds; see resolvePackageDefinition.
   const lookup = resolvePackageDefinition(part.packageType, part.pinCount, {
     outlineCode: part.packageOutlineCode,
+    leadForm: part.dimensions.leadForm,
     pitchMm: part.dimensions.pitchMm,
     leadWidthMm: part.dimensions.leadWidthMm,
     leadSpanMm: part.dimensions.leadSpanMm,
     leadLengthMm: part.dimensions.leadLengthMm,
     leadContactMm: part.dimensions.leadContactMm,
+    // The body is the land reference for a NO-LEAD package, whose terminals end
+    // at the body edge. The gull-wing route ignores these.
+    bodyLengthMm: part.dimensions.bodyLengthMm,
+    bodyWidthMm: part.dimensions.bodyWidthMm,
     vendorLandMm: part.vendorLandPattern?.valuesMm ?? null
   });
-  if (!lookup.ok) throw new FootprintUnavailableError(lookup.failure.reason, lookup.failure.supported);
+  if (!lookup.ok) {
+    // The document did not give us a footprint and the table has no entry. That
+    // is not a dead end any more: it is a question, because the user can read
+    // these off a vendor application note and we cannot invent them.
+    throw new FootprintUnavailableError(
+      `${lookup.failure.reason} This datasheet prints no recommended footprint either, so there is nothing to read. Supply the land pattern and it will be built from your numbers.`,
+      lookup.failure.supported,
+      askForLandPattern(part)
+    );
+  }
 
   const definition: PackageDefinition = lookup.definition;
-
-  // An ODD lead count means the two rows are not the same length, and where the
-  // shorter row's missing position sits is a package convention this table does
-  // not carry. On a five-lead SOT-23 (JEDEC MO-178) the two-lead side occupies
-  // the OUTER positions and the middle one is empty; on a three-lead it is the
-  // single lead that is centred. Those are different rules and neither follows
-  // from the pitch.
-  //
-  // `dualRowSides` splits 5 into [1,2,3] and [5,4] correctly, and the pad loop
-  // then indexes each row from its own top, which puts pin 4 in the middle-right
-  // position that a real SOT-23-5 leaves empty. That is a miswired board rather
-  // than a cosmetic defect, so it refuses. No characterised family has an odd
-  // count today, which is why this has never fired; it exists so that adding one
-  // cannot silently produce the wrong pad.
-  if (definition.arrangement === "dual" && part.pinCount % 2 !== 0) {
-    throw new FootprintUnavailableError(
-      `${definition.family} is described here as two opposing rows, and ${part.pinCount} is an odd number of leads, so the rows are unequal. Which position the shorter row leaves empty is a package convention rather than something the pitch implies, and it is not recorded for this family, so no footprint is generated.`,
-      SUPPORTED_PACKAGE_FAMILIES
-    );
-  }
-
-  // The same rule one corner further round. A quad package divides its leads
-  // equally between four sides, and a count that does not divide by four means
-  // some side is short; which one, and where the gap sits, is a package
-  // convention this table does not carry.
-  if (definition.arrangement === "quad" && part.pinCount % 4 !== 0) {
-    throw new FootprintUnavailableError(
-      `${definition.family} has four rows of leads, and ${part.pinCount} does not divide equally between them. Which side carries the odd lead is a package convention rather than something the pitch implies, so no footprint is generated.`,
-      SUPPORTED_PACKAGE_FAMILIES
-    );
-  }
 
   // A ceramic flat pack arrives with straight leads 22.7 mm tip to tip and is
   // trimmed and formed by the assembler, so its seated span is a property of the
@@ -427,12 +581,288 @@ function buildFootprintGeometry(
     };
   }
 
-  let land: LandPattern;
+  // The datasheet's OWN recommended footprint, where it prints one, IS the
+  // answer. Everything below it is what to do when the document is silent.
+  //
+  // 36 of 39 hold-out datasheets print this on a named page. Until 2026-08-12
+  // none of it reached the footprint: the pattern was computed from IPC-7351B
+  // and a hand-typed family table, and the vendor's own drawing was read only
+  // to VETO that computation. So the document stated the answer, the code
+  // derived a substitute from outside information, and then checked the
+  // substitute against the answer it had thrown away. It also meant a TI house
+  // rule could be applied to an ST part while ST's own numbers sat unread two
+  // pages later.
+  let land: LandPattern | null = printedLand(part, densityLevel);
+
+  if (!land) {
+    try {
+      land = computeLandPattern(lead, { densityLevel });
+    } catch (error) {
+      if (error instanceof LandPatternError) throw new FootprintUnavailableError(error.message);
+      throw error;
+    }
+  }
+
+  return assemble(part, densityLevel, land, {
+    arrangement: definition.arrangement,
+    pitchMm: definition.pitchMm,
+    family: definition.family,
+    source: definition.source
+  });
+}
+
+/**
+ * The lead geometry IPC-7351B needs, taken from this part's OWN drawing.
+ *
+ * The same four values the hand-typed family table used to supply per family,
+ * except read off the document in front of us. `contact` is the foot that sits
+ * on the pad (drawing dimension L), `span` the tip-to-tip extent, `width` the
+ * lead width; all three are printed on any package outline and all three were
+ * already being extracted.
+ *
+ * Gull-wing only, and that is a hard limit rather than a simplification.
+ * IPC-7351B publishes fillet goals per lead form, and only the gull-wing table
+ * is entered in `ipc7351.ts`. A no-lead package routed through here would be
+ * computed against goals that are not its own, which is precisely the mistake
+ * the vendor-specific rule being removed alongside this made.
+ */
+function leadFromDrawing(part: ResolvedPart): LeadDimensions | null {
+  if (part.dimensions.leadForm !== "gullwing") return null;
+  const span = part.dimensions.leadSpanMm;
+  const width = part.dimensions.leadWidthMm;
+  const contact = part.dimensions.leadContactMm;
+  if (!span || !width || !contact) return null;
+  return {
+    form: "gullwing",
+    span: { minMm: span.minMm, maxMm: span.maxMm },
+    contact: { minMm: contact.minMm, maxMm: contact.maxMm },
+    width: { minMm: width.minMm, maxMm: width.maxMm }
+  };
+}
+
+/**
+ * Whether a printed pattern sits inside the band IPC-7351B would allow.
+ *
+ * The practitioner rule, from the PCB Libraries forum where the IPC-7351
+ * authors post: "Any mfr. recommended pattern that is between the Least and
+ * Most density level is OK to use." Level C is the least material, Level A the
+ * most, so a vendor pattern that lands between them is a legitimate design
+ * choice and a pattern outside them is a misread or a house rule we should not
+ * silently adopt.
+ *
+ * This replaces three checks I invented on 2026-08-12 (pads must not meet, pad
+ * narrower than pitch, overall size sanity). Those were reasonable but were my
+ * judgment; this is the industry's, and it is a tighter bound.
+ *
+ * Returns null when the band cannot be computed, which is not a failure: a
+ * datasheet that prints a footprint but no lead dimensions is common, and the
+ * invented guards still run underneath as a floor.
+ */
+function withinIpcBand(part: ResolvedPart, padLengthMm: number, centreSpan: number): boolean | null {
+  const lead = leadFromDrawing(part);
+  if (!lead) return null;
   try {
-    land = computeLandPattern(lead, { densityLevel });
-  } catch (error) {
-    if (error instanceof LandPatternError) throw new FootprintUnavailableError(error.message);
-    throw error;
+    const most = computeLandPattern(lead, { densityLevel: "A" });
+    const least = computeLandPattern(lead, { densityLevel: "C" });
+    const zMax = centreSpan + padLengthMm;
+    // Compared on the toe-to-toe extent, which is the dimension both density
+    // levels move most and the one a misread decimal point distorts first.
+    return zMax >= least.zMaxMm - BAND_TOLERANCE_MM && zMax <= most.zMaxMm + BAND_TOLERANCE_MM;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Slack on the band edges, in mm.
+ *
+ * The band is computed from the drawing's own tolerances and the vendor's
+ * pattern was computed from theirs, so exact coincidence at the boundary is not
+ * expected. Wide enough that a legitimate pattern sitting on Level C is not
+ * rejected, far too small to admit a factor-of-ten misread.
+ */
+const BAND_TOLERANCE_MM = 0.3;
+
+/**
+ * Choices that belong to the BOARD and the assembly process, not to the part.
+ *
+ * The rule this serves: everything about the part comes from the datasheet;
+ * everything about the solder joint comes from the datasheet where it printed a
+ * recommended footprint, and otherwise from a setting that defaults to the
+ * industry standard. Nothing is invented.
+ *
+ * A datasheet cannot answer any of these, because the vendor does not know the
+ * reflow profile, the stencil or the reliability target. Leaving them as
+ * constants in the code was the same thing as answering them on the user's
+ * behalf without saying so.
+ */
+export interface ForgeSettings {
+  /**
+   * IPC-7351B density level: `A` most material, `B` nominal, `C` least.
+   *
+   * Unset means the industry nominal. Set per project by anyone whose assembly
+   * process wants otherwise, e.g. `A` where boards are hand-reworked.
+   */
+  densityLevel?: DensityLevel;
+}
+
+/**
+ * Process-wide defaults.
+ *
+ * Read per call rather than captured at import so a host can set them at any
+ * point, and deliberately narrow: this is the seam a project-level settings
+ * store plugs into, not the store itself.
+ */
+export function settingsDefault(): ForgeSettings {
+  const level = process.env.FORGE_DENSITY_LEVEL;
+  return level === "A" || level === "B" || level === "C" ? { densityLevel: level } : {};
+}
+
+/**
+ * Numbers the USER supplied, answering what their datasheet did not carry.
+ *
+ * The other half of `askForLandPattern`. Asking a question with no way to
+ * answer it is worse than refusing outright, so every field that can be asked
+ * for here can also be supplied here, and the two lists are kept in step by
+ * `RequiredInput["field"]`.
+ *
+ * These are applied to the record BEFORE anything reads it, so the rest of the
+ * generator cannot tell a supplied number from a read one. What it can tell,
+ * and what the record records, is the provenance: a supplied land says so.
+ */
+export interface SuppliedDimensions {
+  landPadLengthMm?: number;
+  landPadWidthMm?: number;
+  landSpanMm?: number;
+  leadSides?: 2 | 4;
+}
+
+/** A copy of the part with the user's answers filled in where the datasheet was silent. */
+function withSupplied(part: ResolvedPart, supplied: SuppliedDimensions | undefined): ResolvedPart {
+  if (!supplied) return part;
+  // Only fills BLANKS. A number the datasheet stated is never overwritten by a
+  // typed one: the document is the authority, and a user answering a question
+  // they were not asked must not be able to silently redefine a read value.
+  const fill = <T,>(read: T | null, given: T | undefined): T | null => (read === null ? given ?? null : read);
+  return {
+    ...part,
+    dimensions: {
+      ...part.dimensions,
+      landPadLengthMm: fill(part.dimensions.landPadLengthMm, supplied.landPadLengthMm),
+      landPadWidthMm: fill(part.dimensions.landPadWidthMm, supplied.landPadWidthMm),
+      landSpanMm: fill(part.dimensions.landSpanMm, supplied.landSpanMm),
+      leadSides: fill(part.dimensions.leadSides, supplied.leadSides)
+    }
+  };
+}
+
+/**
+ * What to ask for, when the datasheet prints no footprint we could read.
+ *
+ * Only the values actually missing are asked for, so a document that gave two
+ * of the three land numbers is one question away rather than four. Every entry
+ * says WHY the datasheet cannot answer it, because "type a number" with no
+ * reason is how a tool trains people to type anything.
+ */
+function askForLandPattern(part: ResolvedPart): RequiredInput[] {
+  const needs: RequiredInput[] = [];
+  const why =
+    `This datasheet does not print a recommended footprint for ${part.packageType}, ` +
+    `and no land pattern is derived from anything outside it. Take these three from the ` +
+    `vendor's application note or your own library.`;
+
+  if (part.dimensions.landPadLengthMm === null) {
+    needs.push({ field: "landPadLengthMm", label: "Land length, along the lead", why, unit: "mm", scope: "part" });
+  }
+  if (part.dimensions.landPadWidthMm === null) {
+    needs.push({ field: "landPadWidthMm", label: "Land width, across the lead", why, unit: "mm", scope: "part" });
+  }
+  if (part.dimensions.landSpanMm === null) {
+    needs.push({ field: "landSpanMm", label: "Centre-to-centre span between opposing rows", why, unit: "mm", scope: "part" });
+  }
+  if (part.dimensions.leadSides !== 2 && part.dimensions.leadSides !== 4) {
+    needs.push({
+      field: "leadSides",
+      label: "Sides carrying leads (2 or 4)",
+      why: `The package drawing shows this, but it was not read for ${part.packageType}. Two opposing rows is 2; leads on all four sides is 4.`,
+      unit: "mm",
+      scope: "part"
+    });
+  }
+  return needs;
+}
+
+/**
+ * Everything the pad layout needs that is NOT the land pattern itself.
+ *
+ * Four values, and the point of naming them is that this is the complete list.
+ * The family table was carrying these four plus a set of invented lead
+ * dimensions; once the datasheet supplies the land pattern directly, the lead
+ * dimensions have no consumer and only these remain. All four are printed on
+ * any package drawing.
+ */
+interface PadLayout {
+  arrangement: "dual" | "quad";
+  pitchMm: number;
+  /** Named for the record and the file name. The datasheet's own designator. */
+  family: string;
+  /** Where the numbers came from. Required: a layout without a source is a guess. */
+  source: string;
+}
+
+/**
+ * The layout, taken entirely from the part's own datasheet.
+ *
+ * Null when the document did not give enough, which is the signal to fall back
+ * to the table rather than to guess. `leadSides` is the only genuinely new
+ * requirement: pitch, pin count and the land pattern were already being read.
+ */
+/** The layout alone, for the derived path where there is no printed pattern. */
+function fromDatasheetLayoutOnly(part: ResolvedPart): PadLayout | null {
+  return datasheetLayout(part);
+}
+
+function datasheetLayout(part: ResolvedPart): PadLayout | null {
+  const pitchMm = part.dimensions.pitchMm;
+  const sides = part.dimensions.leadSides;
+  if (!pitchMm || pitchMm <= 0 || (sides !== 2 && sides !== 4)) return null;
+  return {
+    arrangement: sides === 4 ? "quad" : "dual",
+    pitchMm,
+    family: part.packageType,
+    source: "the recommended footprint printed in this datasheet"
+  };
+}
+
+function assemble(
+  part: ResolvedPart,
+  densityLevel: DensityLevel,
+  land: LandPattern,
+  definition: PadLayout
+): FootprintGeometry {
+  // The two rules that decide whether the pads can be PLACED at all. They were
+  // below the table lookup and are now above both paths, because they are facts
+  // about arranging pins, not about which table an entry came from.
+  if (definition.arrangement === "dual" && part.pinCount % 2 !== 0 && !part.dimensions.vacantLeadSlot) {
+    throw new FootprintUnavailableError(
+      `${definition.family} is described here as two opposing rows, and ${part.pinCount} is an odd number of leads, so one row is a lead short. Which position it leaves empty is drawn on the pinout but was not read, and guessing it would put a lead where the package has none. No footprint is generated.`,
+      SUPPORTED_PACKAGE_FAMILIES,
+      [
+        {
+          field: "leadSides",
+          label: `Which position on the short row is empty (1 to ${Math.ceil(part.pinCount / 2)})`,
+          why: `${part.partNumber} has ${part.pinCount} leads in two rows, so one row has a gap. The pinout drawing shows where; it was not read here.`,
+          unit: "mm",
+          scope: "part"
+        }
+      ]
+    );
+  }
+  if (definition.arrangement === "quad" && part.pinCount % 4 !== 0) {
+    throw new FootprintUnavailableError(
+      `${definition.family} has four rows of leads, and ${part.pinCount} does not divide equally between them. Which side carries the odd lead is a package convention rather than something the pitch implies, so no footprint is generated.`,
+      SUPPORTED_PACKAGE_FAMILIES
+    );
   }
 
   const byNumber = pinByNumber(part);
@@ -444,7 +874,11 @@ function buildFootprintGeometry(
   const perSideCount = quad ? part.pinCount / 4 : Math.ceil(part.pinCount / 2);
   const rowSpanMm = (perSideCount - 1) * definition.pitchMm;
 
-  const push = (number: number, xMm: number, yMm: number, along: "x" | "y") => {
+  const push = (number: number | null, xMm: number, yMm: number, along: "x" | "y") => {
+    // A vacant grid position gets no pad. The slot still consumes its place in
+    // the row, which is the whole point: the leads either side of it keep their
+    // real positions.
+    if (number === null) return;
     const pin = byNumber.get(String(number));
     pads.push({
       number: String(pin?.number ?? number),
@@ -456,7 +890,13 @@ function buildFootprintGeometry(
       widthMm: along === "x" ? land.padLengthMm : land.padWidthMm,
       heightMm: along === "x" ? land.padWidthMm : land.padLengthMm,
       shape: "roundrect",
-      mounting: "smd"
+      mounting: "smd",
+      // The datasheet's own mask clearance, when it printed one. Undefined and
+      // not zero when it did not: "not stated" and "zero clearance" are
+      // different instructions to a fabricator.
+      ...(part.dimensions.solderMaskExpansionMm === null
+        ? {}
+        : { solderMaskMarginMm: part.dimensions.solderMaskExpansionMm })
     });
   };
 
@@ -510,12 +950,48 @@ function buildFootprintGeometry(
     right.forEach((number, index) => push(number, land.padCentreMm, -step(index), "x"));
     top.forEach((number, index) => push(number, -step(index), -land.padCentreMm, "y"));
   } else {
-    const { left, right } = dualRowSides(part.pinCount);
+    const { left, right } = dualRowSides(part.pinCount, part.dimensions.vacantLeadSlot);
     left.forEach((number, index) => push(number, -land.padCentreMm, step(index), "x"));
     right.forEach((number, index) => push(number, land.padCentreMm, step(index), "x"));
   }
 
   emitThermalPad();
+
+  // THERMAL VIAS, on the grid the datasheet prints.
+  //
+  // 30 of 46 corpus datasheets state these and nothing carried them into an
+  // output until 2026-08-13. For an exposed-pad part they are not decoration:
+  // the pad is soldered to the board to move heat, and without vias the heat
+  // has nowhere to go. TI's own drawing says so directly, "This package is
+  // designed to be soldered to a thermal pad on the board".
+  //
+  // The grid is filled from the centre outwards so it stays symmetric at any
+  // count, and clipped to sit fully within the pad: a via crossing the pad edge
+  // would wick solder off the joint.
+  const thermalVias: ThermalVia[] = [];
+  const viaDrill = part.dimensions.thermalViaDiameterMm;
+  const viaPitch = part.dimensions.thermalViaPitchMm;
+  const padL = part.dimensions.thermalPadLengthMm;
+  const padW = part.dimensions.thermalPadWidthMm;
+  if (part.exposedPad && viaDrill && viaPitch && viaPitch > 0 && padL && padW) {
+    const viaPad = viaDrill * 2;
+    // How many fit, leaving a full annulus inside the pad edge on every side.
+    const fit = (extent: number) => Math.max(1, Math.floor((extent - viaPad) / viaPitch) + 1);
+    const nx = fit(padL);
+    const ny = fit(padW);
+    for (let ix = 0; ix < nx; ix += 1) {
+      for (let iy = 0; iy < ny; iy += 1) {
+        thermalVias.push({
+          centre: {
+            xMm: (ix - (nx - 1) / 2) * viaPitch,
+            yMm: (iy - (ny - 1) / 2) * viaPitch
+          },
+          drillMm: viaDrill,
+          padMm: viaPad
+        });
+      }
+    }
+  }
 
   // The silkscreen body follows the extracted dimensions where they are known and
   // the land extents otherwise. It is decoration; the pads are the instruction.
@@ -533,7 +1009,14 @@ function buildFootprintGeometry(
 
   return {
     name: `${slugify(part.partNumber)}-${slugify(definition.family)}`,
-    description: `${part.partNumber} ${definition.family}, IPC-7351B density level ${densityLevel}. Lead data: ${definition.source}`,
+    // What the pads actually ARE, stated as the claim it is. "The manufacturer
+    // recommends this footprint" and "we derived this from IPC-7351B" are
+    // different assertions, and a reviewer signing off a board is entitled to
+    // know which one they are being handed.
+    description:
+      land.source === "printed"
+        ? `${part.partNumber} ${definition.family}. Lands are the RECOMMENDED FOOTPRINT PRINTED IN THIS DATASHEET (${land.padLengthMm} x ${land.padWidthMm} mm on a ${(land.padCentreMm * 2).toFixed(3)} mm centre span), not computed from a standard. Courtyard uses IPC-7351B density ${densityLevel}.`
+        : `${part.partNumber} ${definition.family}, IPC-7351B density level ${densityLevel}. Lead data: ${definition.source}`,
     partNumber: part.partNumber,
     pads,
     body: { halfWidthMm: bodyHalfWidthMm, halfHeightMm: bodyHalfLengthMm },
@@ -549,6 +1032,7 @@ function buildFootprintGeometry(
       xMm: -land.padCentreMm,
       yMm: -rowSpanMm / 2 - definition.pitchMm * 0.7
     },
+    thermalVias,
     provenance: {
       family: definition.family,
       source: definition.source,
@@ -636,6 +1120,8 @@ export interface ExportOptions {
    * for the rest, whose span is fixed by the package.
    */
   formedLeadSpanMm?: number;
+  /** Answers to what the datasheet did not print. See SuppliedDimensions. */
+  supplied?: SuppliedDimensions;
 }
 
 export async function createExportZip(
@@ -645,7 +1131,18 @@ export async function createExportZip(
 ) {
   const zip = new JSZip();
   const baseName = slugify(part.partNumber);
-  const densityLevel = options.densityLevel ?? "B";
+  // THE JOINT, not the part.
+  //
+  // Density level IS the solder fillet choice: A is the most material, C the
+  // least, and IPC-7351B publishes different fillet goals for each. It is a
+  // property of the assembly process rather than of the component, which is why
+  // no datasheet states it and why it cannot be derived from one.
+  //
+  // So it comes from a setting, and only defaults to the industry nominal when
+  // nobody has chosen. Hardcoding it silently made a process decision on the
+  // user's behalf on every part ever generated; the default is the same value,
+  // but it is now a default rather than a fact.
+  const densityLevel = options.densityLevel ?? settingsDefault().densityLevel ?? "B";
   const stepModel = buildStepModel(part);
   const files: GeneratedFile[] = [];
 
@@ -654,7 +1151,7 @@ export async function createExportZip(
   // fail the export, not degrade it. A bundle that quietly ships a symbol and a
   // 3D body while omitting the footprint reads as success to anyone who does not
   // check the file list.
-  const footprint = buildFootprintGeometry(part, densityLevel, options.formedLeadSpanMm);
+  const footprint = buildFootprintGeometry(part, densityLevel, options.formedLeadSpanMm, options.supplied);
   const symbol = buildSymbolGeometry(part);
 
   // One generator per format, each reading the geometry above and nothing else.

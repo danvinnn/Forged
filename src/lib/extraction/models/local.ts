@@ -54,11 +54,11 @@ async function readTextWithLimit(response: Response, maxBytes: number): Promise<
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function endpoint(): string {
+export function endpoint(): string {
   return process.env.FORGE_LOCAL_MODEL_URL ?? "";
 }
 
-function modelName(): string {
+export function modelName(): string {
   return process.env.FORGE_LOCAL_MODEL_NAME ?? "qwen3-vl";
 }
 
@@ -201,14 +201,13 @@ export function pinnedLocalAgent(checked: CheckedEndpoint): Agent | null {
   });
 }
 
-export class LocalExtractionModel implements ExtractionModel {
-  readonly name = `local:${modelName()}`;
-
-  isConfigured(): boolean {
-    return endpoint().length > 0;
-  }
-
-  async extract(request: ExtractionRequest): Promise<ExtractionResult> {
+/**
+ * One call to the local server. Shared so a model that asks SEVERAL narrow
+ * questions can reuse the endpoint pinning, the bounded read and the parsing
+ * without copying any of it; see `local-focused.ts`.
+ */
+export async function callLocalModel(request: ExtractionRequest): Promise<ExtractionResult> {
+  {
     const checked = await assertLocalEndpoint(endpoint());
     const agent = pinnedLocalAgent(checked);
     const controller = new AbortController();
@@ -262,5 +261,17 @@ export class LocalExtractionModel implements ExtractionModel {
       clearTimeout(timer);
       if (agent) void agent.close();
     }
+  }
+}
+
+export class LocalExtractionModel implements ExtractionModel {
+  readonly name = `local:${modelName()}`;
+
+  isConfigured(): boolean {
+    return endpoint().length > 0;
+  }
+
+  extract(request: ExtractionRequest): Promise<ExtractionResult> {
+    return callLocalModel(request);
   }
 }

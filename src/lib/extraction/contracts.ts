@@ -36,6 +36,42 @@ export const extractionFields = [
   // feature the part is soldered by.
   "dimensions.thermalPadLengthMm",
   "dimensions.thermalPadWidthMm",
+  // The land pattern THE DATASHEET ITSELF PRINTS, which is the answer rather
+  // than a check on one.
+  //
+  // 36 of 39 hold-out datasheets print a recommended footprint on a named page,
+  // dimensioned and unambiguous. Until 2026-08-12 none of it reached the
+  // footprint: `vendorland.ts` read TI's spelling of it and used the result
+  // ONLY to veto a pattern computed from IPC-7351B and a hand-typed family
+  // table. The document stated the answer, and the code derived a substitute
+  // from outside information and then checked the substitute against the answer
+  // it had discarded.
+  //
+  // These come off the rendered page, because that is what makes them
+  // unambiguous. The text layer cannot say which repeated number is the pad's
+  // length and which its width, and that uncertainty is why the old reader
+  // refused to feed the footprint. A reader that SEES the drawing has no such
+  // problem, and vendors dimension these differently: TI prints pad size and
+  // centre span, ST prints the inner gap and the outer extent.
+  "dimensions.landPadLengthMm",
+  "dimensions.landPadWidthMm",
+  "dimensions.landSpanMm",
+  // How many sides carry leads. Read off the drawing because the only other
+  // source was a hand-typed family table, and that table refused SOT-23 and
+  // LFCSP outright while their datasheets printed complete footprints.
+  "dimensions.leadSides",
+  // Printed inches from the pad dimensions we already read, and never asked for
+  // until an audit on 2026-08-13 counted them: solder mask on 20 of 46 corpus
+  // datasheets, thermal vias on 30, the JEDEC outline registration on 21. The
+  // field list had grown one failure at a time, so it only ever covered what had
+  // already broken.
+  "dimensions.leadForm",
+  "dimensions.vacantLeadSlot",
+  "dimensions.solderMaskExpansionMm",
+  "dimensions.solderMaskDefined",
+  "dimensions.thermalViaDiameterMm",
+  "dimensions.thermalViaPitchMm",
+  "jedecOutline",
   "radiation.tid",
   "radiation.see",
   "radiation.sel",
@@ -175,6 +211,26 @@ export interface ExtractionResult {
    * Absent or empty means the text was enough and no second pass is made.
    */
   pagesWorthRendering?: number[];
+  /**
+   * The page(s) carrying the PIN TABLE for the requested part, named by the
+   * model after it has read the whole document.
+   *
+   * Separate from `pagesWorthRendering`, which is a request for DRAWINGS. The
+   * two were conflated once, on the assumption that the pages a model wants
+   * rendered would include its pinout, and the measurement said otherwise:
+   * INA240 asked for pages 33, 34, 36 and 37, all mechanical drawings, while
+   * its pin table is on pages 2 to 3. A narrow pin question aimed at the render
+   * list therefore read nothing at all.
+   *
+   * Why the model is asked instead of a locator being written: measured on
+   * 2026-08-13, asking the whole document for pins returned an answer on 2 of
+   * 14 parts, because a datasheet covering several packages has several
+   * pinouts and the model correctly declines to pick. Asked about ONE page it
+   * answered 10 of 13 exactly, because one page is one package's pin table. The
+   * two attempts to find that page WITHOUT the model both failed: a heading
+   * regex sent AD590 to a drawing, and the render list sent INA240 to one.
+   */
+  pinTablePages?: number[];
   /**
    * What the call cost, when the provider reports it. Absent otherwise, and
    * absent is not zero.
