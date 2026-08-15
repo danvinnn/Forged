@@ -100,17 +100,26 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       bodyLengthMm: 4.9,
       bodyWidthMm: 3.9,
       bodyHeightMm: 1.75,
-      pitchMm: null,
+      // The part's own drawing: TI D0008A, JEDEC MS-012. These used to be absent
+      // and a hand-typed family table supplied them from the package NAME. The
+      // table was deleted 2026-08-14; a datasheet's numbers come from the
+      // datasheet.
+      pitchMm: 1.27,
       leadLengthMm: null,
       leadCount: 8,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
+      leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+      leadContactMm: { minMm: 0.4, maxMm: 0.625 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
-      leadSides: null,
-      leadForm: null,
+      leadSides: 2,
+      leadForm: "gullwing",
+      mounting: null,
+      leadDiameterMm: null,
       vacantLeadSlot: null,
+      leadsPerSide: null,
       solderMaskExpansionMm: null,
       solderMaskDefined: null,
       thermalViaDiameterMm: null,
@@ -205,7 +214,15 @@ test("the footprint carries the drawing as well as the copper", () => {
   const tracks = records.filter((record) => record.kind === "PcbTrack");
   const silkscreen = tracks.filter((record) => record.layer === 33);
   const courtyard = tracks.filter((record) => record.layer === 71);
-  assert.equal(silkscreen.length, 4, "the body outline is four segments on the top overlay");
+  // Six, not four. The outline is cut back to clear the lands, so the two edges
+  // the lead row crosses come back as a stub at each end rather than as one line
+  // running through the copper. Same rule and clearances as the KiCad emitter;
+  // see `silkscreenTracks`.
+  // Five, not four. The outline is cut back to clear the lands, so an edge a pad
+  // crosses comes back as a stub at each end instead of one line running through
+  // the copper. This fixture has a single pad on the right, so only that edge
+  // splits: top, bottom and left survive whole, and the right becomes two.
+  assert.equal(silkscreen.length, 5, "the body outline clears the pads");
   assert.equal(courtyard.length, 4, "and the courtyard is four more on its own layer");
 
   const arcs = records.filter((record) => record.kind === "PcbArc");
@@ -331,12 +348,21 @@ test("Altium pads are numbered counterclockwise, the same as the KiCad ones", as
   assert.ok(five.y > eight.y, "and back up the right side, which is the whole point");
 });
 
-test("a part the standard cannot characterise refuses the Altium export too", async () => {
+test("a part with no land pattern read refuses the Altium export too", async () => {
   // The refusal is a property of the pipeline, not of one generator.
-  await assert.rejects(
-    () => createExportZip(soicPart({ packageType: "Unknown package" }), "altium"),
-    FootprintUnavailableError
-  );
+  //
+  // It used to be triggered by naming an unrecognised PACKAGE, back when a
+  // hand-typed family table decided what was buildable. With the table gone what
+  // makes a part unbuildable is a document that did not state a land pattern or a
+  // package drawing, so that is what the fixture withholds.
+  const unread = soicPart();
+  unread.dimensions = {
+    ...unread.dimensions,
+    leadSpanMm: null,
+    leadContactMm: null,
+    leadWidthMm: null
+  };
+  await assert.rejects(() => createExportZip(unread, "altium"), FootprintUnavailableError);
 });
 
 test("a name too long for a compound-file storage still round-trips", () => {
@@ -370,4 +396,47 @@ test("a datasheet that states no clearance leaves the board rule alone", () => {
   const bytes = emitAltiumPcbLib(onePadGeometry());
   const again = emitAltiumPcbLib(onePadGeometry());
   assert.deepEqual(bytes, again, "and it stays deterministic");
+});
+
+test("an exposed thermal pad is written, not refused", () => {
+  // Was a hard refusal: "this writer cannot express a paste pattern that differs
+  // from the copper... export to KiCad, which can." That failed EVERY QFN, DFN
+  // and SON part for Altium users, and it reported a missing feature as a
+  // principled stance about reflow.
+  //
+  // The copper pad has its own paste suppressed and the apertures are drawn on
+  // Top Paste, so the land is not pasted solid and the package does not float
+  // off its leads.
+  const geometry = onePadGeometry();
+  const withPad = {
+    ...geometry,
+    pads: [
+      ...geometry.pads,
+      {
+        number: "9",
+        centre: { xMm: 0, yMm: 0 },
+        widthMm: 2.15,
+        heightMm: 1.2,
+        shape: "roundrect" as const,
+        mounting: "smd" as const,
+        pasteApertures: [
+          { centre: { xMm: -0.5, yMm: 0 }, widthMm: 0.8, heightMm: 1.0 },
+          { centre: { xMm: 0.5, yMm: 0 }, widthMm: 0.8, heightMm: 1.0 }
+        ]
+      }
+    ]
+  };
+
+  const bytes = emitAltiumPcbLib(withPad);
+  assert.ok(bytes.byteLength > 0, "it produces a library rather than throwing");
+  assert.notDeepEqual(bytes, emitAltiumPcbLib(geometry), "and the pad reached the file");
+});
+
+test("thermal vias reach the Altium file too", () => {
+  const geometry = onePadGeometry();
+  const withVias = {
+    ...geometry,
+    thermalVias: [{ centre: { xMm: 0, yMm: 0 }, drillMm: 0.35, padMm: 0.7 }]
+  };
+  assert.notDeepEqual(emitAltiumPcbLib(withVias), emitAltiumPcbLib(geometry));
 });

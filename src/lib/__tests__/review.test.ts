@@ -37,8 +37,11 @@ function record(over: Record<string, unknown> = {}): PartRecord {
       landPadWidthMm: field<number>(),
       landSpanMm: field<number>(),
       leadSides: field<2 | 4>(),
-      leadForm: field<"gullwing" | "nolead">(),
+      leadForm: field<"gullwing" | "nolead" | "straight">(),
+      mounting: field<"smd" | "through-hole">(),
+      leadDiameterMm: field<number>(),
       vacantLeadSlot: field<number>(),
+      leadsPerSide: field<string>(),
       solderMaskExpansionMm: field<number>(),
       solderMaskDefined: field<"solder-mask-defined" | "non-solder-mask-defined">(),
       thermalViaDiameterMm: field<number>(),
@@ -261,4 +264,58 @@ test("a conflict the code won is shown the other way round", () => {
   assert.equal(item.display, "14-lead CFP");
   assert.equal(item.alternative?.display, "SOIC (8)");
   assert.equal(item.alternative?.source, "model");
+});
+
+
+/** A record where the two readers disagree about the pitch, both cited. */
+function recordWithConflict(): PartRecord {
+  const part = record({
+    packageType: field<string>({ value: "SOIC-8", confidence: 1, method: "deterministic", citation: CITED }),
+    pinCount: field<number>({ value: 8, confidence: 1, method: "deterministic", citation: CITED }),
+    pins: field<PinRecord[]>({ value: PINS, confidence: 1, method: "deterministic", citation: CITED })
+  });
+  part.dimensions.pitchMm = field<number>({ value: 1.27, confidence: 1, method: "vlm", citation: CITED });
+  part.conflicts = [
+    {
+      field: "dimensions.pitchMm",
+      deterministic: { display: "0.65", page: 2 },
+      model: { display: "1.27", page: 2 },
+      holding: "model"
+    }
+  ];
+  return part;
+}
+
+// ---------------------------------------------------------------------------
+// Two modes for a disagreement.
+//
+// Measured on 56 unseen datasheets, 2026-08-14: 14 were withheld because the
+// two readers disagreed, and wherever the document could settle the argument the
+// model was right 11 times out of 11. The deterministic reader was not slightly
+// off on those; it read an 8-pin op-amp as a 14-pin DIP and a 48-pin MCU as 20
+// pins. Blocking was withholding correct answers on the say-so of the wrong
+// reader, so it became a mode rather than the only behaviour.
+// ---------------------------------------------------------------------------
+
+test("by default a disagreement flags the record but still produces the part", () => {
+  const part = recordWithConflict();
+  const resolved = resolveForExport(part);
+  assert.equal(resolved.ok, true, "the part is generated");
+  // And nothing goes quiet: the disagreement is still on the record for review.
+  assert.ok(part.conflicts.length > 0, "both readings are still recorded");
+});
+
+test("block mode withholds it, for work where a person signs the record", () => {
+  const resolved = resolveForExport(recordWithConflict(), { onDisagreement: "block" });
+  assert.equal(resolved.ok, false);
+  if (resolved.ok) return;
+  assert.ok((resolved.unsettled ?? []).length > 0, "and says which fields are unsettled");
+});
+
+test("a disagreement a person has already settled is not re-raised in either mode", () => {
+  // `user` and `user-confirmed` mean somebody looked at both readings and both
+  // pages and chose. That has always cleared the block and still does.
+  const part = recordWithConflict();
+  part.dimensions.pitchMm = { ...part.dimensions.pitchMm, method: "user-confirmed" };
+  assert.equal(resolveForExport(part, { onDisagreement: "block" }).ok, true);
 });

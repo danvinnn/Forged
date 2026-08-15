@@ -31,6 +31,7 @@ export type DensityLevel = "A" | "B" | "C";
 /** Lead form. Only forms whose fillet goals are entered below can be computed. */
 export type LeadForm = "gullwing" | "nolead";
 
+
 /**
  * Fillet goals in mm, from IPC-7351B for gull-wing leads.
  *
@@ -53,57 +54,6 @@ const FILLET_GOALS: Record<"gullwing", Record<DensityLevel, { toe: number; heel:
 };
 
 /**
- * The no-lead land rule, recovered from four TI package drawings on 2026-08-10.
- *
- * ## This is NOT IPC-7351B, and the difference is the point
- *
- * Everything else in this module is the standard's RSS model. This is not, and
- * saying so is the whole reason it lives in its own constant instead of being
- * added to `FILLET_GOALS` where it would inherit that claim.
- *
- * The intent was to enter IPC-7351B's published no-lead goals. Working backwards
- * from vendor-published land patterns to check them showed the standard's model
- * does not describe what these drawings do. Read by hand off the drawings and the
- * matching `LAND PATTERN EXAMPLE` pages:
- *
- *   DSD0008D  WSON 8   body 2.9-3.1  b 0.25-0.37  L 0.3-0.5  e 0.65
- *   DRB0008B  VSON 8   body 2.9-3.1  b 0.25-0.35  L 0.3-0.5  e 0.65
- *   RGT0016C  VQFN 16  body 2.9-3.1  b 0.18-0.30  L 0.3-0.5  e 0.5
- *   RGC0064B  VQFN 64  body 8.85-9.15 b 0.18-0.30 L 0.3-0.5  e 0.5
- *
- * The RSS model cannot fit those four at once. It carries the BODY tolerance
- * into the toe, so the 9 mm package (tolerance 0.30) and the 3 mm packages
- * (tolerance 0.20) must land differently, and they do not: TI's land span is the
- * nominal body plus 0.4 mm in every one of the four, exactly. Fitting the toe to
- * the 3 mm parts gives 0.146 and to the 9 mm part 0.122, which is the tell that
- * the tolerance term is not there at all.
- *
- * What does fit, exactly and with no residual, is three statements:
- *
- *   pad width  = the terminal's NOMINAL width       0.31, 0.30, 0.24, 0.24
- *   pad length = the terminal's NOMINAL length + 0.2   0.6 on all four
- *   land span  = the NOMINAL body + 0.4             2.8, 2.8, 2.8, 8.8
- *
- * so the land's toe sits 0.2 mm outboard of the body edge and its heel sits on
- * the terminal's nominal inner end. Zero error against all four published
- * patterns, across two body sizes, three families and two pitches.
- *
- * ## What that means for a caller
- *
- * This reproduces what TI prints. It is a vendor house rule that TI applies
- * consistently, not a derivation from the standard, and a part from another
- * vendor may be laid out to a different one. It is used because the alternative
- * is refusing every no-lead package, and because a rule that reproduces four
- * published patterns exactly is better evidence than a goal table recalled from
- * memory would have been. The provenance travels with the footprint so a
- * reviewer can see which claim is being made.
- *
- * Density levels A and C are REFUSED rather than approximated: the four drawings
- * are one rule, they carry no density label, and there is nothing here to scale.
- */
-const NOLEAD_TOE_BEYOND_BODY_MM = 0.2;
-
-/**
  * Courtyard excess in mm beyond the land extents, per IPC-7351B density level.
  */
 export const COURTYARD_EXCESS: Record<DensityLevel, number> = { A: 0.5, B: 0.25, C: 0.12 };
@@ -120,6 +70,52 @@ export const COURTYARD_EXCESS: Record<DensityLevel, number> = { A: 0.5, B: 0.25,
 export const DEFAULT_FABRICATION_TOLERANCE_MM = 0.05;
 export const DEFAULT_PLACEMENT_TOLERANCE_MM = 0.025;
 
+/**
+ * Hole allowance over the lead diameter, per IPC-7251 density level, in mm.
+ *
+ * The through-hole counterpart to `FILLET_GOALS`, and the same three-level
+ * choice: A is the most material and the loosest fit, C the least. The standard
+ * gives the hole as the maximum lead diameter plus this, and the land as the
+ * hole plus an annular ring.
+ *
+ * A hole is not a fillet, so this is a separate table rather than a reuse of the
+ * surface-mount goals. Entering it is what makes a through-hole part buildable
+ * at all: `Pad.mounting` admitted only `"smd"` until 2026-08-14, so a PDIP or a
+ * ceramic DIP had nowhere to go however well its datasheet was read.
+ */
+export const HOLE_ALLOWANCE: Record<DensityLevel, number> = { A: 0.25, B: 0.2, C: 0.15 };
+
+/**
+ * Annular ring around the hole, per density level, in mm.
+ *
+ * Read off the reference `DIP-8_W7.62mm` in KiCad's official library, which uses
+ * a 0.8 mm hole for a 0.5 mm lead and a 1.6 mm pad: 0.4 mm of copper all round
+ * at what that library builds to, which is the nominal level. The three levels
+ * scale it the way the standard scales every other allowance.
+ */
+export const ANNULAR_RING: Record<DensityLevel, number> = { A: 0.5, B: 0.4, C: 0.25 };
+
+/**
+ * The plated hole and its land, for a lead of the given diameter.
+ *
+ * Both numbers come from the tables above and from the lead the drawing states.
+ * Nothing here is per family and nothing is guessed: a lead diameter the document
+ * does not carry means no through-hole footprint, the same way a missing lead
+ * span means no surface-mount one.
+ */
+export function throughHolePad(
+  leadDiameterMm: number,
+  densityLevel: DensityLevel = "B"
+): { drillMm: number; padMm: number } {
+  if (!(leadDiameterMm > 0)) {
+    throw new LandPatternError([
+      "the lead diameter, which is what the hole is sized from. No hole is invented for a lead nobody measured"
+    ]);
+  }
+  const drillMm = leadDiameterMm + HOLE_ALLOWANCE[densityLevel];
+  return { drillMm, padMm: drillMm + 2 * ANNULAR_RING[densityLevel] };
+}
+
 /** A min/max pair from a package drawing. Both bounds are required. */
 export interface Range {
   minMm: number;
@@ -132,24 +128,25 @@ export interface Range {
  * `span` is toe to toe across the package (drawing dimension E or D) and
  * `width` is the lead width (b). Both are read straight off a package drawing.
  *
- * `contact` is NOT. It is named for the seated foot length the standard's model
- * calls T, but the value stored is a per-family constant fitted so that the
- * computed land reproduces the land pattern published for that family. It has to
- * work that way today: a JEDEC drawing quotes the whole formed lead (MS-012 and
- * MS-013 both say 0.40 to 1.27), and feeding that range in puts the heel over a
- * millimetre too far inboard. Narrow SOIC then fits at 0.40-0.625 while wide SOIC
- * needs 0.40-1.00, which is the tell: the difference between them is absorbing
- * something the model is not representing, not measuring two different feet.
+ * `contact` is the SEATED FOOT: the part of the lead that lies flat on the land,
+ * which the standard calls T. It is read off the drawing like the other two.
  *
- * This is honest only because every family is pinned by test to a published land
- * pattern, so a wrong constant fails loudly. It is still a fudge, and it means
- * each new family costs a calibration rather than falling out of the standard.
- * Resolving it against the IPC-7351B text is open work; see DEFERRED.md.
+ * The distinction that matters, and the one that used to be wrong here: a
+ * gull-wing drawing's dimension `L` is often the WHOLE formed lead including the
+ * vertical run, not the seated foot. MS-012 and MS-013 both print L as 0.40 to
+ * 1.27, and feeding that in puts the heel over a millimetre too far inboard. The
+ * reader is asked specifically for the foot for exactly this reason, and
+ * `ipc7351.test.ts` pins how much the two differ so nobody swaps one for the
+ * other as a tidy-up.
+ *
+ * Until 2026-08-14 this was a per-family constant, fitted so the computed land
+ * reproduced a published one, and carried in a hand-typed table keyed on package
+ * name. That table is gone.
  */
 export interface LeadDimensions {
   form: LeadForm;
   span: Range;
-  /** Fitted to the family's published land pattern, not read off a drawing. */
+  /** The seated foot that lies on the land, read off the drawing. */
   contact: Range;
   width: Range;
 }
@@ -210,54 +207,6 @@ export class LandPatternError extends Error {
   }
 }
 
-/** The midpoint of a drawing range, which is the nominal the no-lead rule uses. */
-function nominal(range: Range): number {
-  return (range.minMm + range.maxMm) / 2;
-}
-
-/**
- * The no-lead land, from the rule recovered off four TI drawings.
- *
- * `span` carries the BODY dimension here rather than a lead span, because a
- * no-lead terminal ends at the body edge and there is no lead to span anything.
- * `contact` carries the terminal length and `width` its width, both as the
- * drawing prints them; only their nominals are used, which is what the four
- * published patterns are built from.
- */
-function noLeadLandPattern(lead: LeadDimensions, densityLevel: DensityLevel): LandPattern {
-  if (densityLevel !== "B") {
-    throw new LandPatternError([
-      `no-lead packages are laid out here by a single rule read off four vendor drawings, which carries no density level, so density ${densityLevel} cannot be produced. Use the nominal level B or supply the land pattern yourself`
-    ]);
-  }
-
-  const bodyNom = nominal(lead.span);
-  const padLength = nominal(lead.contact) + NOLEAD_TOE_BEYOND_BODY_MM;
-  const padWidth = nominal(lead.width);
-
-  const zMax = bodyNom + 2 * NOLEAD_TOE_BEYOND_BODY_MM;
-  const gMin = zMax - 2 * padLength;
-
-  // Terminals reaching more than halfway under the body would put opposing lands
-  // across the centre line. Same guard as the gull-wing path and the same reason:
-  // it means the dimensions describe something that is not this package.
-  if (gMin <= 0) {
-    throw new LandPatternError([
-      `the terminal length (${nominal(lead.contact)} mm nominal) is too long for the body (${bodyNom} mm), which leaves no gap between opposing lands`
-    ]);
-  }
-
-  return {
-    padWidthMm: padWidth,
-    padLengthMm: padLength,
-    padCentreMm: (zMax + gMin) / 4,
-    zMaxMm: zMax,
-    gMinMm: gMin,
-    courtyardHalfMm: zMax / 2 + COURTYARD_EXCESS[densityLevel],
-    densityLevel
-  };
-}
-
 /**
  * Computes the land pattern for one opposing pair of lead rows.
  *
@@ -278,8 +227,17 @@ export function computeLandPattern(lead: LeadDimensions, options: LandPatternOpt
   const placement = options.placementToleranceMm ?? DEFAULT_PLACEMENT_TOLERANCE_MM;
 
   // A no-lead terminal is a pad on the underside of the body, not a formed lead,
-  // and the rule that lays it out is a different one. See NOLEAD_TOE_BEYOND_BODY_MM.
-  if (lead.form === "nolead") return noLeadLandPattern(lead, densityLevel);
+  // No-lead has no route here. IPC-7351B publishes its fillet goals per lead
+  // form and only the gull-wing table is transcribed in this file; the rule that
+  // used to serve no-lead was reverse-engineered from four TI drawings and was
+  // retired on 2026-08-13 because it applied one vendor's house rule to every
+  // vendor's parts. A no-lead package builds from its datasheet's own printed
+  // footprint, and asks when the document prints none.
+  if (lead.form === "nolead") {
+    throw new LandPatternError([
+      "no-lead fillet goals are not transcribed here. IPC-7351B publishes them per lead form and only gull-wing is entered; the rule that used to serve no-lead was reverse-engineered from four vendor drawings and applied one vendor's house rule to everyone's parts. A no-lead package builds from its datasheet's own printed footprint, or asks"
+    ]);
+  }
 
   const goal = FILLET_GOALS[lead.form][densityLevel];
 
@@ -364,14 +322,79 @@ export interface ThermalPadLand {
   pasteCoverage: number;
 }
 
-/** Largest aperture that still breaks the solder volume up enough to stop float. */
-const MAX_APERTURE_MM = 1.5;
-/** Mid-band of the IPC-7093 range, so rounding cannot push it outside. */
+/**
+ * Paste coverage as a fraction of the thermal land. MEASURED, not chosen.
+ *
+ * IPC-7093 puts the target between 50% and 80%, which is a band rather than a
+ * number. What settles it is what the ecosystem actually cuts: 33 exposed-pad
+ * footprints were parsed out of KiCad's official `Package_DFN_QFN` library on
+ * 2026-08-14 and their coverage solved for, and every one of the 33 landed
+ * between 0.640 and 0.658.
+ *
+ * So 0.65 is not the middle of a band picked to be safe. It is the figure the
+ * published libraries hold, and it happens to sit mid-band.
+ */
 const TARGET_PASTE_COVERAGE = 0.65;
-/** Smallest aperture a stencil house will cut reliably at typical foil thickness. */
+
+/**
+ * Largest paste aperture before the grid is subdivided further.
+ *
+ * ## This one has no published source, and that is stated rather than hidden
+ *
+ * IPC-7093 fixes the COVERAGE and says the aperture should be subdivided. It
+ * does not give a maximum, and neither does the practice: measured across the
+ * same 33 reference footprints, the apertures run from 0.24 mm to 2.06 mm, and
+ * two footprints with nearly identical pads get different grids (EP 1.6 x 2.56
+ * gets one aperture of 1.29 x 2.06; EP 1.6 x 2.5 gets a 2 x 2 grid). The counts
+ * are chosen per footprint by hand and no rule predicts them.
+ *
+ * That was established the hard way and it is worth recording. Six of the 33
+ * were consistent with a maximum of exactly 1.35 mm, which reads like a
+ * recovered constant and nearly shipped as one. Solving the same bound across
+ * all 33 gives "at least 2.0639 and less than 0.4837", i.e. no maximum exists
+ * that the library obeys. Fitting to the six would have been a rule derived from
+ * what happened to be in front of me.
+ *
+ * So the subdivision is genuinely ours to choose, and the honest treatment is
+ * the one `RULES.md` rule 3 prescribes for a value the document cannot answer
+ * and that differs between processes: a setting, with the default stated as a
+ * default. Coverage is held either way, so this changes how the paste is divided
+ * and not how much of it there is.
+ *
+ * 1.5 mm is the default because it reproduces the reference grids on the pads
+ * where the reference is unambiguous, and because a larger aperture is what
+ * risks the solder bridging under the part that the subdivision exists to
+ * prevent.
+ */
+const DEFAULT_MAX_APERTURE_MM = 1.5;
+
+/**
+ * Smallest aperture a stencil house will cut reliably at typical foil thickness.
+ *
+ * A process value like the one above: it describes the customer's stencil, not
+ * the part.
+ */
 const MIN_APERTURE_MM = 0.25;
 
-export function thermalPadLand(padLengthMm: number, padWidthMm: number): ThermalPadLand {
+/**
+ * Stencil limits are a PROCESS value, not a fact about the part.
+ *
+ * No datasheet states what your stencil house can cut, so these default to the
+ * common figures and are overridable by anyone whose process differs. Same
+ * treatment the IPC density level gets.
+ */
+export interface ThermalPadOptions {
+  /** Smallest aperture the stencil can cut, mm. Defaults to 0.25. */
+  minApertureMm?: number;
+  /** Largest aperture before the grid subdivides further, mm. Defaults to 1.5. */
+  maxApertureMm?: number;
+}
+
+export function thermalPadLand(
+  padLengthMm: number,
+  padWidthMm: number,
+  options: ThermalPadOptions = {}
+): ThermalPadLand {
   if (!(padLengthMm > 0) || !(padWidthMm > 0)) {
     throw new LandPatternError([
       "The exposed thermal pad's size is not known, so no thermal land can be laid out.",
@@ -379,14 +402,39 @@ export function thermalPadLand(padLengthMm: number, padWidthMm: number): Thermal
     ]);
   }
 
-  const columns = Math.max(1, Math.ceil(padLengthMm / MAX_APERTURE_MM));
-  const rows = Math.max(1, Math.ceil(padWidthMm / MAX_APERTURE_MM));
-  const apertureW = (padLengthMm * Math.sqrt(TARGET_PASTE_COVERAGE)) / columns;
-  const apertureH = (padWidthMm * Math.sqrt(TARGET_PASTE_COVERAGE)) / rows;
+  // The grid ADAPTS to the stencil minimum rather than the part being refused
+  // for it.
+  //
+  // This used to compute one grid and then throw if its apertures came out below
+  // what a stencil can cut. But the grid is ours to choose: fewer, larger
+  // apertures hold the same paste coverage and are manufacturable. Refusing the
+  // whole footprint over a choice we were free to make differently reported our
+  // arithmetic as the part's problem.
+  //
+  // Coverage is held at the IPC-7093 mid-band throughout, so coarsening the grid
+  // changes how the paste is divided and not how much of it there is.
+  const minimum = options.minApertureMm ?? MIN_APERTURE_MM;
+  const maximum = options.maxApertureMm ?? DEFAULT_MAX_APERTURE_MM;
+  // The COARSEST grid whose apertures still come out at or under the maximum.
+  // Solved on the aperture rather than on the pad, because the aperture is the
+  // thing being bounded: at 65% coverage an aperture is sqrt(0.65) of its cell.
+  const cells = (extent: number) => Math.max(1, Math.ceil((extent * Math.sqrt(TARGET_PASTE_COVERAGE)) / maximum));
+  let columns = cells(padLengthMm);
+  let rows = cells(padWidthMm);
+  const widthAt = (n: number) => (padLengthMm * Math.sqrt(TARGET_PASTE_COVERAGE)) / n;
+  const heightAt = (n: number) => (padWidthMm * Math.sqrt(TARGET_PASTE_COVERAGE)) / n;
+  while (columns > 1 && widthAt(columns) < minimum) columns -= 1;
+  while (rows > 1 && heightAt(rows) < minimum) rows -= 1;
 
-  if (apertureW < MIN_APERTURE_MM || apertureH < MIN_APERTURE_MM) {
+  const apertureW = widthAt(columns);
+  const apertureH = heightAt(rows);
+
+  // One aperture is the coarsest grid there is. Below the stencil minimum at
+  // that point the PAD is too small to paste at all, which is a fact about the
+  // part rather than about our grid, and it is worth saying plainly.
+  if (apertureW < minimum || apertureH < minimum) {
     throw new LandPatternError([
-      `A paste aperture of ${Math.min(apertureW, apertureH).toFixed(2)} mm is below the ${MIN_APERTURE_MM} mm a stencil can cut reliably.`,
+      `This exposed pad is ${padLengthMm} x ${padWidthMm} mm, and even a single paste aperture over it comes out ${Math.min(apertureW, apertureH).toFixed(2)} mm, below the ${minimum} mm a stencil can cut reliably.`,
       "No thermal paste pattern is generated rather than one that cannot be manufactured."
     ]);
   }

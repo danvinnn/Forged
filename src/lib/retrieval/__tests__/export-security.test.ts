@@ -52,7 +52,17 @@ function partWith(partNumber: string): Record<string, unknown> {
       bodyHeightMm: found(1.5),
       pitchMm: found(1.27),
       leadLengthMm: found(0.6),
-      leadCount: found(8)
+      leadCount: found(8),
+      // The part's own drawing: TI D0008A, JEDEC MS-012. Added 2026-08-14 when
+      // the family table was deleted; before that a package NAME was enough to
+      // produce a footprint, which is what these tests happened to rely on. The
+      // test is about header injection, not about land patterns, so the record
+      // just has to be one that exports.
+      leadWidthMm: found({ minMm: 0.31, maxMm: 0.51 }),
+      leadSpanMm: found({ minMm: 5.8, maxMm: 6.2 }),
+      leadContactMm: found({ minMm: 0.4, maxMm: 0.625 }),
+      leadSides: found(2),
+      leadForm: found("gullwing")
     },
     radiation: { tid: notFound(), see: notFound(), sel: notFound(), qmlClass: notFound() },
     sourceFileName: "test.pdf",

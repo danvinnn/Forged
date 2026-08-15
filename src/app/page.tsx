@@ -3,45 +3,58 @@
 import { useEffect, useMemo, useState } from "react";
 import { isUntraceable } from "../lib/provenance";
 import type { Extracted, ExportFormat, LeadWidth, PartRecord, PinRecord } from "../lib/types";
-// Type-only import: erased at compile time, so no retrieval-layer runtime code (node:crypto,
-// the resolvers, etc.) is pulled into the client bundle.
+// Type-only import: erased at compile time, so no retrieval-layer runtime code
+// (node:crypto, the resolvers) is pulled into the client bundle.
 import type { DeploymentMode } from "../lib/retrieval";
 // Type-only for the same reason: `exporters.ts` reaches the CAD generators.
-import type { PackageChoice, RequiredInput } from "../lib/exporters";
+import type { PackageChoice, PackageOption, RequiredInput } from "../lib/exporters";
 import type { ReviewItem } from "../lib/review";
+import type { ConfidenceCheck } from "../lib/confidence";
 // Type-only: `pagerender.ts` dynamically imports mupdf, which must not follow
 // the review panel into the browser bundle.
 import type { RenderedPage } from "../lib/pagerender";
 
+/**
+ * The workspace.
+ *
+ * ## What this screen is for
+ *
+ * One job: turn a datasheet into a symbol, a footprint and a 3D body an engineer
+ * can drop into a library without checking every number by hand. Everything on
+ * screen either moves that along or says why it cannot.
+ *
+ * ## The rule the layout follows
+ *
+ * The page IS the workflow, top to bottom, and nothing appears before it is
+ * relevant. Source, then what was read, then whatever blocks an export, then the
+ * export, then the full record for anyone who wants to read it.
+ *
+ * A panel with nothing to say is not rendered at all. An empty "0 issues" card
+ * costs the same glance as a real one and teaches the reader that panels are
+ * usually noise.
+ *
+ * ## Questions carry their evidence
+ *
+ * Where the export needs a number, the page of the datasheet that number is
+ * printed on is rendered NEXT TO the input. The route already located those
+ * pages and shipped them; until 2026-08-14 nothing rendered them, so a user was
+ * sent to "the vendor's application note" for a value printed on a page we had
+ * already found. Answering should take seconds and involve no hunting.
+ */
+
 interface AppConfig {
   mode: DeploymentMode;
   lookupEnabled: boolean;
-  /** Package families with a characterised IPC-7351B land pattern. */
-  packageFamilies?: string[];
 }
 
-/**
- * Quick picks for the package field.
- *
- * A datasheet almost always offers a part in several packages, and a footprint
- * is per package, so this is a choice the engineer makes rather than something
- * extraction can settle. Export refuses any package with no characterised land
- * pattern, and without these the only way to discover which ones work is to
- * press Export and read the error.
- */
-const PACKAGE_SUGGESTIONS: Record<string, string[]> = {
-  "SOIC narrow": ["SOIC-8", "SOIC-14", "SOIC-16"],
-  TSSOP: ["TSSOP-8", "TSSOP-14", "TSSOP-16"]
-};
-
-const formatOptions: Array<{ value: ExportFormat; label: string; note: string }> = [
-  { value: "kicad", label: "KiCad", note: "Native .kicad_sym + .kicad_mod" },
-  // Each format gets its own generator reading the same IPC-7351B geometry.
-  // These two say "no generator yet" rather than offering a renamed KiCad file,
-  // which is what they used to do.
-  { value: "altium", label: "Altium", note: "Native .SchLib + .PcbLib, generator not built yet" },
-  { value: "cadence", label: "Cadence / OrCAD", note: "Native library output, generator not built yet" }
-]
+const formatOptions: Array<{ value: ExportFormat; label: string; note: string; ready: boolean }> = [
+  { value: "kicad", label: "KiCad", note: ".kicad_sym · .kicad_mod · .step", ready: true },
+  // Each format has its own generator reading the same geometry. Cadence says
+  // "not built" rather than offering a renamed KiCad file, which is what the
+  // whole bundle used to do.
+  { value: "altium", label: "Altium", note: ".SchLib · .PcbLib", ready: true },
+  { value: "cadence", label: "Cadence / OrCAD", note: "generator not built yet", ready: false }
+];
 
 const nothing = <T,>(): Extracted<T> => ({ value: null, confidence: null, method: null, citation: null });
 
@@ -66,58 +79,73 @@ const defaultPart: PartRecord = {
     leadLengthMm: nothing<number>(),
     leadCount: nothing<number>(),
     leadWidthMm: nothing<LeadWidth>(),
-    leadSpanMm: nothing<LeadWidth>(), leadContactMm: nothing<LeadWidth>(),
+    leadSpanMm: nothing<LeadWidth>(),
+    leadContactMm: nothing<LeadWidth>(),
     thermalPadLengthMm: nothing<number>(),
     thermalPadWidthMm: nothing<number>(),
     landPadLengthMm: nothing<number>(),
     landPadWidthMm: nothing<number>(),
     landSpanMm: nothing<number>(),
     leadSides: nothing<2 | 4>(),
-    leadForm: nothing<"gullwing" | "nolead">(),
+    leadForm: nothing<"gullwing" | "nolead" | "straight">(),
+    mounting: nothing<"smd" | "through-hole">(),
+    leadDiameterMm: nothing<number>(),
     vacantLeadSlot: nothing<number>(),
+    leadsPerSide: nothing<string>(),
     solderMaskExpansionMm: nothing<number>(),
     solderMaskDefined: nothing<"solder-mask-defined" | "non-solder-mask-defined">(),
     thermalViaDiameterMm: nothing<number>(),
     thermalViaPitchMm: nothing<number>()
   },
-  radiation: {
-    tid: nothing<string>(),
-    see: nothing<string>(),
-    sel: nothing<string>(),
-    qmlClass: nothing<string>()
-  },
+  radiation: { tid: nothing<string>(), see: nothing<string>(), sel: nothing<string>(), qmlClass: nothing<string>() },
   sourceFileName: "",
   notes: []
 };
 
 /**
- * A hand-entered value is fully trusted but has no citation, and must never
- * keep the parser's provenance. Editing a field is a change of method.
+ * A hand-entered value is fully trusted but has no citation, and must never keep
+ * the reader's provenance. Editing a field is a change of method.
  */
 function userEdited<T>(value: T | null): Extracted<T> {
   return { value, confidence: value === null ? null : 1, method: value === null ? null : "user", citation: null };
 }
 
-/** Renders provenance compactly: where it came from and how sure we are. */
+/** Where an `install`-scoped answer is remembered. Survives the session deliberately. */
+const INSTALL_LEAD_SPAN_KEY = "forge.install.formedLeadSpanMm";
+
+/** Largest span the export route accepts, mirrored so the UI refuses it first. */
+const MAX_LEAD_SPAN_MM = 200;
+
+// ---------------------------------------------------------------------------
+// Presentational pieces
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a value came from, in as few characters as carry the meaning.
+ *
+ * Always present, never loud. Someone signing off a part has to tell a value the
+ * document stated from one a model inferred from one they typed, and has to do
+ * it by scanning rather than by clicking.
+ */
 function Provenance({ field }: { field: Extracted<unknown> }) {
-  if (field.value === null) {
-    return <span className="prov prov-unknown">not found in datasheet</span>;
-  }
+  if (field.value === null) return <span className="prov prov-none">not read</span>;
   if (isUntraceable(field)) {
     return (
-      <span className="prov prov-untraceable" title="Produced by an extraction model but not located in the datasheet. Verify it against the source, then edit the field to confirm.">
-        unverified · needs review
+      <span
+        className="prov prov-warn"
+        title="A model produced this and it could not be located in the datasheet. Check it against the source, then confirm."
+      >
+        unverified
       </span>
     );
   }
   const parts: string[] = [];
   if (field.citation) parts.push(`p${field.citation.page}`);
-  // A person typing a value and a person confirming a model's reading against
-  // the cited page are different claims, and the badge says which.
-  if (field.method === "user") parts.push("entered by you");
-  else if (field.method === "user-confirmed") parts.push("checked by you");
+  if (field.method === "user") parts.push("you");
+  else if (field.method === "user-confirmed") parts.push("checked");
+  else if (field.method === "vlm-drawing") parts.push("drawing");
+  else if (field.method === "vlm") parts.push("read");
   else if (field.method) parts.push(field.method);
-  if (field.confidence !== null) parts.push(`${Math.round(field.confidence * 100)}%`);
   return (
     <span className="prov" title={field.citation?.snippet ?? undefined}>
       {parts.join(" · ")}
@@ -125,15 +153,60 @@ function Provenance({ field }: { field: Extracted<unknown> }) {
   );
 }
 
-/** A value plus its provenance, for the read-only tables. */
-function Cell({ field }: { field: Extracted<string | number> }) {
+/** A value, or a min/max pair the way a drawing prints it. */
+function showValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "object") {
+    const range = value as { minMm?: number; maxMm?: number };
+    if (typeof range.minMm === "number" && typeof range.maxMm === "number") {
+      return range.minMm === range.maxMm ? `${range.minMm}` : `${range.minMm}–${range.maxMm}`;
+    }
+  }
+  return String(value);
+}
+
+/** One row of the record: label, value, provenance. The unit lives in the label. */
+function Row({ label, unit, field }: { label: string; unit?: string; field: Extracted<unknown> }) {
   return (
-    <>
-      <td>{field.value ?? "not found"}</td>
-      <td>
+    <tr className={field.value === null ? "row-empty" : undefined}>
+      <th scope="row">
+        {label}
+        {unit && <span className="unit"> {unit}</span>}
+      </th>
+      <td className="num">{showValue(field.value)}</td>
+      <td className="meta">
         <Provenance field={field} />
       </td>
-    </>
+    </tr>
+  );
+}
+
+/** A rendered datasheet page, captioned with what it is. */
+function PageImage({
+  image,
+  caption,
+  page
+}: {
+  image: RenderedPage | undefined;
+  caption: string;
+  page: number | null | undefined;
+}) {
+  if (!image) {
+    return (
+      <div className="page-missing">
+        {page
+          ? `${caption}, page ${page}. Could not be rendered.`
+          : "No page of this datasheet answers this, so there is nothing to show."}
+      </div>
+    );
+  }
+  return (
+    <figure className="page">
+      <img src={`data:${image.mimeType};base64,${image.base64}`} alt={`${caption}, page ${image.page}`} />
+      <figcaption>
+        {caption} <span className="page-n">page {image.page}</span>
+      </figcaption>
+    </figure>
   );
 }
 
@@ -146,32 +219,23 @@ function updatePin(part: PartRecord, index: number, field: keyof PinRecord, valu
   const pins = next.pins.value;
   const pin = pins?.[index];
   if (!pins || !pin) return next;
-
-  if (field === "electricalType") {
-    pin.electricalType = value as PinRecord["electricalType"];
-  } else if (field === "number" || field === "name") {
-    pin[field] = value;
-  }
-
+  if (field === "electricalType") pin.electricalType = value as PinRecord["electricalType"];
+  else if (field === "number" || field === "name") pin[field] = value;
   // The table was edited by hand, so the array's provenance changes with it.
   next.pins = { value: pins, confidence: 1, method: "user", citation: next.pins.citation };
   return next;
 }
 
 function formatSourceUrl(sourceUrl?: string) {
-  if (!sourceUrl) {
-    return null;
-  }
-
+  if (!sourceUrl) return null;
   try {
     const parsed = new URL(sourceUrl);
-    // new URL() happily parses "javascript:..." and "data:...", and this value ends up as an
-    // anchor href. Our URLs come from the SSRF-guarded fetch path so they are already http(s),
-    // but this is the last hop before the DOM and the check is one line, so enforce it here too
-    // rather than relying on an invariant held three layers away.
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return null;
-    }
+    // `new URL` happily parses `javascript:` and `data:`, and this value becomes
+    // an anchor href. Our URLs come from the SSRF-guarded fetch path so they are
+    // already http(s); this is the last hop before the DOM and the check is one
+    // line, so it is enforced here rather than relying on an invariant held three
+    // layers away.
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
     return parsed;
   } catch {
     return null;
@@ -179,35 +243,17 @@ function formatSourceUrl(sourceUrl?: string) {
 }
 
 /**
- * Where an `install`-scoped answer is remembered.
- *
- * Deliberately survives the session. Asking an assembler for their formed lead
- * span once a week is a different product from asking them once per part, and
- * the route already marks which answers are which.
- */
-const INSTALL_LEAD_SPAN_KEY = "forge.install.formedLeadSpanMm";
-
-/** Largest span the export route accepts, mirrored so the UI refuses it first. */
-const MAX_LEAD_SPAN_MM = 200;
-
-/**
  * What a package choice actually produced, said plainly.
  *
- * A choice that resolves a pinout and a choice that changes nothing look
- * identical in the record unless the difference is stated, and the second is a
- * real outcome: the document may simply not draw a pinout for that package. The
- * user needs to know which happened so they can try another chip rather than
- * assume the tool is broken.
+ * A choice that resolves a pinout and one that changes nothing look identical in
+ * the record unless the difference is stated, and the second is a real outcome:
+ * the document may simply not draw a pinout for that package.
  */
 function describeChoice(record: PartRecord, designator: string): string {
   const pins = record.pins.value?.length ?? 0;
-  if (pins > 0 && record.pinCount.value !== null) {
-    return `Read ${pins} pins for ${designator}. Review fields before export.`;
-  }
-  if (pins > 0) {
-    return `Found ${pins} pins for ${designator}, but nothing in the datasheet confirms the count, so it is left unknown.`;
-  }
-  return `No pinout found for ${designator} in this datasheet. Try another package, or enter the pins by hand.`;
+  if (pins > 0 && record.pinCount.value !== null) return `Read ${pins} pins for ${designator}.`;
+  if (pins > 0) return `Found ${pins} pins for ${designator}, but nothing confirms the count.`;
+  return `This datasheet draws no pinout for ${designator}.`;
 }
 
 export default function HomePage() {
@@ -216,50 +262,41 @@ export default function HomePage() {
   const [manufacturerHint, setManufacturerHint] = useState("");
   const [part, setPart] = useState<PartRecord>(defaultPart);
 
-  // How the current record was produced, so a package choice can be answered by
-  // PARSING AGAIN with that package rather than by writing it into the record.
-  //
-  // The distinction is the whole point. Every pin reader takes the package as an
-  // argument and uses it to choose among a document's per-package pinouts, so a
-  // package that arrives after the parse arrives too late to be used: the record
-  // gains a package name and keeps the empty pinout it already had. Measured on
-  // unseen datasheets, re-parsing turns five refusals into complete records.
+  // How the record was produced, so a package choice can be answered by READING
+  // AGAIN with that package rather than by writing it into the record. Every pin
+  // reader takes the package as an argument and uses it to choose among a
+  // document's per-package pinouts, so a package that arrives after the read
+  // arrives too late to be used.
   const [origin, setOrigin] = useState<
     { kind: "upload"; file: File } | { kind: "lookup"; partNumber: string; manufacturer: string } | null
   >(null);
 
   // The packages the document offered, held separately from the record because
-  // the record's own list is filtered against the pin count it settled on. Once
-  // a choice resolves that count, the alternatives would disappear from the
-  // record and the user could not change their mind.
+  // the record's own list is filtered against the pin count it settled on. Once a
+  // choice resolves that count the alternatives would vanish and the user could
+  // not change their mind.
   const [offeredVariants, setOfferedVariants] = useState<PartRecord["packageVariants"]>([]);
-
-  // What each offered package would actually produce, from the server, which
-  // runs the real footprint generator to find out. Held on the same terms as
-  // `offeredVariants`: the first read's answer, kept across a re-read so a user
-  // who picks one package can still see what the others would have done.
   const [packageChoice, setPackageChoice] = useState<PackageChoice | null>(null);
 
-  // Values the export asked for that no datasheet carries. Empty unless the last
-  // export came back 422 INPUT_REQUIRED.
+  // Values the export asked for. Empty unless the last attempt came back 422.
   const [pendingNeeds, setPendingNeeds] = useState<RequiredInput[]>([]);
-  const [needValue, setNeedValue] = useState("");
-  /**
-   * Values the record holds but nobody has checked, with the pages to check them
-   * on. This is the rung of the friction ladder between "nothing to do" and
-   * "type a number": we already have an answer, it just needs one second of a
-   * human's attention before anyone signs for it.
-   */
+  // One box per question. Sharing one made a part needing three numbers
+  // unanswerable in principle.
+  const [needValues, setNeedValues] = useState<Record<string, string>>({});
+  // Answers already given, carried across retries: the export asks for whatever
+  // is still missing, so without this the first answer is lost every time.
+  const [supplied, setSupplied] = useState<Record<string, number | string>>({});
+
   const [review, setReview] = useState<ReviewItem[]>([]);
-  const [reviewPageImages, setReviewPageImages] = useState<RenderedPage[]>([]);
+  const [pageImages, setPageImages] = useState<RenderedPage[]>([]);
+  const [checks, setChecks] = useState<ConfidenceCheck[]>([]);
+  const [drawingPage, setDrawingPage] = useState<number | null>(null);
   const [openReview, setOpenReview] = useState<string | null>(null);
   const [correction, setCorrection] = useState("");
 
-  // An `install`-scoped answer is a property of the assembly line, not of the
-  // part: the trim an assembler forms leads to is the same for an op-amp and a
-  // microcontroller. So it is asked ONCE and remembered, which is what makes it
-  // a one-time cost rather than a per-part tax. A `part`-scoped answer is never
-  // stored, because reusing one across parts would be a guess.
+  // An `install`-scoped answer belongs to the assembly line rather than the part,
+  // so it is asked once and remembered. A `part`-scoped answer is never stored,
+  // because reusing one across parts would be a guess.
   const [installLeadSpan, setInstallLeadSpan] = useState<number | null>(null);
 
   useEffect(() => {
@@ -268,16 +305,14 @@ export default function HomePage() {
       const parsed = saved === null ? NaN : Number(saved);
       if (Number.isFinite(parsed) && parsed > 0) setInstallLeadSpan(parsed);
     } catch {
-      // A blocked or full localStorage costs the user one re-entry, not the export.
+      // A blocked localStorage costs one re-entry, not the export.
     }
   }, []);
-  const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("kicad");
-  const [status, setStatus] = useState("Loading workspace...");
-  const [busy, setBusy] = useState(false);
 
-  // Deployment mode surfaced by GET /api/config. Stays null while loading so the lookup box
-  // never flashes on screen before we know whether it is allowed. The server 403 on
-  // /api/lookup remains the real gate; this only decides which UI to render.
+  const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("kicad");
+  const [status, setStatus] = useState("Loading…");
+  const [busy, setBusy] = useState(false);
+  const [showRecord, setShowRecord] = useState(false);
   const [config, setConfig] = useState<AppConfig | null>(null);
 
   useEffect(() => {
@@ -287,56 +322,77 @@ export default function HomePage() {
       .then((data: AppConfig) => {
         if (cancelled) return;
         setConfig(data);
-        setStatus(
-          data.lookupEnabled
-            ? "Enter a part number, or upload a datasheet PDF."
-            : "Air-gapped mode: upload a datasheet PDF to begin."
-        );
+        setStatus(data.lookupEnabled ? "Ready." : "Air-gapped. Upload a datasheet to begin.");
       })
       .catch(() => {
         if (cancelled) return;
-        // Config is UX only and the server gate still holds, but fail closed here to match the
-        // server's production default: if the mode cannot be confirmed, assume no network and
-        // show upload only rather than offering a lookup that would just 403.
-        setConfig({ mode: "air-gapped", lookupEnabled: false });
-        setStatus("Could not confirm deployment mode. Upload a datasheet PDF to begin.");
+        setStatus("Could not reach the server.");
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const dimensionsRows = useMemo(
-    (): Array<[string, Extracted<number>]> => [
-      ["Body length", part.dimensions.bodyLengthMm],
-      ["Body width", part.dimensions.bodyWidthMm],
-      ["Body height", part.dimensions.bodyHeightMm],
-      ["Pitch", part.dimensions.pitchMm],
-      ["Lead length", part.dimensions.leadLengthMm],
-      ["Lead count", part.dimensions.leadCount]
-    ],
-    [part.dimensions]
+  const loaded = Boolean(part.id);
+  const imageFor = (page: number | null | undefined) =>
+    page ? pageImages.find((image) => image.page === page) : undefined;
+
+  const packageOutcomes = useMemo(
+    () => new Map(packageChoice?.ok ? packageChoice.options.map((option) => [option.designator, option]) : []),
+    [packageChoice]
   );
 
+  /**
+   * The questions we ALREADY know the answer to, before anything is pressed.
+   *
+   * `packageOptions` runs the real footprint generator once per package when the
+   * datasheet is read, so the server knows which numbers are missing the moment
+   * it answers. This used to be thrown away: the user pressed "Build library",
+   * got refused, and only then saw the question. Same work, one dead end.
+   *
+   * `pendingNeeds` still wins when it is populated, because that is the answer
+   * from an actual attempt with the values already supplied, and it shrinks as
+   * they are answered.
+   */
+  const knownNeeds = useMemo(() => {
+    if (!packageChoice?.ok) return [];
+    const chosen = packageChoice.options.find((option) => option.designator === part.packageType.value);
+    // The resolved package where there is one, otherwise the only offer. With
+    // several unresolved packages the questions differ per package, and showing
+    // one package's questions as if they were the part's would be a guess.
+    const option = chosen ?? (packageChoice.options.length === 1 ? packageChoice.options[0] : undefined);
+    return option?.status === "needs-input" ? option.needs : [];
+  }, [packageChoice, part.packageType.value]);
+
+  const shownNeeds = pendingNeeds.length > 0 ? pendingNeeds : knownNeeds;
+
+  const failedChecks = checks.filter((check) => check.state === "fail");
+  const openChecks = checks.filter((check) => check.state !== "pass");
+  const blockingReview = review.filter((item) => item.blocking);
   const sourceUrl = formatSourceUrl(part.sourceUrl);
+  const pins = part.pins.value ?? [];
+  const exportStep = offeredVariants.length > 1 ? 5 : 4;
 
-  // The packages to offer: those the first read found, falling back to the
-  // record's own list so a record that arrived some other way still gets a
-  // chooser. Held apart from the record because choosing narrows the record's
-  // copy, and a user who picks wrong has to be able to pick again.
-  const packageChoices =
-    offeredVariants.length > 0 ? offeredVariants : part.packageVariants;
-  // What each chip will do, keyed by the designator printed on it. Empty when
-  // the record could not resolve at all, in which case the chips carry no
-  // outcome rather than a wrong one: see the note on the picker below.
-  const packageOutcomes = new Map(
-    packageChoice?.ok ? packageChoice.options.map((option) => [option.designator, option]) : []
-  );
-  // Flattened from the families the server says it can build, so the list can
-  // never drift from what export actually accepts.
-  const supportedPackages = (config?.packageFamilies ?? []).flatMap(
-    (family) => PACKAGE_SUGGESTIONS[family] ?? []
-  );
+  // ---------------------------------------------------------------------------
+  // Handlers. Behaviour is carried over unchanged; only the presentation around
+  // them was rebuilt.
+  // ---------------------------------------------------------------------------
+
+  function absorb(payload: Record<string, unknown>, record: PartRecord, keepChoice: boolean) {
+    setPart(record);
+    setReview((payload.review as ReviewItem[]) ?? []);
+    setPageImages((payload.reviewPages as RenderedPage[]) ?? []);
+    setChecks((payload.checks as ConfidenceCheck[]) ?? []);
+    setDrawingPage((payload.packageDrawing as { page?: number } | null)?.page ?? null);
+    setOpenReview(null);
+    setPendingNeeds([]);
+    setSupplied({});
+    // A re-read keeps the packages the first read offered; see `offeredVariants`.
+    if (!keepChoice) {
+      setOfferedVariants(record.packageVariants);
+      setPackageChoice((payload.packageChoice as PackageChoice) ?? null);
+    }
+  }
 
   async function handleLookup(options?: { partNumber?: string; manufacturer?: string; packageType?: string }) {
     const trimmedPart = (options?.partNumber ?? partPrompt).trim();
@@ -347,56 +403,35 @@ export default function HomePage() {
     const trimmedManufacturer = (options?.manufacturer ?? manufacturerHint).trim();
 
     setBusy(true);
-    setStatus(
-      options?.packageType
-        ? `Re-reading the datasheet for ${trimmedPart} as ${options.packageType}...`
-        : `Resolving the datasheet for ${trimmedPart}...`
-    );
+    setStatus(options?.packageType ? `Re-reading ${trimmedPart} as ${options.packageType}…` : `Finding ${trimmedPart}…`);
 
     try {
       const response = await fetch("/api/lookup", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        // Optional fields are OMITTED when blank rather than sent empty. The
-        // schema requires a non-empty string when the key is present, so sending
-        // `manufacturer: ""` failed the whole request and came back as
-        // "Part number is required" on every lookup made without a hint.
+        headers: { "Content-Type": "application/json" },
+        // Optional fields are OMITTED when blank rather than sent empty: the
+        // schema requires a non-empty string when the key is present, so an empty
+        // manufacturer failed the whole request as "part number is required".
         body: JSON.stringify({
           partNumber: trimmedPart,
           ...(trimmedManufacturer ? { manufacturer: trimmedManufacturer } : {}),
           ...(options?.packageType ? { packageType: options.packageType } : {})
         })
       });
-
       const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || "Failed to find the datasheet.");
-      }
+      if (!response.ok) throw new Error(payload.error || "Could not find that datasheet.");
 
       const record = payload.part as PartRecord;
-      setPart(record);
+      absorb(payload, record, Boolean(options?.packageType));
       setSelectedFile(null);
       setOrigin({ kind: "lookup", partNumber: trimmedPart, manufacturer: trimmedManufacturer });
-      // A re-read keeps the packages the first read offered; see `offeredVariants`.
-      if (!options?.packageType) setOfferedVariants(record.packageVariants);
-      setStatus(
-        options?.packageType
-          ? describeChoice(record, options.packageType)
-          : `Found the datasheet PDF for ${trimmedPart}. Review the record before export.`
-      );
+      setStatus(options?.packageType ? describeChoice(record, options.packageType) : `Read ${trimmedPart}.`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Unexpected lookup failure.");
+      setStatus(error instanceof Error ? error.message : "Lookup failed.");
       setPart(defaultPart);
     } finally {
       setBusy(false);
     }
-  }
-
-  async function handlePromptSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await handleLookup();
   }
 
   async function handleFile(file: File | null, packageType?: string) {
@@ -404,7 +439,7 @@ export default function HomePage() {
     if (!file) return;
 
     setBusy(true);
-    setStatus(packageType ? `Re-reading ${file.name} as ${packageType}...` : `Parsing ${file.name}...`);
+    setStatus(packageType ? `Re-reading ${file.name} as ${packageType}…` : `Reading ${file.name}…`);
 
     try {
       const formData = new FormData();
@@ -413,29 +448,14 @@ export default function HomePage() {
 
       const response = await fetch("/api/parse", { method: "POST", body: formData });
       const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload.error || "Failed to parse datasheet.");
-      }
+      if (!response.ok) throw new Error(payload.error || "Could not read that datasheet.");
 
       const record = payload.part as PartRecord;
-      setPart(record);
-      setReview((payload.review as ReviewItem[]) ?? []);
-      setReviewPageImages((payload.reviewPages as RenderedPage[]) ?? []);
-      setOpenReview(null);
+      absorb(payload, record, Boolean(packageType));
       setOrigin({ kind: "upload", file });
-      // A re-read keeps the packages the first read offered; see `offeredVariants`.
-      if (!packageType) {
-        setOfferedVariants(record.packageVariants);
-        setPackageChoice((payload.packageChoice as PackageChoice) ?? null);
-      }
-      setStatus(
-        packageType
-          ? describeChoice(record, packageType)
-          : `Parsed ${record.partNumber.value ?? file.name}. Review fields before export.`
-      );
+      setStatus(packageType ? describeChoice(record, packageType) : `Read ${record.partNumber.value ?? file.name}.`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Unexpected parse failure.");
+      setStatus(error instanceof Error ? error.message : "Parse failed.");
       setPart(defaultPart);
     } finally {
       setBusy(false);
@@ -445,87 +465,70 @@ export default function HomePage() {
   /**
    * Answers a package choice by reading the datasheet AGAIN with that package.
    *
-   * Two cases do NOT re-read.
-   *
-   * The source document is no longer to hand, which is the pre-existing
-   * behaviour and all that is possible then: the readers cannot re-run without
-   * the bytes.
-   *
-   * Or the record is already complete, meaning it has pins AND a settled count.
-   * A re-read can only take that away, since the readers may find nothing for
-   * the newly named package, and losing a working pinout is a worse outcome than
-   * any it could win. A complete record is one the user can already export, so
-   * the click means "label it this" and is honoured as written. The incomplete
-   * case is the one worth re-reading, and it is also the only one measured to
-   * gain: all five hold-out parts a choice rescues have no pinout at all.
+   * Two cases do not re-read: the source is no longer to hand, or the record is
+   * already complete. A re-read can only take a working pinout away, and a
+   * complete record is one the user can already export, so the click means
+   * "label it this" and is honoured as written.
    */
   async function handlePackageChoice(designator: string) {
     const alreadyComplete = (part.pins.value?.length ?? 0) > 0 && part.pinCount.value !== null;
     if (alreadyComplete) {
       setPart({ ...part, packageType: userEdited(designator) });
-      setStatus(`Package set to ${designator}. The pinout already read, so it was left as it is.`);
+      setStatus(`Package set to ${designator}. The pinout was already read, so it was kept.`);
       return;
     }
-
-    if (origin?.kind === "upload") {
-      await handleFile(origin.file, designator);
-      return;
-    }
+    if (origin?.kind === "upload") return handleFile(origin.file, designator);
     if (origin?.kind === "lookup") {
-      await handleLookup({
+      return handleLookup({
         partNumber: origin.partNumber,
         manufacturer: origin.manufacturer,
         packageType: designator
       });
-      return;
     }
     setPart({ ...part, packageType: userEdited(designator) });
   }
 
   /**
-   * Builds the bundle, supplying any value the datasheet cannot carry.
+   * Builds the bundle, sending every answer already given.
    *
-   * `formedLeadSpan` is passed explicitly rather than read from state because a
-   * React state update is not visible to the handler that queued it, and the
-   * whole point of the flow is to answer the 422 and immediately retry.
+   * `answers` is passed explicitly rather than read from state for the same
+   * reason `formedLeadSpan` is: a React state update is not visible to the
+   * handler that queued it, and the whole point is to answer and retry at once.
    */
-  async function handleExport(formedLeadSpan?: number) {
+  async function handleExport(formedLeadSpan?: number, answers: Record<string, number | string> = supplied) {
     setBusy(true);
-    setStatus(`Building ${selectedFormat.toUpperCase()} export bundle...`);
+    setStatus(`Building ${selectedFormat.toUpperCase()}…`);
 
     try {
       const response = await fetch("/api/export", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           part,
           format: selectedFormat,
+          // Every answered question, under the field name the refusal used.
+          ...answers,
           ...(formedLeadSpan !== undefined ? { formedLeadSpanMm: formedLeadSpan } : {})
         })
       });
 
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
-
-        // A refusal the user can ANSWER, which is a different thing from a
-        // refusal they cannot. `needs` populated means the footprint is one
-        // number away and that number is a property of their assembly line, not
-        // of the datasheet; the route has always said so and the UI used to
-        // flatten it into an error string, which left the value unreachable and
-        // the parts unexportable. Empty `needs` is a package Forge has not
-        // characterised, which is ours to fix and not something to prompt about.
+        // A refusal the user can ANSWER is a different thing from one they
+        // cannot. `needs` populated means the footprint is a few values away.
         if (payload?.code === "INPUT_REQUIRED" && Array.isArray(payload.needs) && payload.needs.length > 0) {
           setPendingNeeds(payload.needs as RequiredInput[]);
-          setStatus(payload.error || "One more value is needed to build the footprint.");
+          setStatus(
+            payload.needs.length === 1
+              ? "One value is needed to build the footprint."
+              : `${payload.needs.length} values are needed to build the footprint.`
+          );
           return;
         }
         throw new Error(payload?.error || "Export failed.");
       }
 
       setPendingNeeds([]);
-
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -534,30 +537,16 @@ export default function HomePage() {
       anchor.click();
       URL.revokeObjectURL(objectUrl);
 
-      const stepSupported = response.headers.get("X-Forge-Step-Supported") === "true";
-      const stepNote = response.headers.get("X-Forge-Step-Note") || "";
-      const exportNote = response.headers.get("X-Forge-Export-Note") || "";
-      setStatus(stepSupported ? `ZIP downloaded. ${exportNote}`.trim() : `ZIP downloaded. ${stepNote || exportNote}`.trim());
+      const note = decodeURIComponent(response.headers.get("X-Forge-Export-Note") || "");
+      setStatus(note || "Downloaded.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Unexpected export failure.");
+      setStatus(error instanceof Error ? error.message : "Export failed.");
     } finally {
       setBusy(false);
     }
   }
 
-  /**
-   * Answers the export's outstanding request and retries immediately.
-   *
-   * The retry is the point. Handing back a value and then making the user find
-   * the download button again is the same friction the prompt was added to
-   * remove.
-   */
-  /**
-   * Writes one field back into the record by its dotted path.
-   *
-   * Only the field named is touched, and only its own keys: a confirmation must
-   * never disturb a neighbouring value or the citation the reviewer just read.
-   */
+  /** Writes one field back by its dotted path, touching nothing else. */
   function withField(record: PartRecord, path: string, patch: Partial<Extracted<unknown>>): PartRecord {
     if (!path.includes(".")) {
       const current = (record as unknown as Record<string, Extracted<unknown>>)[path];
@@ -565,10 +554,7 @@ export default function HomePage() {
     }
     const [group, key] = path.split(".");
     const bag = (record as unknown as Record<string, Record<string, Extracted<unknown>>>)[group];
-    return {
-      ...record,
-      [group]: { ...bag, [key]: { ...bag[key], ...patch } }
-    } as PartRecord;
+    return { ...record, [group]: { ...bag, [key]: { ...bag[key], ...patch } } } as PartRecord;
   }
 
   /** Drops an item once a person has dealt with it. */
@@ -581,17 +567,13 @@ export default function HomePage() {
   /**
    * "I looked at the page and this is right."
    *
-   * Recorded as `user-confirmed` rather than `user`, and the citation is KEPT.
-   * The value still came off page 2 and a reviewer auditing this later should
-   * see both facts: a model read it, and a person checked it against the page it
-   * claims. That is a stronger record than either alone, and it is also what
-   * unblocks an export: an uncited model value cannot pass `resolveForExport`,
-   * and a confirmed one can.
+   * Recorded as `user-confirmed` rather than `user`, and the citation is KEPT: a
+   * model read it AND a person checked it against the page it claims, which is a
+   * stronger record than either alone. It is also what unblocks an export, since
+   * an uncited model value cannot pass the export gate and a confirmed one can.
    */
   function handleConfirmReview(item: ReviewItem) {
-    setPart((record) =>
-      withField(record, item.field, { confidence: 1, method: "user-confirmed" })
-    );
+    setPart((record) => withField(record, item.field, { confidence: 1, method: "user-confirmed" }));
     settle(item.field);
     setStatus(`Confirmed ${item.label.toLowerCase()} against page ${item.page ?? "?"}.`);
   }
@@ -599,9 +581,9 @@ export default function HomePage() {
   /**
    * "I looked at the page and it says something else."
    *
-   * The citation is kept here too. The user read the corrected value off that
-   * same page, so the page is still where the evidence is; what changes is that
-   * the value is now a person's reading rather than a model's.
+   * The citation is kept here too. The corrected value was read off that same
+   * page, so that is still where the evidence is; what changes is that the value
+   * is now a person's reading rather than a model's.
    */
   function handleCorrectReview(item: ReviewItem, raw: string) {
     const text = raw.trim();
@@ -609,9 +591,8 @@ export default function HomePage() {
       setStatus(`Enter a value for ${item.label.toLowerCase()}, or confirm what was read.`);
       return;
     }
-
-    // Numeric fields must stay numeric or the export schema rejects the record
-    // at the boundary, which would surface as an unrelated-looking failure.
+    // Numeric fields must stay numeric or the export schema rejects the record at
+    // the boundary, which surfaces as an unrelated-looking failure.
     const numeric = item.field === "pinCount" || /Mm$/.test(item.field);
     let value: unknown = text;
     if (numeric) {
@@ -622,669 +603,554 @@ export default function HomePage() {
       }
       value = item.field === "pinCount" ? Math.round(parsed) : parsed;
     }
-
     setPart((record) => withField(record, item.field, { value, confidence: 1, method: "user" }));
     settle(item.field);
     setStatus(`Set ${item.label.toLowerCase()} to ${text}.`);
   }
 
+  /** Answers one outstanding question and retries the export immediately. */
   async function handleSupplyNeed(need: RequiredInput, raw: string) {
-    const value = Number(raw);
-    if (!Number.isFinite(value) || value <= 0 || value > MAX_LEAD_SPAN_MM) {
-      setStatus(`Enter a ${need.label.toLowerCase()} in ${need.unit}, greater than 0.`);
-      return;
+    const text = raw.trim();
+    let value: number | string;
+
+    if (need.unit === "counts") {
+      // Four whole counts from pin 1. Checked here so a typo is caught beside the
+      // box rather than as a 400 from the route.
+      if (!/^\d{1,3}(,\d{1,3}){3}$/.test(text)) {
+        setStatus("Enter four counts separated by commas, e.g. 6,6,6,5.");
+        return;
+      }
+      value = text;
+    } else if (need.unit === "count") {
+      const parsed = Number(text);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        setStatus(`${need.label} must be a whole number of 1 or more.`);
+        return;
+      }
+      value = parsed;
+    } else {
+      const parsed = Number(text);
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > MAX_LEAD_SPAN_MM) {
+        setStatus(`Enter ${need.label.toLowerCase()} in mm, greater than 0.`);
+        return;
+      }
+      value = parsed;
     }
 
-    if (need.scope === "install") {
+    if (need.scope === "install" && typeof value === "number") {
       setInstallLeadSpan(value);
       try {
         window.localStorage.setItem(INSTALL_LEAD_SPAN_KEY, String(value));
       } catch {
-        // Remembering is a convenience; failing to remember must not block the export.
+        // Remembering is a convenience; failing to remember must not block.
       }
     }
 
+    const answers = { ...supplied, [need.field]: value };
+    setSupplied(answers);
+    setNeedValues((current) => ({ ...current, [need.field]: "" }));
+    // Cleared optimistically. The retry repopulates it with whatever is STILL
+    // missing, so a part needing three numbers walks down to none.
     setPendingNeeds([]);
-    setNeedValue("");
-    await handleExport(value);
+    await handleExport(
+      need.field === "formedLeadSpanMm" && typeof value === "number" ? value : installLeadSpan ?? undefined,
+      answers
+    );
   }
 
-  const jsonPreview = JSON.stringify(part, null, 2);
-
-  // Upload is the enterprise/air-gapped path and is available in every mode, so it is shared
-  // between the commercial layout (as the fallback) and the air-gapped layout (as the only path).
-  const uploadCard = (
-    <label className="upload-card" htmlFor="datasheet-upload">
-      <div className="upload-title">{config?.lookupEnabled ? "Fallback: upload a PDF" : "Upload a datasheet PDF"}</div>
-      <div className="upload-body">
-        {config?.lookupEnabled
-          ? "Drop a local datasheet here if you already have the file."
-          : "Datasheets are read locally and never leave your network."}
-      </div>
-      <input
-        id="datasheet-upload"
-        type="file"
-        accept="application/pdf"
-        onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
-      />
-      <div className="file-name">{selectedFile ? selectedFile.name : "No file selected"}</div>
-    </label>
-  );
+  // ---------------------------------------------------------------------------
 
   return (
-    <main className="workspace-shell">
-      <header className="topbar">
-        <div>
-          <div className="eyebrow">Forge</div>
-          <h1>Vertical datasheet AI for CAD teams</h1>
-          <p className="hero-copy">
-            {config === null
-              ? "Forge turns rad-hard datasheets into download-ready CAD bundles."
-              : config.lookupEnabled
-                ? "Give Forge a part number. It resolves the datasheet, parses the PDF, and generates a download-ready CAD bundle."
-                : "Upload a rad-hard datasheet PDF. Forge parses it locally and generates a download-ready CAD bundle, with no data leaving your network."}
-          </p>
+    <div className="app">
+      <header className="bar">
+        <div className="bar-id">
+          <span className="wordmark">Forge</span>
+          <span className="bar-sub">datasheet to CAD library</span>
         </div>
-        <div className="status-box">{status}</div>
+        {config && <span className={`mode mode-${config.mode}`}>{config.lookupEnabled ? "commercial" : "air-gapped"}</span>}
       </header>
 
-      <section className="tool-row">
-        {config === null ? (
-          <div className="panel config-loading" aria-busy="true">
-            Loading workspace...
-          </div>
-        ) : config.lookupEnabled ? (
-          <>
-            <article className="prompt-card panel">
-              <div className="card-kicker">AI intake</div>
-              <h2>What part are you working on?</h2>
-              <p>Enter a manufacturer part number. Forge resolves the datasheet, ingests it, and prefills the normalized part record.</p>
+      <main className="flow">
+        {/* 1. SOURCE --------------------------------------------------------- */}
+        <section className="step">
+          <h2 className="step-title">
+            <span className="step-n">1</span> Datasheet
+          </h2>
 
-              <form className="chat-shell" onSubmit={handlePromptSubmit}>
-                <div className="chat-thread">
-                  <div className="chat-bubble assistant">
-                    Start with a part number. You can add a manufacturer hint if the name is ambiguous.
-                  </div>
-                </div>
+          <div className="source">
+            <label className="drop" htmlFor="datasheet-upload">
+              <input
+                id="datasheet-upload"
+                type="file"
+                accept="application/pdf"
+                onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
+                disabled={busy}
+              />
+              <span className="drop-main">{selectedFile ? selectedFile.name : "Choose a PDF"}</span>
+              <span className="drop-sub">
+                {selectedFile
+                  ? "Click to replace"
+                  : config?.lookupEnabled
+                    ? "or find one by part number"
+                    : "The file never leaves this machine"}
+              </span>
+            </label>
 
-                <div className="chat-input-row">
+            {config?.lookupEnabled && (
+              <form
+                className="lookup"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleLookup();
+                }}
+              >
+                <div className="lookup-fields">
                   <label>
                     <span>Part number</span>
-                    <input value={partPrompt} onChange={(event) => setPartPrompt(event.target.value)} placeholder="Type a part number" />
+                    <input
+                      value={partPrompt}
+                      onChange={(event) => setPartPrompt(event.target.value)}
+                      placeholder="LM358"
+                    />
                   </label>
                   <label>
-                    <span>Manufacturer hint</span>
-                    <input value={manufacturerHint} onChange={(event) => setManufacturerHint(event.target.value)} placeholder="Optional" />
+                    <span>
+                      Manufacturer <em>optional</em>
+                    </span>
+                    <input
+                      value={manufacturerHint}
+                      onChange={(event) => setManufacturerHint(event.target.value)}
+                      placeholder="Texas Instruments"
+                    />
                   </label>
-                  <button className="primary-button" type="submit" disabled={busy}>
-                    Find datasheet & parse
-                  </button>
                 </div>
+                <button type="submit" className="btn" disabled={busy || !partPrompt.trim()}>
+                  Find datasheet
+                </button>
               </form>
+            )}
+          </div>
+        </section>
 
-              <div className="prompt-footnote">Resolves through the component API first. PDF upload remains the fallback.</div>
-
-              {sourceUrl ? (
-                <div className="source-banner">
-                  <span>Source</span>
-                  <a href={sourceUrl.href} target="_blank" rel="noreferrer">
-                    {sourceUrl.href}
-                  </a>
-                </div>
-              ) : null}
-            </article>
-
-            {uploadCard}
-          </>
-        ) : (
+        {loaded && (
           <>
-            <article className="prompt-card panel airgap-notice">
-              <div className="card-kicker">Air-gapped mode</div>
-              <h2>Part-number lookup is disabled</h2>
-              <p>
-                This deployment runs with zero network egress, so Forge never reaches an external
-                component API. Upload the datasheet PDF directly and it is processed entirely on
-                your own infrastructure.
-              </p>
-            </article>
+            {/* 2. WHAT WAS READ ---------------------------------------------- */}
+            <section className="step">
+              <h2 className="step-title">
+                <span className="step-n">2</span> What was read
+              </h2>
 
-            {uploadCard}
-          </>
-        )}
-      </section>
-
-      {review.length > 0 && (
-        <section className="tool-row">
-          <article className="panel review-panel">
-            <div className="card-kicker">Needs a look</div>
-            <h2 className="review-heading">
-              {review.filter((item) => item.blocking).length > 0
-                ? `${review.filter((item) => item.blocking).length} value${
-                    review.filter((item) => item.blocking).length === 1 ? "" : "s"
-                  } must be checked before export`
-                : `${review.length} value${review.length === 1 ? "" : "s"} worth a second look`}
-            </h2>
-            <p className="review-intro">
-              Forge read these but could not verify them against the datasheet text. Open one to see
-              the page it came from, then confirm it or type what the page actually says.
-            </p>
-
-            {review.map((item) => {
-              const open = openReview === item.field;
-              // Bound once so the JSX below narrows it; `item.alternative` inside
-              // a callback does not.
-              const alternative = item.alternative;
-              const image = reviewPageImages.find((page) => page.page === item.page);
-              // A pin table is a list, not a value anyone should retype into a
-              // text box. It is confirmed or it is re-read by naming the package.
-              const editable = item.field !== "pins";
-
-              return (
-                <div
-                  key={item.field}
-                  className={`review-item${item.blocking ? " review-blocking" : ""}${
-                    item.reason === "disagreement" ? " review-conflict" : ""
-                  }`}
-                >
-                  <button
-                    type="button"
-                    className="review-summary"
-                    onClick={() => {
-                      setOpenReview(open ? null : item.field);
-                      setCorrection("");
-                    }}
-                    aria-expanded={open}
-                  >
-                    <span className="review-label">{item.label}</span>
-                    <span className="review-value">
-                      {item.display}
-                      {/* Both readings on the summary line. A conflict the user has
-                          to expand to see is a conflict most users never see. */}
-                      {item.alternative && (
-                        <>
-                          {" vs "}
-                          <span className="review-alt">{item.alternative.display}</span>
-                        </>
-                      )}
-                    </span>
-                    <span className="review-where">
-                      {item.alternative
-                        ? `two readings disagree${
-                            item.page !== null && item.alternative.page !== null
-                              ? ` · pages ${item.page} and ${item.alternative.page}`
-                              : ""
-                          }`
-                        : item.blocking
-                          ? "blocks export"
-                          : item.page !== null
-                            ? `page ${item.page}`
-                            : "no page cited"}
-                    </span>
-                  </button>
-
-                  {open && (
-                    <div className="review-body">
-                      <p className="review-consequence">{item.consequence}</p>
-                      {item.snippet && <p className="review-snippet">Cited as: {item.snippet}</p>}
-
-                      {/* Both pages, side by side. Settling a disagreement means
-                          looking at the two places the two readers looked, and
-                          showing one of them decides the question by omission. */}
-                      {item.alternative ? (
-                        <div className="review-compare">
-                          {[
-                            { which: "Forge read", value: item.display, page: item.page },
-                            { which: "The model read", value: item.alternative.display, page: item.alternative.page }
-                          ].map((side) => {
-                            const sideImage = reviewPageImages.find((page) => page.page === side.page);
-                            return (
-                              <figure key={side.which} className="review-side">
-                                <figcaption>
-                                  <strong>{side.which}</strong> {side.value}
-                                  {side.page !== null && <span className="review-where"> · page {side.page}</span>}
-                                </figcaption>
-                                {sideImage ? (
-                                  <img
-                                    className="review-page"
-                                    src={`data:${sideImage.mimeType};base64,${sideImage.base64}`}
-                                    alt={`Page ${sideImage.page} of the datasheet`}
-                                  />
-                                ) : (
-                                  <p className="review-snippet">
-                                    {side.page !== null
-                                      ? `Open page ${side.page} to check this.`
-                                      : "No page cited."}
-                                  </p>
-                                )}
-                              </figure>
-                            );
-                          })}
-                        </div>
-                      ) : image ? (
-                        <img
-                          className="review-page"
-                          src={`data:${image.mimeType};base64,${image.base64}`}
-                          alt={`Page ${image.page} of the datasheet`}
-                        />
+              <div className="identity">
+                <div className="identity-main">
+                  <span className="ident-part">{part.partNumber.value ?? "unknown part"}</span>
+                  <span className="ident-sub">
+                    {[part.manufacturer.value, part.packageType.value].filter(Boolean).join(" · ") || "package not read"}
+                  </span>
+                </div>
+                <dl className="identity-facts">
+                  <div>
+                    <dt>Pins</dt>
+                    <dd>{part.pinCount.value ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Outline</dt>
+                    <dd>{part.packageOutlineCode.value ?? part.jedecOutline.value ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Mounting</dt>
+                    <dd>{part.dimensions.mounting.value ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Source</dt>
+                    <dd>
+                      {sourceUrl ? (
+                        <a href={sourceUrl.toString()} target="_blank" rel="noreferrer noopener">
+                          {sourceUrl.hostname}
+                        </a>
                       ) : (
-                        <p className="review-snippet">
-                          {item.page !== null
-                            ? `Open page ${item.page} of the datasheet to check this.`
-                            : "Forge could not say which page this came from, which is itself a reason to distrust it."}
-                        </p>
+                        part.sourceFileName || "—"
                       )}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
 
-                      <div className="review-actions">
+              {checks.length > 0 && (
+                <div className={`checks${failedChecks.length > 0 ? " checks-bad" : ""}`}>
+                  <p className="checks-head">
+                    {failedChecks.length > 0
+                      ? `${failedChecks.length} consistency check${failedChecks.length === 1 ? "" : "s"} failed`
+                      : `All ${checks.filter((c) => c.state === "pass").length} runnable consistency checks passed`}
+                  </p>
+                  {openChecks.length > 0 && (
+                    <ul>
+                      {openChecks.map((check) => (
+                        <li key={check.id} className={`check check-${check.state}`}>
+                          <span className="check-label">{check.label}</span>
+                          <span className="check-detail">{check.detail}</span>
+                          {check.consequence && <span className="check-why">{check.consequence}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {/* 3. REVIEW ------------------------------------------------------ */}
+            {review.length > 0 && (
+              <section className="step">
+                <h2 className="step-title">
+                  <span className="step-n">3</span> Worth a look
+                  {blockingReview.length > 0 && (
+                    <span className="badge">{blockingReview.length} blocking export</span>
+                  )}
+                </h2>
+                <p className="step-note">
+                  Read, but not verified. Open one to see the page it came from, then confirm it or correct it.
+                </p>
+
+                <ul className="reviews">
+                  {review.map((item) => {
+                    const open = openReview === item.field;
+                    const image = imageFor(item.page);
+                    const alt = item.alternative ? imageFor(item.alternative.page) : undefined;
+                    return (
+                      <li key={item.field} className={`rev${item.blocking ? " rev-block" : ""}`}>
                         <button
                           type="button"
-                          className="primary-button"
-                          onClick={() => handleConfirmReview(item)}
+                          className="rev-head"
+                          onClick={() => {
+                            setOpenReview(open ? null : item.field);
+                            setCorrection("");
+                          }}
+                          aria-expanded={open}
                         >
-                          {item.alternative ? "Keep this one" : "Correct as read"}
+                          <span className="rev-caret">{open ? "▾" : "▸"}</span>
+                          <span className="rev-label">{item.label}</span>
+                          <span className="rev-value">{item.display}</span>
+                          {item.alternative && <span className="rev-alt">vs {item.alternative.display}</span>}
+                          <span className="rev-where">{item.page ? `p${item.page}` : "no page"}</span>
                         </button>
-                        {/* One click to take the other reading. Making the user
-                            retype a value that is already on screen is how a
-                            correct answer gets mistyped. */}
-                        {alternative && editable && (
-                          <button
-                            type="button"
-                            className="need-submit"
-                            onClick={() => handleCorrectReview(item, alternative.display)}
-                          >
-                            Use {alternative.display}
-                          </button>
+
+                        {open && (
+                          <div className="rev-body">
+                            <div className="rev-left">
+                              <p className="rev-consequence">{item.consequence}</p>
+                              {item.snippet && <p className="rev-snippet">“{item.snippet}”</p>}
+                              <div className="rev-actions">
+                                <button type="button" className="btn btn-primary" onClick={() => handleConfirmReview(item)}>
+                                  Correct as read
+                                </button>
+                                <div className="rev-correct">
+                                  <input
+                                    value={correction}
+                                    placeholder="or the right value"
+                                    onChange={(event) => setCorrection(event.target.value)}
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        handleCorrectReview(item, correction);
+                                      }
+                                    }}
+                                  />
+                                  <button type="button" className="btn" onClick={() => handleCorrectReview(item, correction)}>
+                                    Set
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="rev-right">
+                              {item.alternative ? (
+                                <div className="rev-compare">
+                                  <PageImage image={image} caption="On the record" page={item.page} />
+                                  <PageImage image={alt} caption="The other reading" page={item.alternative.page} />
+                                </div>
+                              ) : (
+                                <PageImage image={image} caption="Cited page" page={item.page} />
+                              )}
+                            </div>
+                          </div>
                         )}
-                        {editable && (
-                          <>
-                            <input
-                              className="review-input"
-                              value={correction}
-                              placeholder="or type the right value"
-                              onChange={(event) => setCorrection(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter") handleCorrectReview(item, correction);
-                              }}
-                            />
-                            <button
-                              type="button"
-                              className="need-submit"
-                              onClick={() => handleCorrectReview(item, correction)}
-                            >
-                              Use this
-                            </button>
-                          </>
-                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
+
+            {/* 4. PACKAGE ----------------------------------------------------- */}
+            {offeredVariants.length > 1 && (
+              <section className="step">
+                <h2 className="step-title">
+                  <span className="step-n">4</span> Package
+                </h2>
+                <p className="step-note">
+                  This datasheet describes {offeredVariants.length} packages, and a footprint is per package. Each one says
+                  what it would actually build.
+                </p>
+
+                <ul className="packages">
+                  {offeredVariants.map((variant) => {
+                    const outcome: PackageOption | undefined = packageOutcomes.get(variant.designator);
+                    const active = part.packageType.value === variant.designator;
+                    return (
+                      <li key={variant.designator}>
+                        <button
+                          type="button"
+                          className={`pkg${active ? " pkg-active" : ""}`}
+                          disabled={busy}
+                          onClick={() => handlePackageChoice(variant.designator)}
+                        >
+                          <span className="pkg-name">{variant.designator}</span>
+                          <span className="pkg-meta">
+                            {variant.family}
+                            {variant.leadCount ? ` · ${variant.leadCount} leads` : ""}
+                          </span>
+                          {outcome && (
+                            <span className={`pkg-status pkg-${outcome.status}`}>
+                              {outcome.status === "ships"
+                                ? "builds now"
+                                : outcome.status === "needs-input"
+                                  ? `${outcome.needs.length} value${outcome.needs.length === 1 ? "" : "s"} needed`
+                                  : "cannot build"}
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                {packageChoice && !packageChoice.ok && (
+                  <p className="step-note">
+                    Nothing can be built yet: the reading is missing {packageChoice.blockedBy.join(" and ")}. Picking a
+                    package re-reads the datasheet for it, which often fills that in.
+                  </p>
+                )}
+              </section>
+            )}
+
+            {/* 5. EXPORT ------------------------------------------------------ */}
+            <section className="step">
+              <h2 className="step-title">
+                <span className="step-n">{exportStep}</span> Export
+              </h2>
+
+              <div className="formats">
+                {formatOptions.map((option) => (
+                  <label
+                    key={option.value}
+                    className={`fmt${selectedFormat === option.value ? " fmt-on" : ""}${option.ready ? "" : " fmt-off"}`}
+                  >
+                    <input
+                      type="radio"
+                      name="format"
+                      value={option.value}
+                      checked={selectedFormat === option.value}
+                      disabled={!option.ready}
+                      onChange={() => setSelectedFormat(option.value)}
+                    />
+                    <span className="fmt-name">{option.label}</span>
+                    <span className="fmt-note">{option.note}</span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="export-row">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-lg"
+                  onClick={() => handleExport(installLeadSpan ?? undefined)}
+                  disabled={busy || !part.partNumber.value}
+                >
+                  Build library
+                </button>
+                {installLeadSpan !== null && (
+                  <span className="remembered">
+                    Formed lead span {installLeadSpan} mm, remembered.{" "}
+                    <button
+                      type="button"
+                      className="linkish"
+                      onClick={() => {
+                        setInstallLeadSpan(null);
+                        try {
+                          window.localStorage.removeItem(INSTALL_LEAD_SPAN_KEY);
+                        } catch {
+                          // The in-memory value is already gone.
+                        }
+                      }}
+                    >
+                      change
+                    </button>
+                  </span>
+                )}
+              </div>
+
+              {/* Each question, beside the page its answer is printed on. */}
+              {shownNeeds.length > 0 && pendingNeeds.length === 0 && (
+                <p className="step-note">
+                  {shownNeeds.length === 1
+                    ? "One number is missing before this can be built."
+                    : `${shownNeeds.length} numbers are missing before this can be built.`}{" "}
+                  Answer them here and the build will go straight through.
+                </p>
+              )}
+              {shownNeeds.map((need) => {
+                const page = need.page ?? (need.field === "formedLeadSpanMm" ? null : drawingPage);
+                return (
+                  <div key={need.field} className="ask">
+                    <div className="ask-left">
+                      <label className="ask-label" htmlFor={`need-${need.field}`}>
+                        {need.label}
+                        {need.unit === "mm" && <span className="unit"> mm</span>}
+                      </label>
+                      <p className="ask-why">{need.why}</p>
+                      <div className="ask-row">
+                        <input
+                          id={`need-${need.field}`}
+                          type={need.unit === "counts" ? "text" : "number"}
+                          min={need.unit === "mm" ? "0" : "1"}
+                          step={need.unit === "mm" ? "0.01" : "1"}
+                          {...(need.unit === "mm" ? { max: MAX_LEAD_SPAN_MM } : {})}
+                          value={needValues[need.field] ?? ""}
+                          placeholder={need.unit === "counts" ? "6,6,6,5" : need.unit === "count" ? "2" : "1.55"}
+                          onChange={(event) =>
+                            setNeedValues((current) => ({ ...current, [need.field]: event.target.value }))
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void handleSupplyNeed(need, needValues[need.field] ?? "");
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          disabled={busy}
+                          onClick={() => handleSupplyNeed(need, needValues[need.field] ?? "")}
+                        >
+                          Use this
+                        </button>
                       </div>
-                      {!editable && (
-                        <p className="review-snippet">
-                          To change a pinout, name the package instead of editing pins one by one.
+                      {need.scope === "install" && (
+                        <p className="ask-scope">
+                          Asked once. This belongs to your assembly line rather than to this part, so it is remembered for
+                          every part after this one.
                         </p>
                       )}
                     </div>
-                  )}
+                    <div className="ask-right">
+                      <PageImage image={imageFor(page)} caption={need.pageLabel ?? "Package outline"} page={page} />
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
+
+            {/* 6. THE RECORD --------------------------------------------------- */}
+            <section className="step">
+              <button
+                type="button"
+                className="disclose"
+                onClick={() => setShowRecord(!showRecord)}
+                aria-expanded={showRecord}
+              >
+                <span className="rev-caret">{showRecord ? "▾" : "▸"}</span>
+                {showRecord ? "Hide" : "Show"} the full record
+                <span className="disclose-sub">{pins.length} pins, every dimension, and where each value came from</span>
+              </button>
+
+              {showRecord && (
+                <div className="record">
+                  <div className="record-col">
+                    <h3>Package</h3>
+                    <table className="facts">
+                      <tbody>
+                        <Row label="Body length" unit="mm" field={part.dimensions.bodyLengthMm} />
+                        <Row label="Body width" unit="mm" field={part.dimensions.bodyWidthMm} />
+                        <Row label="Body height" unit="mm" field={part.dimensions.bodyHeightMm} />
+                        <Row label="Pitch" unit="mm" field={part.dimensions.pitchMm} />
+                        <Row label="Lead span" unit="mm" field={part.dimensions.leadSpanMm} />
+                        <Row label="Lead width" unit="mm" field={part.dimensions.leadWidthMm} />
+                        <Row label="Seated foot" unit="mm" field={part.dimensions.leadContactMm} />
+                        <Row label="Lead form" field={part.dimensions.leadForm} />
+                        <Row label="Sides with leads" field={part.dimensions.leadSides} />
+                      </tbody>
+                    </table>
+
+                    <h3>Printed footprint</h3>
+                    <table className="facts">
+                      <tbody>
+                        <Row label="Land length" unit="mm" field={part.dimensions.landPadLengthMm} />
+                        <Row label="Land width" unit="mm" field={part.dimensions.landPadWidthMm} />
+                        <Row label="Centre span" unit="mm" field={part.dimensions.landSpanMm} />
+                        <Row label="Mask expansion" unit="mm" field={part.dimensions.solderMaskExpansionMm} />
+                        <Row label="Exposed pad" unit="mm" field={part.dimensions.thermalPadLengthMm} />
+                        <Row label="Via drill" unit="mm" field={part.dimensions.thermalViaDiameterMm} />
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="record-col">
+                    <h3>
+                      Pins <span className="count">{pins.length}</span>
+                    </h3>
+                    {pins.length === 0 ? (
+                      <p className="empty">No pin table was read from this datasheet.</p>
+                    ) : (
+                      <div className="pins-scroll">
+                        <table className="pins">
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>Name</th>
+                              <th>Type</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pins.map((pin, index) => (
+                              <tr key={`${pin.number}-${index}`}>
+                                <td className="num">
+                                  <input
+                                    value={pin.number}
+                                    onChange={(event) => setPart(updatePin(part, index, "number", event.target.value))}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    value={pin.name}
+                                    onChange={(event) => setPart(updatePin(part, index, "name", event.target.value))}
+                                  />
+                                </td>
+                                <td className="meta">{pin.electricalType}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              );
-            })}
-          </article>
-        </section>
-      )}
-
-      <section className="tool-row export-row">
-        <div className="format-card panel">
-          <div className="card-title">Export destination</div>
-          <div className="format-grid">
-            {formatOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className={option.value === selectedFormat ? "format-button active" : "format-button"}
-                onClick={() => setSelectedFormat(option.value)}
-              >
-                <span>{option.label}</span>
-                <small>{option.note}</small>
-              </button>
-            ))}
-          </div>
-          {/*
-            A remembered install-scoped answer is sent WITHOUT being asked for.
-            That is what makes it a one-time cost: the first ceramic flat pack
-            prompts, and every one after it exports straight through.
-          */}
-          <button
-            className="export-button"
-            type="button"
-            onClick={() => handleExport(installLeadSpan ?? undefined)}
-            disabled={busy || !part.partNumber.value}
-          >
-            Download ZIP
-          </button>
-
-          {/*
-            The export asked for a value no datasheet carries. Shown here rather
-            than as an error string, because it is answerable: three parts in the
-            bench corpus are exactly this one number away from a bundle, and the
-            route has been able to accept it all along.
-          */}
-          {pendingNeeds.map((need) => (
-            <div key={need.field} className="need-prompt">
-              <label className="need-label" htmlFor={`need-${need.field}`}>
-                {need.label} ({need.unit})
-              </label>
-              <p className="need-why">{need.why}</p>
-              <div className="need-row">
-                <input
-                  id={`need-${need.field}`}
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  max={MAX_LEAD_SPAN_MM}
-                  value={needValue}
-                  placeholder={`e.g. 10.16`}
-                  onChange={(event) => setNeedValue(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      void handleSupplyNeed(need, needValue);
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="need-submit"
-                  disabled={busy}
-                  onClick={() => handleSupplyNeed(need, needValue)}
-                >
-                  Build with this
-                </button>
-              </div>
-              {need.scope === "install" && (
-                <p className="need-scope">
-                  Asked once. This is a property of your assembly line, not of this part, so Forge
-                  remembers it for every part after this one.
-                </p>
               )}
-            </div>
-          ))}
 
-          {installLeadSpan !== null && pendingNeeds.length === 0 && (
-            <p className="need-scope">
-              Formed lead span: {installLeadSpan} mm (remembered).{" "}
-              <button
-                type="button"
-                className="need-clear"
-                onClick={() => {
-                  setInstallLeadSpan(null);
-                  try {
-                    window.localStorage.removeItem(INSTALL_LEAD_SPAN_KEY);
-                  } catch {
-                    // Clearing is best-effort; the in-memory value is already gone.
-                  }
-                }}
-              >
-                Change
-              </button>
-            </p>
-          )}
-        </div>
-
-        <div className="mini-panel panel">
-          <div className="card-title">What Forge outputs</div>
-          <ul className="capability-list">
-            <li>Normalized part record with provenance.</li>
-            <li>Symbol, footprint, and STEP source files.</li>
-            <li>Vendor-neutral bundle for Altium and Cadence until native emitters land.</li>
-          </ul>
-        </div>
-      </section>
-
-      <section className="content-grid">
-        <article className="panel">
-          <div className="panel-title">Parsed part record</div>
-          <div className="field-grid">
-            <label>
-              <span>
-                Part number <Provenance field={part.partNumber} />
-              </span>
-              <input
-                value={part.partNumber.value ?? ""}
-                onChange={(event) => setPart({ ...part, partNumber: userEdited(event.target.value || null) })}
-              />
-            </label>
-            <label>
-              <span>
-                Manufacturer <Provenance field={part.manufacturer} />
-              </span>
-              <input
-                value={part.manufacturer.value ?? ""}
-                onChange={(event) => setPart({ ...part, manufacturer: userEdited(event.target.value || null) })}
-              />
-            </label>
-            <label>
-              <span>
-                Package type <Provenance field={part.packageType} />
-              </span>
-              <input
-                value={part.packageType.value ?? ""}
-                placeholder="e.g. SOIC-8"
-                onChange={(event) => setPart({ ...part, packageType: userEdited(event.target.value || null) })}
-              />
-              {/*
-                The packages THIS datasheet names, which is a different question
-                from which ones Forge can build. Multi-package ambiguity blocks
-                more parts than any parsing defect, and in every case the document
-                does say what the packages are and does not say which one the user
-                is holding. So it is asked, once, with the answers pre-filled.
-              */}
-              {packageChoices.length > 1 && (
-                <span className="package-picker">
-                  <span className="package-picker-label">
-                    This datasheet describes {packageChoices.length} packages. Which one are you
-                    building?
-                    {origin !== null && " Picking one re-reads the datasheet for that package."}
-                  </span>
-                  {packageChoices.map((variant) => {
-                    // What this chip will do, from the server, which found out by
-                    // running the real footprint generator. Absent means the
-                    // record could not resolve at all, and the panel below says
-                    // so once rather than marking every chip dead in turn.
-                    const outcome = packageOutcomes.get(variant.designator);
-                    const suffix =
-                      outcome?.status === "needs-input"
-                        ? " (needs one number)"
-                        : outcome?.status === "unsupported"
-                          ? " (not buildable yet)"
-                          : "";
-                    return (
-                      <button
-                        key={variant.designator}
-                        type="button"
-                        disabled={busy}
-                        className={[
-                          "package-chip",
-                          part.packageType.value === variant.designator ? "active" : "",
-                          outcome ? `outcome-${outcome.status}` : ""
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        // Never disabled on an unsupported outcome. The pinout is
-                        // still worth having, the refusal is ours rather than the
-                        // datasheet's, and a chip that cannot be pressed cannot
-                        // explain itself.
-                        title={outcome?.reason ?? outcome?.needs[0]?.why ?? undefined}
-                        onClick={() => handlePackageChoice(variant.designator)}
-                      >
-                        {variant.designator}
-                        {suffix}
-                      </button>
-                    );
-                  })}
-                  {/*
-                    Said once, under the row, rather than per chip. The record
-                    blocks every package equally, so marking each one would
-                    present one problem as several and imply another choice might
-                    avoid it.
-                  */}
-                  {packageChoice && !packageChoice.ok && (
-                    <span className="package-picker-note">
-                      No package here can be built yet: the datasheet reading is missing{" "}
-                      {packageChoice.blockedBy.join(" and ")}. Picking one still re-reads the
-                      datasheet for that package, which is often what fills it in.
-                    </span>
-                  )}
-                </span>
-              )}
-              {supportedPackages.length > 0 && (
-                <span className="package-picker">
-                  <span className="package-picker-label">
-                    Characterised footprints (anything else is refused):
-                  </span>
-                  {supportedPackages.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      type="button"
-                      disabled={busy}
-                      className={
-                        part.packageType.value === suggestion
-                          ? "package-chip active"
-                          : "package-chip"
-                      }
-                      onClick={() => handlePackageChoice(suggestion)}
-                    >
-                      {suggestion}
-                    </button>
+              {part.notes.length > 0 && (
+                <ul className="notes">
+                  {part.notes.map((note) => (
+                    <li key={note}>{note}</li>
                   ))}
-                </span>
+                </ul>
               )}
-            </label>
-            <label>
-              <span>
-                Pin count <Provenance field={part.pinCount} />
-              </span>
-              <input
-                type="number"
-                value={part.pinCount.value ?? ""}
-                placeholder="not found"
-                onChange={(event) =>
-                  setPart({ ...part, pinCount: userEdited(Number(event.target.value) || null) })
-                }
-              />
-            </label>
-          </div>
+            </section>
+          </>
+        )}
+      </main>
 
-          <div className="subpanel-title">Package dimensions</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Field</th>
-                  <th>Value (mm)</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dimensionsRows.map(([label, field]) => (
-                  <tr key={label}>
-                    <td>{label}</td>
-                    <Cell field={field} />
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="subpanel-title">Radiation data</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Field</th>
-                  <th>Value</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>TID</td>
-                  <Cell field={part.radiation.tid} />
-                </tr>
-                <tr>
-                  <td>SEE</td>
-                  <Cell field={part.radiation.see} />
-                </tr>
-                <tr>
-                  <td>SEL</td>
-                  <Cell field={part.radiation.sel} />
-                </tr>
-                <tr>
-                  <td>QML/QPL</td>
-                  <Cell field={part.radiation.qmlClass} />
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div className="subpanel-title">
-            Pin table <Provenance field={part.pins} />
-          </div>
-          {part.pins.value === null && (
-            <div className="empty-state">
-              No pin table was detected in this datasheet. Pins are left unknown rather than
-              estimated, and export is blocked until they are filled in.
-            </div>
-          )}
-          <div className="table-wrap pin-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Description</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(part.pins.value ?? []).map((pin, index) => (
-                  <tr key={`${pin.number}-${index}`}>
-                    <td>
-                      <input value={pin.number} onChange={(event) => setPart(updatePin(part, index, "number", event.target.value))} />
-                    </td>
-                    <td>
-                      <input value={pin.name} onChange={(event) => setPart(updatePin(part, index, "name", event.target.value))} />
-                    </td>
-                    <td>
-                      <select
-                        value={pin.electricalType}
-                        onChange={(event) => setPart(updatePin(part, index, "electricalType", event.target.value))}
-                      >
-                        <option value="unspecified">unspecified</option>
-                        <option value="power">power</option>
-                        <option value="input">input</option>
-                        <option value="output">output</option>
-                        <option value="bidirectional">bidirectional</option>
-                        <option value="passive">passive</option>
-                        <option value="nc">nc</option>
-                        <option value="open_collector">open_collector</option>
-                        <option value="open_emitter">open_emitter</option>
-                      </select>
-                    </td>
-                    <td>{pin.description ?? ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </article>
-
-        <aside className="panel json-panel">
-          <div className="panel-title">Normalized JSON</div>
-          <textarea readOnly value={jsonPreview} />
-          <div className="note-list">
-            {part.notes.map((note) => (
-              <div key={note}>{note}</div>
-            ))}
-          </div>
-        </aside>
-      </section>
-    </main>
+      <footer className={`status${busy ? " status-busy" : ""}`} role="status" aria-live="polite">
+        <span className="status-dot" aria-hidden="true" />
+        {status}
+      </footer>
+    </div>
   );
 }

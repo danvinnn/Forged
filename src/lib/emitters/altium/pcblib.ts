@@ -53,6 +53,16 @@ import { AltiumEmitError, MM_PER_MIL, toAltiumUnits, toAltiumY } from "./units";
 const LAYER = {
   topCopper: 1,
   topOverlay: 33,
+  /**
+   * Top Paste. Index 35 in the layer name table above, and the layer chain
+   * points it at Top Layer, which is the pair Altium expects.
+   *
+   * Needed because an exposed thermal pad must NOT be pasted 1:1: the solder
+   * volume under a large land floats the package and lifts the perimeter leads
+   * off their lands. The pattern is a grid of smaller apertures, and this writer
+   * used to refuse every part that had one.
+   */
+  topPaste: 35,
   courtyard: 71
 } as const;
 
@@ -68,10 +78,28 @@ const RECORD = {
 /** Mechanical 1, which is where Altium puts a component body. */
 const BODY_LAYER = 57;
 
-/** Line widths for the drawn outlines, in mm. The same values the KiCad emitter uses. */
+/**
+ * Line widths for the drawn outlines, in mm.
+ *
+ * 0.15 for silkscreen is Altium's own documented figure for a component outline
+ * on Top Overlay, which is why it differs from the 0.12 the KiCad convention
+ * uses. The courtyard width is the same in both.
+ */
 const SILKSCREEN_WIDTH_MM = 0.15;
 const COURTYARD_WIDTH_MM = 0.05;
 const DESIGNATOR_HEIGHT_MM = 1.0;
+
+/**
+ * Silkscreen placement, the same rule the KiCad emitter documents.
+ *
+ * The outline sits just outside the body, and it is cut back to clear the lands:
+ * silk printed across a pad is covered by solder and unreadable, and both tools'
+ * conventions say the outline must survive assembly. Expressed in terms of this
+ * emitter's own line width rather than shared as a constant, because the two
+ * generators are peers and neither imports the other.
+ */
+const SILK_BODY_OFFSET_MM = SILKSCREEN_WIDTH_MM / 2 + 0.05;
+const SILK_TO_PAD_MM = 0.2 + SILKSCREEN_WIDTH_MM / 2;
 
 /**
  * Derives the redundant "v7 layer id" that every primitive carries alongside its
@@ -139,11 +167,12 @@ interface Point {
 }
 
 /** A pad, as Altium spells it: designator, two identity GUIDs, four blocks and a stack. */
-function padRecord(pad: Pad, seed: string): Buffer {
+function padRecord(pad: Pad, seed: string, options: { layer?: number; suppressPaste?: boolean } = {}): Buffer {
+  const layer = options.layer ?? LAYER.topCopper;
   const mounting: string = pad.mounting;
   if (mounting !== "smd") {
     throw new AltiumEmitError(
-      `Pad ${pad.number} is ${mounting}; this generator writes surface-mount lands only and will not guess a hole size.`
+      `Pad ${pad.number} is ${mounting}. This generator writes surface-mount lands only. The hole size is known (the geometry carries it), so this is a gap in the Altium writer rather than in the reading: the KiCad output for this part is complete.`
     );
   }
   const shape: string = pad.shape;
@@ -159,7 +188,7 @@ function padRecord(pad: Pad, seed: string): Buffer {
 
   // First block: layer, position, the three stacked sizes, base shapes.
   const main = Buffer.from(PAD_MAIN_TEMPLATE);
-  main[0] = LAYER.topCopper;
+  main[0] = layer;
   main.writeInt32LE(toAltiumUnits(pad.centre.xMm), 13);
   main.writeInt32LE(toAltiumY(pad.centre.yMm), 17);
   for (const offset of [21, 29, 37]) {
@@ -187,7 +216,15 @@ function padRecord(pad: Pad, seed: string): Buffer {
     main[106] = 1;
   }
 
-  main.writeUInt32LE(v7LayerId(LAYER.topCopper), 114);
+  // Paste is suppressed on the copper pad when the apertures are drawn
+  // separately, so the two do not both contribute solder. A large negative
+  // expansion shrinks the paste opening away; the manual flag at 105 is what
+  // makes Altium use it instead of the board rule.
+  if (options.suppressPaste) {
+    main.writeInt32LE(-toAltiumUnits(10), 90);
+    main[105] = 1;
+  }
+  main.writeUInt32LE(v7LayerId(layer), 114);
   identityGuid(`${seed}:pad:${pad.number}`).copy(main, 126);
   identityGuid(`${seed}:stack`).copy(main, 142);
 
@@ -237,6 +274,68 @@ function rectangleTracks(layer: number, halfWidthMm: number, halfHeightMm: numbe
     { xMm: left, yMm: bottom }
   ];
   return corners.map((corner, index) => trackRecord(layer, corner, corners[(index + 1) % corners.length], widthMm));
+}
+
+/**
+ * The silkscreen body outline, cut back to clear the pads.
+ *
+ * Altium's own convention is the same as KiCad's: silk goes on Top Overlay and
+ * must be visible after assembly, which means it does not run across a land. This
+ * emitter drew a plain body rectangle, so on any package whose lands overhang the
+ * body, which is every gull-wing package, the outline ran straight through the
+ * copper.
+ *
+ * The rule and the clearances are the ones the KiCad emitter documents against
+ * the reference library, applied here rather than reimplemented differently. The
+ * two generators are peers and neither derives from the other, but a convention
+ * read off a published library is a fact about libraries, not about KiCad.
+ */
+function silkscreenTracks(geometry: FootprintGeometry): Buffer[] {
+  const halfWidth = geometry.body.halfWidthMm + SILK_BODY_OFFSET_MM;
+  const halfHeight = geometry.body.halfHeightMm + SILK_BODY_OFFSET_MM;
+  if (!(halfWidth > 0) || !(halfHeight > 0)) return [];
+
+  const blockers = geometry.pads.map((pad) => ({
+    x0: pad.centre.xMm - pad.widthMm / 2 - SILK_TO_PAD_MM,
+    x1: pad.centre.xMm + pad.widthMm / 2 + SILK_TO_PAD_MM,
+    y0: pad.centre.yMm - pad.heightMm / 2 - SILK_TO_PAD_MM,
+    y1: pad.centre.yMm + pad.heightMm / 2 + SILK_TO_PAD_MM
+  }));
+
+  const tracks: Buffer[] = [];
+  const edge = (
+    from: number,
+    to: number,
+    crossing: Array<{ lo: number; hi: number }>,
+    draw: (a: number, b: number) => void
+  ) => {
+    if (crossing.length === 0) {
+      draw(from, to);
+      return;
+    }
+    const lo = Math.min(...crossing.map((span) => span.lo));
+    const hi = Math.max(...crossing.map((span) => span.hi));
+    if (lo > from) draw(from, Math.min(lo, to));
+    if (hi < to) draw(Math.max(hi, from), to);
+  };
+
+  for (const y of [-halfHeight, halfHeight]) {
+    edge(
+      -halfWidth,
+      halfWidth,
+      blockers.filter((pad) => pad.y0 < y && pad.y1 > y).map((pad) => ({ lo: pad.x0, hi: pad.x1 })),
+      (a, b) => tracks.push(trackRecord(LAYER.topOverlay, { xMm: a, yMm: y }, { xMm: b, yMm: y }, SILKSCREEN_WIDTH_MM))
+    );
+  }
+  for (const x of [-halfWidth, halfWidth]) {
+    edge(
+      -halfHeight,
+      halfHeight,
+      blockers.filter((pad) => pad.x0 < x && pad.x1 > x).map((pad) => ({ lo: pad.y0, hi: pad.y1 })),
+      (a, b) => tracks.push(trackRecord(LAYER.topOverlay, { xMm: x, yMm: a }, { xMm: x, yMm: b }, SILKSCREEN_WIDTH_MM))
+    );
+  }
+  return tracks;
 }
 
 /** A full circle, used for the pin-1 dot. Altium draws circles as 0 to 360 degree arcs. */
@@ -434,17 +533,27 @@ function buildModel(step: { name: string; text: string }, seed: string) {
 /**
  * Reads the package height back out of the STEP text.
  *
- * The solid is a box built from half-height Z coordinates, so the height is
- * twice the largest one. This parses what was written rather than taking the
- * dimension separately, so the body's declared height and its geometry cannot
- * disagree.
+ * The solid's Z EXTENT, which is what "stands proud of the board" means.
+ *
+ * This used to double the largest absolute Z, because the box was built
+ * symmetrically about zero and half of it was therefore below the board. That
+ * was corrected on 2026-08-14: the body now sits on the board plane, spanning 0
+ * to the package height, and doubling the maximum would report twice the real
+ * height. Measuring the extent is right either way and does not care which
+ * convention the solid uses.
+ *
+ * This parses what was written rather than taking the dimension separately, so
+ * the body's declared height and its geometry cannot disagree.
  */
 function stepHeightMm(step: string): number {
-  let maxZ = 0;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
   for (const match of step.matchAll(/CARTESIAN_POINT\('',\((-?[\d.]+),(-?[\d.]+),(-?[\d.]+)\)\)/g)) {
-    maxZ = Math.max(maxZ, Math.abs(Number(match[3])));
+    const z = Number(match[3]);
+    minZ = Math.min(minZ, z);
+    maxZ = Math.max(maxZ, z);
   }
-  return Number.isFinite(maxZ) ? maxZ * 2 : 0;
+  return Number.isFinite(minZ) && Number.isFinite(maxZ) ? maxZ - minZ : 0;
 }
 
 /**
@@ -495,8 +604,21 @@ function u32Stream(value: number): Buffer {
 }
 
 /** The panel's table of contents. One `\r\n`-terminated line per footprint. */
-function componentParamsTocStream(footprintName: string, padCount: number, description: string): Buffer {
-  const line = `Name=${footprintName}|Pad Count=${padCount}|Height=0|Description=${description}\r\n`;
+function componentParamsTocStream(
+  footprintName: string,
+  padCount: number,
+  description: string,
+  /**
+   * How far the part stands off the board, in millimetres.
+   *
+   * Altium shows this in the library panel and uses it for height-clearance
+   * checks against mechanical keep-outs. It was hardcoded to 0 while the same
+   * height was already being computed for the 3D body two functions away, so the
+   * panel reported every part as flat and any height rule passed everything.
+   */
+  heightMm: number
+): Buffer {
+  const line = `Name=${footprintName}|Pad Count=${padCount}|Height=${heightMm.toFixed(3)}|Description=${description}\r\n`;
   const payload = Buffer.concat([Buffer.from(line, "latin1"), Buffer.from([0])]);
   return new ByteWriter().block(payload).toBuffer();
 }
@@ -542,12 +664,6 @@ export function emitAltiumPcbLib(geometry: FootprintGeometry, extras: AltiumFoot
   // 1:1: the solder volume floats the package and lifts the perimeter leads off
   // their lands. Refusing is the only honest option, because the file would look
   // correct in Altium and fail at reflow.
-  const windowed = geometry.pads.find((pad) => pad.pasteApertures && pad.pasteApertures.length > 0);
-  if (windowed) {
-    throw new AltiumEmitError(
-      `Footprint "${geometry.name}" has an exposed thermal pad on pad ${windowed.number}, whose solder paste must be broken into apertures. This writer cannot express a paste pattern that differs from the copper, and pasting the land solid would float the package off its leads. Export to KiCad, which can.`
-    );
-  }
 
   if (geometry.pads.length === 0) {
     throw new AltiumEmitError(`Footprint "${geometry.name}" has no pads, so there is nothing to fabricate from.`);
@@ -567,8 +683,44 @@ export function emitAltiumPcbLib(geometry: FootprintGeometry, extras: AltiumFoot
   };
 
   const records: Buffer[] = [
-    ...geometry.pads.map((pad) => padRecord(pad, seed)),
-    ...rectangleTracks(LAYER.topOverlay, geometry.body.halfWidthMm, geometry.body.halfHeightMm, SILKSCREEN_WIDTH_MM),
+    // Copper. A pad carrying its own paste apertures has paste suppressed here
+    // and drawn below, so the thermal land is not pasted solid.
+    ...geometry.pads.map((pad) =>
+      padRecord(pad, seed, { suppressPaste: (pad.pasteApertures?.length ?? 0) > 0 })
+    ),
+    // The apertures themselves, on Top Paste. Emitted as pads because that is
+    // the only primitive this writer has and it is what Altium reads back.
+    ...geometry.pads.flatMap((pad) =>
+      (pad.pasteApertures ?? []).map((aperture, index) =>
+        padRecord(
+          {
+            number: "",
+            centre: aperture.centre,
+            widthMm: aperture.widthMm,
+            heightMm: aperture.heightMm,
+            shape: "roundrect",
+            mounting: "smd"
+          },
+          `${seed}:paste:${pad.number}:${index}`,
+          { layer: LAYER.topPaste }
+        )
+      )
+    ),
+    // Thermal vias, where the datasheet dimensioned them.
+    ...geometry.thermalVias.map((via, index) =>
+      padRecord(
+        {
+          number: "",
+          centre: via.centre,
+          widthMm: via.padMm,
+          heightMm: via.padMm,
+          shape: "roundrect",
+          mounting: "smd"
+        },
+        `${seed}:via:${index}`
+      )
+    ),
+    ...silkscreenTracks(geometry),
     ...rectangleTracks(
       LAYER.courtyard,
       geometry.courtyard.halfWidthMm,
@@ -626,7 +778,10 @@ export function emitAltiumPcbLib(geometry: FootprintGeometry, extras: AltiumFoot
   add("/Library/Header", u32Stream(1));
   add("/Library/Data", libraryDataStream(footprintName));
   add("/Library/ComponentParamsTOC/Header", u32Stream(1));
-  add("/Library/ComponentParamsTOC/Data", componentParamsTocStream(footprintName, geometry.pads.length, description));
+  add(
+    "/Library/ComponentParamsTOC/Data",
+    componentParamsTocStream(footprintName, geometry.pads.length, description, model?.heightMm ?? 0)
+  );
   add("/Library/LayerKindMapping/Header", u32Stream(1));
   add("/Library/LayerKindMapping/Data", layerKindMappingStream());
   add("/Library/PadViaLibrary/Header", u32Stream(0));

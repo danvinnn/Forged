@@ -41,20 +41,26 @@ function record(overrides: Partial<PartRecord> = {}): PartRecord {
       bodyLengthMm: cited(4.9),
       bodyWidthMm: cited(3.9),
       bodyHeightMm: cited(1.75),
-      pitchMm: nothing<number>(),
+      // The part's OWN drawing, TI D0008A / JEDEC MS-012. These were absent when
+      // a hand-typed family table supplied them from the string "SOIC-8"; the
+      // table is gone, so the fixture states what a datasheet states.
+      pitchMm: cited(1.27),
       leadLengthMm: nothing<number>(),
       leadCount: cited(8),
-      leadWidthMm: nothing(),
-      leadSpanMm: nothing(),
-      leadContactMm: nothing(),
+      leadWidthMm: cited({ minMm: 0.31, maxMm: 0.51 }),
+      leadSpanMm: cited({ minMm: 5.8, maxMm: 6.2 }),
+      leadContactMm: cited({ minMm: 0.4, maxMm: 0.625 }),
       thermalPadLengthMm: nothing(),
       thermalPadWidthMm: nothing(),
       landPadLengthMm: nothing(),
       landPadWidthMm: nothing(),
       landSpanMm: nothing(),
-      leadSides: nothing(),
-      leadForm: nothing(),
+      leadSides: cited<2 | 4>(2),
+      leadForm: cited<"gullwing" | "nolead" | "straight">("gullwing"),
+      mounting: nothing<"smd" | "through-hole">(),
+      leadDiameterMm: nothing<number>(),
       vacantLeadSlot: nothing(),
+      leadsPerSide: nothing(),
       solderMaskExpansionMm: nothing(),
       solderMaskDefined: nothing(),
       thermalViaDiameterMm: nothing(),
@@ -115,6 +121,7 @@ test("a flat pack reports that one number would unblock it, and names the number
   const choice = packageOptions(
     record({
       packageType: cited("16-Pin CFP"),
+      dimensions: { ...record().dimensions, leadForm: cited<"gullwing" | "nolead" | "straight">("straight") },
       pinCount: cited(16),
       pins: cited(pins(16)),
       packageVariants: [variant("16-Pin CFP", "CFP", 16)]
@@ -195,8 +202,94 @@ test("drawing evidence is not carried onto a package it was never checked agains
   const choice = packageOptions(part);
   assert.equal(choice.ok, true);
   if (!choice.ok) return;
-  // The TSSOP must be judged on its own, not refused for conflicting with a code
-  // belonging to the SOIC drawing.
+  // The TSSOP is judged on its own: it asks for its own land pattern rather than
+  // being refused for conflicting with a code belonging to the SOIC drawing.
+  //
+  // It used to assert `ships`, which it did by taking a family table's TSSOP
+  // lead dimensions. With the table gone, nothing has been read for this package
+  // and saying so is the honest outcome.
   const tssop = choice.options.find((option) => option.designator === "TSSOP-8");
-  assert.equal(tssop?.status, "ships");
+  assert.equal(tssop?.status, "needs-input");
+  assert.ok(
+    tssop!.needs.every((need) => !/outline|DW0008A/i.test(need.why)),
+    "and the reason is its own missing pattern, not the other package's code"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A different package is a different footprint, all the way down
+// ---------------------------------------------------------------------------
+
+test("a sibling package does not inherit the resolved package's printed land pattern", () => {
+  // The defect this locks out, found 2026-08-14.
+  //
+  // `landPadLengthMm`, `landPadWidthMm` and `landSpanMm` are read off the
+  // recommended-footprint drawing for ONE package, and since 2026-08-12 they ARE
+  // the pads. Both places that switch package dropped a subset of the drawing
+  // evidence and kept these three, so the chooser reported `ships` for a VSSOP-8
+  // and would have built it out of the SOIC's copper. Nothing in the file would
+  // have looked wrong.
+  const part = record({
+    packageType: cited("SOIC-8"),
+    dimensions: {
+      ...record().dimensions,
+      pitchMm: cited(1.27),
+      leadSides: cited<2 | 4>(2),
+      landPadLengthMm: cited(1.95),
+      landPadWidthMm: cited(0.6),
+      landSpanMm: cited(4.95)
+    },
+    packageVariants: [
+      { designator: "SOIC-8", family: "SOIC", leadCount: 8, inFrontMatter: true },
+      { designator: "VSSOP-8", family: "VSSOP", leadCount: 8, inFrontMatter: true }
+    ]
+  });
+
+  const choice = packageOptions(part);
+  assert.ok(choice.ok);
+  const by = new Map(choice.options.map((option) => [option.designator, option]));
+
+  assert.equal(by.get("SOIC-8")!.status, "ships", "the package the drawing was read for still ships");
+  assert.notEqual(
+    by.get("VSSOP-8")!.status,
+    "ships",
+    "a package whose own drawing was never read cannot claim to ship"
+  );
+  assert.ok(
+    by.get("VSSOP-8")!.needs.some((need) => need.field === "landPadLengthMm"),
+    "and it asks for its own land pattern rather than borrowing one"
+  );
+});
+
+test("an exposed pad belongs to the package that has one, not to its siblings", () => {
+  const part = record({
+    packageType: cited("VQFN-16"),
+    exposedPad: true,
+    dimensions: {
+      ...record().dimensions,
+      pitchMm: cited(0.5),
+      leadSides: cited<2 | 4>(4),
+      thermalPadLengthMm: cited(1.68),
+      thermalPadWidthMm: cited(1.68),
+      landPadLengthMm: cited(0.825),
+      landPadWidthMm: cited(0.25),
+      landSpanMm: cited(2.925)
+    },
+    pinCount: cited(16),
+    pins: cited(pins(16)),
+    packageVariants: [
+      { designator: "VQFN-16", family: "VQFN", leadCount: 16, inFrontMatter: true },
+      { designator: "TSSOP-16", family: "TSSOP", leadCount: 16, inFrontMatter: true }
+    ]
+  });
+
+  const choice = packageOptions(part);
+  assert.ok(choice.ok);
+  const tssop = choice.options.find((option) => option.designator === "TSSOP-16")!;
+  // Not "the TSSOP needs a thermal pad size": the TSSOP has no thermal pad. It
+  // needs its own land pattern, which is a different question entirely.
+  assert.ok(
+    !tssop.needs.some((need) => need.field.startsWith("thermalPad")),
+    "the TSSOP is not asked for the VQFN's exposed pad"
+  );
 });

@@ -14,7 +14,9 @@ import {
   permanentQuotaFailure,
   promptFingerprint,
   cacheCensus,
-  preRunProjection
+  preRunProjection,
+  chargedSpend,
+  cumulativeSpend
 } from "../__bench__/modelcache";
 
 /**
@@ -455,7 +457,7 @@ test("the census sorts entries by whether this run's prompt can reach them", asy
 
   // An answer stored under a DIFFERENT question. This is the state that costs
   // money: paid for, on disk, and impossible for this run to hit.
-  const [file] = readdirSync(own).filter((name) => name.endsWith(".json"));
+  const [file] = readdirSync(own).filter((name) => name.endsWith(".json") && name !== "_billed.json");
   const entry = JSON.parse(readFileSync(join(own, file), "utf8")) as Record<string, unknown>;
   writeFileSync(join(own, "older-0000000000000000.json"), JSON.stringify({ ...entry, prompt: "an older prompt" }));
   // And one from before fingerprints were recorded at all, which is neither.
@@ -477,7 +479,7 @@ test("a cache hit stamps an unfingerprinted entry, so a free offline pass backfi
 
   // Age the entry: strip the fingerprint the way every entry written before
   // 2026-08-13 lacks one.
-  const [file] = readdirSync(own).filter((name) => name.endsWith(".json"));
+  const [file] = readdirSync(own).filter((name) => name.endsWith(".json") && name !== "_billed.json");
   const entry = JSON.parse(readFileSync(join(own, file), "utf8")) as Record<string, unknown>;
   delete entry.prompt;
   writeFileSync(join(own, file), JSON.stringify(entry));
@@ -502,7 +504,7 @@ test("the projection names a changed prompt as the reason a run will re-ask ever
   await model.extract(request({ packageType: "SOIC-8" }));
 
   // Strand it, which is what editing the prompt does to every entry at once.
-  const [file] = readdirSync(own).filter((name) => name.endsWith(".json"));
+  const [file] = readdirSync(own).filter((name) => name.endsWith(".json") && name !== "_billed.json");
   const entry = JSON.parse(readFileSync(join(own, file), "utf8")) as Record<string, unknown>;
   writeFileSync(join(own, file), JSON.stringify({ ...entry, prompt: "the prompt before the edit" }));
 
@@ -526,6 +528,91 @@ test("a local run is projected at nothing, whatever is on disk", async () => {
   // No ceiling talk and no projection: there is nothing to decide about.
   assert.doesNotMatch(report, /projected/);
 
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Billed attempts.
+//
+// The defect this closes, 2026-08-14: a hold-out run was reported at $1.88 and
+// the account was charged $3.16. The cache directory is a record of SUCCESSES,
+// and Google charges for ATTEMPTS. Google returned a lot of 503s that day, every
+// retry was billed, and only the winning attempt was ever written to disk. The
+// spend ceiling read the same directory, so it did not fire either.
+// ---------------------------------------------------------------------------
+
+test("a call that fails is still counted as charged", async () => {
+  const own = mkdtempSync(join(tmpdir(), "forge-billed-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+
+  // Prime the average with one good call, so a failure can be priced at all.
+  await cachingModel(countingModel(ANSWER), "use", () => "ok").extract(request({ packageType: "SOIC-8" }));
+  const afterSuccess = chargedSpend();
+
+  const failing: ExtractionModel = {
+    name: "gemini",
+    isConfigured: () => true,
+    extract: async () => {
+      throw new Error("503 Service Unavailable");
+    }
+  };
+  await assert.rejects(() =>
+    cachingModel(failing, "use", () => "boom").extract(request({ packageType: "TSSOP-8" }))
+  );
+
+  const afterFailure = chargedSpend();
+  assert.ok(afterFailure.usd > afterSuccess.usd, "a failed call costs money and must be recorded");
+  assert.equal(afterFailure.calls, afterSuccess.calls + 1);
+
+  // And the cache directory still shows only the success, which is exactly why
+  // it cannot be the number anyone is quoted.
+  assert.equal(cumulativeSpend().calls, 1, "the cache still only knows about successes");
+
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+test("retries inside one call are all charged, not just the winner", async () => {
+  const own = mkdtempSync(join(tmpdir(), "forge-retries-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+
+  // A model that succeeded on its third attempt reports so. Three charges, one
+  // cache entry: the exact shape of the $1.88-versus-$3.16 gap.
+  const retried: ExtractionModel = {
+    name: "gemini",
+    isConfigured: () => true,
+    extract: async () => ({ ...ANSWER, attempts: 3 })
+  };
+  await cachingModel(retried, "use", () => "retried").extract(request({ packageType: "SOIC-8" }));
+
+  const charged = chargedSpend();
+  assert.equal(charged.calls, 3, "three attempts reached the provider");
+  assert.equal(cumulativeSpend().calls, 1, "and one answer reached the disk");
+  assert.ok(charged.usd > cumulativeSpend().usd, "so the charge exceeds what the cache shows");
+
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+test("the ceiling stops on what was CHARGED, not on what was stored", async () => {
+  const own = mkdtempSync(join(tmpdir(), "forge-ceiling-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+  process.env.FORGE_SPEND_LIMIT_USD = "0.03";
+
+  // One answer is about $0.014. Reported as retried three times it is ~$0.042,
+  // over the limit, though the cache would show a single $0.014 entry.
+  const retried: ExtractionModel = {
+    name: "gemini",
+    isConfigured: () => true,
+    extract: async () => ({ ...ANSWER, attempts: 3 })
+  };
+  await assert.rejects(
+    () => cachingModel(retried, "use", () => "spendy").extract(request({ packageType: "SOIC-8" })),
+    (error: Error) => error.name === "SpendLimitReached"
+  );
+
+  delete process.env.FORGE_SPEND_LIMIT_USD;
   process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
   rmSync(own, { recursive: true, force: true });
 });

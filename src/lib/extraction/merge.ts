@@ -31,6 +31,8 @@ function fieldAt(part: PartRecord, field: ExtractionField): Extracted<unknown> {
       return part.pins;
     case "jedecOutline":
       return part.jedecOutline;
+    case "packageOutlineCode":
+      return part.packageOutlineCode;
     default: {
       // Guarded because the failure mode is silent and total. A top-level field
       // added to `extractionFields` without a case above falls here, splits to
@@ -671,6 +673,12 @@ export function mergeModelValues(
         `"${tampered[0].region.reason}". Those regions were excluded from evidence, so no value was read from them. ` +
         `Treat this datasheet as untrusted and check it by hand before sign-off.`
     );
+  }
+
+  // Kept on the record so a package chosen later selects a table that is already
+  // in hand. This is the whole reason it is read in the first pass.
+  if (result.pinTablesByPackage && result.pinTablesByPackage.length > 0) {
+    merged.pinTablesByPackage = result.pinTablesByPackage;
   }
 
   return { part: merged, filled, uncited, rejected };

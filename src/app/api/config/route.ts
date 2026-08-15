@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getDeploymentMode, type DeploymentMode } from "../../../lib/retrieval";
-import { SUPPORTED_PACKAGE_FAMILIES } from "../../../lib/packages";
 
 export const runtime = "nodejs";
 
@@ -9,16 +8,17 @@ export const runtime = "nodejs";
 // NEXT_PUBLIC_ env, which could drift from the server's actual mode.
 export async function GET() {
   const mode = getDeploymentMode();
-  // The UI needs the package families that have a characterised land pattern,
-  // because export refuses every other package. Without this the user finds out
-  // only by pressing Export and reading an error, with no idea what would work.
+  // `packageFamilies` used to be served here: a list of the families with a
+  // characterised land pattern, which the UI rendered as "characterised
+  // footprints (anything else is refused)". Both are gone with the table they
+  // came from. What a package produces is now a property of the DOCUMENT rather
+  // than of a set of names, and `packageChoice` on the parse response already
+  // answers it per package, by running the real generator.
   return NextResponse.json<{
     mode: DeploymentMode;
     lookupEnabled: boolean;
-    packageFamilies: string[];
   }>({
     mode,
-    lookupEnabled: mode === "commercial",
-    packageFamilies: SUPPORTED_PACKAGE_FAMILIES
+    lookupEnabled: mode === "commercial"
   });
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  asPackage,
   createExportZip,
   FootprintUnavailableError,
   GeneratorUnavailableError,
@@ -108,19 +109,13 @@ export async function POST(request: Request) {
   if (requestedPackage !== undefined && typeof requestedPackage !== "string") {
     return NextResponse.json({ error: "packageType must be a string." }, { status: 400 });
   }
-  // Naming a package DISCARDS the drawing evidence, and it has to. The outline
-  // code, the pitch and the lead width were all read off the one drawing
-  // confirmed to match the EXTRACTED designator, so against a different package
-  // they describe the wrong part of the datasheet. Keeping them would either
-  // refuse the caller's own explicit answer as "conflicting evidence" or, worse,
-  // size the lands of a TSSOP from a SOIC drawing.
+  // Naming a DIFFERENT package discards the drawing evidence, and it has to:
+  // every geometric value on the record was read off the drawings for the
+  // package the document resolved to. `asPackage` is the one place that rule is
+  // written, shared with the chooser so the two can never disagree about what a
+  // click will build. Naming the package it already is changes nothing.
   const part = requestedPackage
-    ? {
-        ...resolved.part,
-        packageType: requestedPackage.slice(0, 64),
-        packageOutlineCode: null,
-        dimensions: { ...resolved.part.dimensions, pitchMm: null, leadWidthMm: null, leadSpanMm: null, leadContactMm: null }
-      }
+    ? asPackage(resolved.part, requestedPackage.slice(0, 64))
     : resolved.part;
 
   // Ceramic flat packs ship with straight leads that the assembler trims and
@@ -140,7 +135,18 @@ export async function POST(request: Request) {
   // millimetre figure outside this range is a units mistake or a typo, and
   // either would be built faithfully by the generator.
   const suppliedNumbers: Record<string, unknown> = {};
-  for (const field of ["landPadLengthMm", "landPadWidthMm", "landSpanMm"] as const) {
+  for (const field of [
+    "bodyLengthMm",
+    "bodyWidthMm",
+    "bodyHeightMm",
+    "landPadLengthMm",
+    "landPadWidthMm",
+    "landSpanMm",
+    "leadDiameterMm",
+    "pitchMm",
+    "thermalPadLengthMm",
+    "thermalPadWidthMm"
+  ] as const) {
     const value = (payload as Record<string, unknown>)[field];
     if (value === undefined) continue;
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 200) {
@@ -160,6 +166,36 @@ export async function POST(request: Request) {
       );
     }
     suppliedNumbers.leadSides = sides;
+  }
+
+  // Which grid position on the short row of a dual package carries no lead.
+  const vacant = (payload as Record<string, unknown>).vacantLeadSlot;
+  if (vacant !== undefined) {
+    if (typeof vacant !== "number" || !Number.isInteger(vacant) || vacant < 1 || vacant > 300) {
+      return NextResponse.json(
+        { error: "vacantLeadSlot must be a whole grid position, counted from pin 1." },
+        { status: 400 }
+      );
+    }
+    suppliedNumbers.vacantLeadSlot = vacant;
+  }
+
+  // How the leads divide between four sides, e.g. `6,6,6,5`.
+  //
+  // The generator has asked for this since 2026-08-14 and the route had no way
+  // to receive it, so the question was unanswerable: a quad package with unequal
+  // sides refused, told the user which value would fix it, and then rejected
+  // that value as an unknown field. Every asked-for field is accepted here; that
+  // is what makes it an ask rather than a refusal with extra words.
+  const perSide = (payload as Record<string, unknown>).leadsPerSide;
+  if (perSide !== undefined) {
+    if (typeof perSide !== "string" || !/^\d{1,3}(,\d{1,3}){3}$/.test(perSide)) {
+      return NextResponse.json(
+        { error: "leadsPerSide must be four comma-separated counts from pin 1, e.g. 6,6,6,5." },
+        { status: 400 }
+      );
+    }
+    suppliedNumbers.leadsPerSide = perSide;
   }
 
   // A package with no characterised land pattern is a refusal, not a degraded
@@ -195,8 +231,7 @@ export async function POST(request: Request) {
           code: answerable ? "INPUT_REQUIRED" : "PACKAGE_NOT_CHARACTERISED",
           needs: error.needs,
           packageType: part.packageType,
-          pinCount: resolved.part.pinCount,
-          supportedFamilies: error.supportedFamilies
+          pinCount: resolved.part.pinCount
         },
         { status: 422 }
       );
@@ -205,7 +240,15 @@ export async function POST(request: Request) {
   }
   // sanitizeFileName enforces a safe basename; swap the .pdf it appends for the real .zip extension.
   const fileName = sanitizeFileName(`${resolved.part.partNumber}-forge`).replace(/\.pdf$/, ".zip");
-  const exportNote = `Native ${format} library generated from the IPC-7351B land pattern.`;
+  // What the lands ACTUALLY are, taken from the footprint that was just built.
+  //
+  // This said "generated from the IPC-7351B land pattern" unconditionally,
+  // including for the common case where the lands are the vendor's own printed
+  // footprint and IPC-7351B contributed only the courtyard margin. The file's
+  // own `descr` has always said the right thing; the sentence the user reads
+  // did not, and the two claims are not interchangeable to anyone signing off a
+  // board.
+  const exportNote = `Native ${format} library. Lands: ${bundle.footprint.source}.`;
 
   return new Response(new Uint8Array(bundle.buffer), {
     headers: {

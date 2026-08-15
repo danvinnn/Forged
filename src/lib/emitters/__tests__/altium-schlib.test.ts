@@ -86,6 +86,7 @@ function symbolGeometry(): SymbolGeometry {
     name: "FORGE-SYM-8",
     partNumber: "FORGE-SYM-8",
     body: { halfWidthMm, halfHeightMm },
+    bodyCentreYMm: 0,
     pins
   };
 }

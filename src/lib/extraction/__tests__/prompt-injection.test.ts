@@ -83,17 +83,25 @@ test("the rules are restated after the untrusted content", () => {
   assert.ok(fenceEnd > 0 && reminder > fenceEnd, "a reminder must follow the untrusted content");
 });
 
-test("an injected instruction is not evidence, even under model-first", () => {
+test("an injected instruction cannot reach a generated part", () => {
   // The defence that makes model-first safe to ship.
   //
-  // Citation checking alone cannot help here: the payload puts the literal
-  // string "128" on page 1, so the claim verifies. On an uploaded PDF "the
-  // document states this" and "the attacker wrote this" are the same act, so
-  // judging the VALUE is hopeless.
+  // Citation checking alone cannot judge the VALUE here: the payload puts the
+  // literal string "128" on page 1, so a naive check finds it. On an uploaded
+  // PDF "the document states this" and "the attacker wrote this" are the same
+  // act.
   //
   // What is judgeable is the REGION. A datasheet does not contain instructions
   // addressed to a reader of datasheets, so text that does is cut out before any
-  // matching happens, and the number planted inside it has nothing to cite.
+  // matching happens, and a number planted inside it has nothing to cite.
+  //
+  // This test asserted something stronger until 2026-08-14: that a deterministic
+  // reader's own value survived the attempt. That reader is gone, and pretending
+  // otherwise would be the more dangerous kind of test. What remains is the
+  // control that actually stops the attack, and it is the one that always did
+  // the work: an uncited value is untraceable, and untraceable geometry is
+  // refused at the export boundary. The injected number can sit on a record; it
+  // cannot become copper, and a reviewer sees it flagged.
   const doc = datasheetTextFromPages([
     `VORAGO Technologies VA10820\nAvailable in a 32-pin QFN package.\n${INJECTION}`
   ]);
@@ -102,25 +110,25 @@ test("an injected instruction is not evidence, even under model-first", () => {
   const compromised: ExtractionResult = {
     values: {
       pinCount: { value: 128, page: 1 },
-      manufacturer: { value: "Attacker Inc", page: 1 }
+      pins: { value: [{ number: "1", name: "VDD", electricalType: "power" }], page: 1 }
     }
   };
   const { part: merged } = mergeModelValues(part, doc, compromised, "test-model");
 
-  assert.equal(merged.pinCount.value, 32, "the injected count is not evidence and does not displace");
-  assert.equal(merged.manufacturer.value, "VORAGO Technologies");
   assert.equal(
-    merged.conflicts.length,
-    0,
-    "and it is not shown as a disagreement either, which would spend attention on a hallucination"
+    merged.pinCount.citation,
+    null,
+    "the number was planted inside stripped text, so there is nothing to cite it to"
   );
 
-  // The attempt is REPORTED. The case where the defence worked must not look
-  // identical to an ordinary parse.
-  assert.ok(
-    merged.notes.some((note) => /addressed to an automated reader/i.test(note)),
-    `the record must say the document tried; notes were ${JSON.stringify(merged.notes)}`
-  );
+  const resolved = resolveForExport(merged);
+  assert.equal(resolved.ok, false, "and an untraceable count must not reach a generated part");
+  if (!resolved.ok) {
+    assert.ok(
+      (resolved.untraceable ?? []).includes("pinCount"),
+      `refused for the right reason: ${JSON.stringify(resolved)}`
+    );
+  }
 });
 
 test("a real value on a clean part of the page is still citable", () => {
@@ -286,4 +294,60 @@ test("a NULL dimension is not gated, because the exporter falls back openly", ()
   // Unknown dimensions are normal and handled by documented approximations.
   assert.equal(part.dimensions.pitchMm.value, null);
   assert.equal(resolveForExport(part).ok, true, "an honest unknown must not block export");
+});
+
+// ---------------------------------------------------------------------------
+// The pages we ask to be SHOWN must cover the fields we ask about.
+//
+// Found 2026-08-14: seven fields are read off the recommended-footprint drawing
+// (pad length, pad width, centre span, mask expansion, mask-defined, via
+// diameter, via pitch) and the render request named only the package outline
+// and the pinout. The model was asked to read a drawing it was never shown, and
+// 11 of 56 hold-out parts stopped on exactly those fields.
+// ---------------------------------------------------------------------------
+
+test("asking for land pattern numbers asks to SEE the land pattern page", () => {
+  const prompt = buildPrompt({
+    pages: [{ page: 1, text: "datasheet" }],
+    images: [],
+    fileName: "x.pdf",
+    fields: ["dimensions.landPadLengthMm", "dimensions.landSpanMm"]
+  });
+  assert.match(prompt, /RECOMMENDED FOOTPRINT \/ LAND PATTERN page/);
+  assert.match(prompt, /DIFFERENT page from the package outline/);
+});
+
+test("asking for solder mask or vias asks for that page too", () => {
+  for (const field of ["dimensions.solderMaskExpansionMm", "dimensions.thermalViaDiameterMm"] as const) {
+    const prompt = buildPrompt({
+      pages: [{ page: 1, text: "datasheet" }],
+      images: [],
+      fileName: "x.pdf",
+      fields: [field]
+    });
+    assert.match(prompt, /LAND PATTERN page/, `${field} must ask to see the drawing it is printed on`);
+  }
+});
+
+test("asking for the exposed pad asks to see it", () => {
+  const prompt = buildPrompt({
+    pages: [{ page: 1, text: "datasheet" }],
+    images: [],
+    fileName: "x.pdf",
+    fields: ["dimensions.thermalPadLengthMm"]
+  });
+  assert.match(prompt, /EXPOSED THERMAL PAD/);
+  assert.match(prompt, /D2 and E2/);
+});
+
+test("the model is told this is its only chance to see a page", () => {
+  // It gets one render pass. A field left null for want of a drawing cannot be
+  // recovered afterwards without paying for the whole document again.
+  const prompt = buildPrompt({
+    pages: [{ page: 1, text: "datasheet" }],
+    images: [],
+    fileName: "x.pdf",
+    fields: ["dimensions.landSpanMm"]
+  });
+  assert.match(prompt, /only ones you will be shown/);
 });

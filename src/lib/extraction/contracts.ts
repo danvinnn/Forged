@@ -66,12 +66,29 @@ export const extractionFields = [
   // field list had grown one failure at a time, so it only ever covered what had
   // already broken.
   "dimensions.leadForm",
+  // How the part attaches, and the lead a hole is sized from.
+  //
+  // Added 2026-08-14 with the through-hole path. Nothing on the record implied
+  // mounting before it: `Pad.mounting` admitted only `"smd"`, so a PDIP or a
+  // ceramic DIP had nowhere to go however well its datasheet was read, and the
+  // only alternative source was the package NAME, which is what the deleted
+  // family table used.
+  "dimensions.mounting",
+  "dimensions.leadDiameterMm",
   "dimensions.vacantLeadSlot",
+  "dimensions.leadsPerSide",
   "dimensions.solderMaskExpansionMm",
   "dimensions.solderMaskDefined",
   "dimensions.thermalViaDiameterMm",
   "dimensions.thermalViaPitchMm",
   "jedecOutline",
+  // The vendor's own code for this package's drawing (`DW0016B`, `PW0008A`).
+  //
+  // Read rather than parsed, since 2026-08-14. It was one of three fields the
+  // deterministic reader supplied exclusively, and the only one of the three
+  // that names a DRAWING: it is what tells a `SOIC (D)` from a `SOIC (DW)`, two
+  // packages that share a name and differ by 4.3 mm of lead span.
+  "packageOutlineCode",
   "radiation.tid",
   "radiation.see",
   "radiation.sel",
@@ -230,7 +247,22 @@ export interface ExtractionResult {
    * two attempts to find that page WITHOUT the model both failed: a heading
    * regex sent AD590 to a drawing, and the render list sent INA240 to one.
    */
-  pinTablePages?: number[];
+  /**
+   * A pin table for EACH package the document describes, kept separate.
+   *
+   * Replaces `pinTablePages` and the third model call that went with it. That
+   * pass existed because the model refused to report pins when the part number
+   * did not say which package it meant, so a second question was asked about one
+   * page to remove the ambiguity. The refusal was the thing to fix, not to work
+   * around: pass 1 already has the whole document in front of it and can simply
+   * report what it found, labelled.
+   *
+   * Kept SEPARATE, never merged. Asked loosely once, the model returned pin 5 of
+   * an SN65HVD230 as `"Vref/NC"`, mashing two variants into one name that looks
+   * real. One table per package means a later package choice selects one with no
+   * further call.
+   */
+  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[] }>;
   /**
    * What the call cost, when the provider reports it. Absent otherwise, and
    * absent is not zero.
@@ -245,6 +277,16 @@ export interface ExtractionResult {
    * because the bill does.
    */
   usage?: { inputTokens: number; outputTokens: number };
+  /**
+   * How many times the provider was actually called to produce this result.
+   *
+   * More than one when a transient failure was retried, and every attempt is
+   * BILLED whether or not it returned anything. Without this the caller can only
+   * see the attempt that succeeded, which is how spend came to be under-reported
+   * by 40% on 2026-08-14: the cache counts what it stored, and a 503 retried
+   * twice stores one entry for three charges.
+   */
+  attempts?: number;
 }
 
 export interface ExtractionModel {

@@ -194,14 +194,55 @@ export const packageDimensionsSchema = z.object({
     citation: null
   }),
   /**
-   * How the leads leave the package: formed out and down, or a pad underneath.
+   * How the leads leave the package: formed out and down, a pad underneath, or
+   * straight and untrimmed.
    *
    * Decides which land-pattern model applies, and IPC-7351B only publishes
    * fillet goals for gull-wing in this codebase. Read off the drawing rather
    * than guessed from the package name, because the name is a designator and
    * the drawing is the thing that shows the lead.
+   *
+   * `straight` was added 2026-08-14, when the hand-typed family table was
+   * deleted. That table was the only thing that knew a ceramic flat pack ships
+   * untrimmed, and it knew it by NAME. TI's HKU0010A drawing shows the leads
+   * plainly: 22.7 mm tip to tip on a 7 mm body, straight, for the assembler to
+   * trim and form. That is a fact about the drawing, so it is read off the
+   * drawing, and the seated span is then asked for once per assembler. Nearly
+   * every rad-hard part in this product's market is one of these.
    */
-  leadForm: extracted(z.enum(["gullwing", "nolead"])).default({
+  /**
+   * How the part attaches to the board: lands on the surface, or leads through
+   * plated holes.
+   *
+   * Read off the package drawing, which shows it plainly: a through-hole lead is
+   * a straight pin below the seating plane, and the drawing dimensions the row
+   * spacing rather than a lead span. Nothing else on the record implies it, and
+   * guessing from the package NAME is the mistake the deleted family table made.
+   *
+   * Defaulted to unread rather than to `smd`. A part whose mounting nobody read
+   * is not a surface-mount part by default; it is a part we have not finished
+   * reading, and the generator asks.
+   */
+  mounting: extracted(z.enum(["smd", "through-hole"])).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * Lead diameter or thickness for a through-hole part, in millimetres.
+   *
+   * IPC-7251 sizes the hole from this and nothing else. Distinct from
+   * `leadWidthMm`, which is the width of a formed surface-mount lead as seen
+   * from above.
+   */
+  leadDiameterMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  leadForm: extracted(z.enum(["gullwing", "nolead", "straight"])).default({
     value: null,
     confidence: null,
     method: null,
@@ -221,6 +262,24 @@ export const packageDimensionsSchema = z.object({
    * in the wrong slot is a miswired board that looks correct in CAD.
    */
   vacantLeadSlot: extracted(z.number().int().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * How the leads divide between the sides, counted off the pinout, e.g. `6,6,6,5`.
+   *
+   * Only meaningful where the sides are UNEQUAL, which on a four-sided package
+   * means a pin count that does not divide by four. Which side carries the short
+   * row is drawn on the page; it is not implied by the count.
+   *
+   * Added 2026-08-14 because the exporter had started asking the USER for this
+   * without ever asking the model. Every other thing the exporter asks for is
+   * read first and asked about only on failure, and that one had skipped the
+   * reading step entirely.
+   */
+  leadsPerSide: extracted(z.string().regex(/^\d+(,\d+)*$/)).default({
     value: null,
     confidence: null,
     method: null,
@@ -470,9 +529,15 @@ export type PackageDimensions = {
   /** Sides of the package carrying leads: 2 for dual, 4 for quad. Read off the drawing. */
   leadSides: Extracted<2 | 4>;
   /** How the leads leave the package. Decides which land-pattern model applies. */
-  leadForm: Extracted<"gullwing" | "nolead">;
+  leadForm: Extracted<"gullwing" | "nolead" | "straight">;
+  /** Lands on the surface, or leads through plated holes. Read off the drawing. */
+  mounting: Extracted<"smd" | "through-hole">;
+  /** Lead diameter for a through-hole part, mm. IPC-7251 sizes the hole from it. */
+  leadDiameterMm: Extracted<number>;
   /** Grid position on the shorter row that carries no lead, 1-based from pin 1. */
   vacantLeadSlot: Extracted<number>;
+  /** Leads on each side in order from pin 1, e.g. `6,6,6,5`. Only where sides are unequal. */
+  leadsPerSide: Extracted<string>;
   /** Solder mask clearance around each land, mm. Printed beside the land pattern. */
   solderMaskExpansionMm: Extracted<number>;
   /** Whether the pad is defined by copper or by the mask opening. */
@@ -524,6 +589,16 @@ export type PartRecord = {
   manufacturer: Extracted<string>;
   packageType: Extracted<string>;
   packageOutlineCode: Extracted<string>;
+  /**
+   * A pin table per package, where the document describes more than one.
+   *
+   * Read in the SAME pass that reads everything else, so choosing a package
+   * later costs nothing. Before this, a part whose number did not name its
+   * package produced no pins at all, the record was therefore unreadable, and
+   * the package chooser refused to offer the very choice that would have
+   * unblocked it. The product deadlocked on its own question.
+   */
+  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[] }>;
   /** JEDEC outline registration, e.g. `MO-153 AA`. Vendor-independent package identity. */
   jedecOutline: Extracted<string>;
   packageVariants: PackageVariantRecord[];
@@ -594,8 +669,11 @@ export interface ResolvedPart {
     landPadWidthMm: number | null;
     landSpanMm: number | null;
     leadSides: 2 | 4 | null;
-    leadForm: "gullwing" | "nolead" | null;
+    leadForm: "gullwing" | "nolead" | "straight" | null;
+    mounting: "smd" | "through-hole" | null;
+    leadDiameterMm: number | null;
     vacantLeadSlot: number | null;
+    leadsPerSide: string | null;
     solderMaskExpansionMm: number | null;
     solderMaskDefined: "solder-mask-defined" | "non-solder-mask-defined" | null;
     thermalViaDiameterMm: number | null;
@@ -654,6 +732,26 @@ export interface ResolveOptions {
    * lower-assurance workflow.
    */
   requireTraceableGeometry?: boolean;
+  /**
+   * What to do when the two readers disagree about a field.
+   *
+   * `"block"` holds the part for a person to settle, which is the behaviour this
+   * function has always had and the right one for sign-off work: nothing reaches
+   * copper that two readers read differently.
+   *
+   * `"flag"` generates from the merged value and leaves the disagreement on the
+   * record, visible in review. The default, because blocking was costing more
+   * correctness than it bought: measured on 56 unseen datasheets on 2026-08-14,
+   * 14 of them were held this way, and wherever the document itself could settle
+   * the argument the MODEL was right 11 times out of 11 while the deterministic
+   * reader was right none. Its mistakes were not marginal either, reading an
+   * 8-pin op-amp as a 14-pin DIP and a 48-pin MCU as 20 pins.
+   *
+   * So the block was mostly stopping correct answers on the say-so of a reader
+   * that was wrong. It is kept as a mode rather than deleted because the
+   * argument for it is real where a person signs the record.
+   */
+  onDisagreement?: "flag" | "block";
 }
 
 /**
@@ -710,7 +808,10 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
       : (part as unknown as Record<string, Extracted<unknown>>)[field];
     return !(at && at.method && settled.includes(at.method));
   });
-  if (unsettled.length > 0) {
+  // Blocking is now a MODE. See `onDisagreement`. In `flag` mode the conflict
+  // stays on the record and in the review panel, so nothing goes silent; what
+  // changes is that it no longer withholds the part.
+  if (unsettled.length > 0 && (options.onDisagreement ?? "flag") === "block") {
     return { ok: false, missing: [], untraceable: [], unsettled: unsettled.map((c) => c.field) };
   }
 
@@ -744,7 +845,10 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
         landSpanMm: part.dimensions.landSpanMm.value,
         leadSides: part.dimensions.leadSides.value,
         leadForm: part.dimensions.leadForm.value,
+        mounting: part.dimensions.mounting.value,
+        leadDiameterMm: part.dimensions.leadDiameterMm.value,
         vacantLeadSlot: part.dimensions.vacantLeadSlot.value,
+        leadsPerSide: part.dimensions.leadsPerSide.value,
         solderMaskExpansionMm: part.dimensions.solderMaskExpansionMm.value,
         solderMaskDefined: part.dimensions.solderMaskDefined.value,
         thermalViaDiameterMm: part.dimensions.thermalViaDiameterMm.value,

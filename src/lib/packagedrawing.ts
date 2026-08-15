@@ -1,5 +1,18 @@
 import type { DatasheetText, PageText } from "./pdftext";
-import { packageFamilies } from "./pintable";
+/**
+ * Words that appear in a package designator without naming a family.
+ *
+ * Moved here on 2026-08-14 from `pintable.ts`, which was deleted with the rest
+ * of the deterministic parser. This module is its only surviving caller.
+ */
+const NOT_A_FAMILY = new Set(["PIN", "PINS", "LEAD", "LEADS", "PACKAGE", "TOP", "VIEW", "AND", "WITH"]);
+
+/** The family tokens inside a designator, e.g. `SOIC` out of `8-Pin SOIC (D)`. */
+function packageFamilies(designator: string): string[] {
+  return (designator.toUpperCase().match(/[A-Z][A-Z0-9]{1,9}/g) ?? []).filter(
+    (word) => /[A-Z]{2}/.test(word) && !NOT_A_FAMILY.has(word)
+  );
+}
 
 /**
  * Locates the package outline drawing in a datasheet.

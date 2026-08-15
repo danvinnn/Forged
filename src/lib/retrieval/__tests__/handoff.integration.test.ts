@@ -18,9 +18,17 @@ test("upload ref bytes parse into a PartRecord for LMP7704-SP", async () => {
 
   const part = await parseDatasheetPdf(ref.fileName, ref.bytes, ref.pdfUrl);
   assert.match((part.partNumber.value ?? "").toUpperCase(), /LMP7704/);
-  assert.ok((part.pins.value ?? []).length > 0, "expected the parser to find pins");
 
-  // Traceability: a value that came off the datasheet must say where from.
-  assert.ok(part.partNumber.citation, "expected a citation for the part number");
-  assert.equal(part.partNumber.method, "deterministic");
+  // What the record carries WITHOUT a model, after the deterministic parser was
+  // deleted on 2026-08-14: the packages the ordering table offers, and nothing
+  // else. The pins and every dimension are the model's to read.
+  assert.ok(part.packageVariants.length > 0, "the ordering table still yields the package list");
+  assert.equal(part.pins.value, null, "no pin table is invented in the absence of a reader");
+
+  // The part number is the FILE NAME, and it says so. It is not a citation-backed
+  // read and must never be dressed as one: the person uploading `LMP7704-SP.pdf`
+  // told us what they think it is, which is a different claim from the document
+  // stating it.
+  assert.equal(part.partNumber.method, "user");
+  assert.equal(part.partNumber.citation, null);
 });

@@ -34,9 +34,26 @@ export interface Pad {
   centre: Point;
   widthMm: number;
   heightMm: number;
-  shape: "roundrect";
-  /** Surface mount is the only mounting these families use. */
-  mounting: "smd";
+  /**
+   * `roundrect` for a surface-mount land, `circle` for a plated hole.
+   *
+   * A through-hole pad is round because the lead is: the reference `DIP-8_W7.62mm`
+   * draws pin 1 as a roundrect to mark it and every other pin as a circle, which
+   * is the convention this follows.
+   */
+  shape: "roundrect" | "circle";
+  mounting: "smd" | "through-hole";
+  /**
+   * Finished hole diameter, mm. Present on a through-hole pad and absent on a
+   * land.
+   *
+   * From IPC-7251: the hole is the lead diameter plus an allowance chosen by
+   * density level, 0.25 mm for level A, 0.20 for B and 0.15 for C. That is the
+   * same three-level choice IPC-7351B makes for a surface-mount fillet, and it
+   * is a property of the assembly process rather than of the part, so it comes
+   * from the same setting.
+   */
+  drillMm?: number;
   /**
    * Solder paste apertures, when paste must NOT follow the copper.
    *
@@ -136,7 +153,40 @@ export interface SymbolPin {
 export interface SymbolGeometry {
   name: string;
   partNumber: string;
-  /** The rectangle the pins attach to. */
+  /** The rectangle the pins attach to, as half-extents about `bodyCentreYMm`. */
   body: Rect;
+  /**
+   * Where the body's centre line sits, in Y.
+   *
+   * Not always zero, and this is the point. KLC S4.1 requires every pin origin
+   * to sit on a 100 mil grid node, and an EVEN number of pin rows cannot be both
+   * centred on the origin and on that grid: four rows at 2.54 mm pitch land on
+   * +/-1.27 and +/-3.81, every one of them half a step off, and a schematic drawn
+   * on the standard grid then cannot connect a wire without nudging.
+   *
+   * So the pins keep the grid and the body moves. A symbol's origin is a
+   * placement handle rather than a centre of mass, and the reference libraries
+   * treat it that way.
+   */
+  bodyCentreYMm: number;
   pins: SymbolPin[];
+  /**
+   * What a library entry carries besides its geometry.
+   *
+   * Measured against the official KiCad symbols on 2026-08-14: every one of
+   * `AD8021AR`, `24LC256` and `MCP2551-I-SN` carries seven properties, and this
+   * generator was emitting three. The four missing ones are not decoration.
+   * `Description` and `ki_keywords` are what the symbol chooser searches, so a
+   * library without them can only be navigated by exact part number, and
+   * `Datasheet` is the link a reviewer follows to check a pin name against the
+   * document it came from.
+   *
+   * Optional because a format that has no equivalent field simply skips them,
+   * and because a record with no source URL genuinely has no datasheet link.
+   */
+  description?: string;
+  /** The document this part was read from. Null when it was a local upload. */
+  datasheetUrl?: string | null;
+  /** Search terms for the symbol chooser. */
+  keywords?: string;
 }

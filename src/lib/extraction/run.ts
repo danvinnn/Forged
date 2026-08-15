@@ -54,6 +54,9 @@ function combine(first: ExtractionResult, second: ExtractionResult): ExtractionR
   return {
     values: { ...first.values, ...second.values },
     notes: [...(first.notes ?? []), ...(second.notes ?? [])],
+    // Read once, in the pass that already had the whole document. Carried through
+    // so a later package choice selects a table instead of paying for another call.
+    pinTablesByPackage: second.pinTablesByPackage ?? first.pinTablesByPackage,
     usage:
       first.usage || second.usage
         ? {
@@ -97,10 +100,7 @@ export async function runExtraction(
 
   // Pass 2: the pages it asked to see.
   //
-  // Skipped, rather than returned from, when it asks for none. It used to return
-  // here, and that was a defect: a model that refuses the pin table AND wants no
-  // drawing rendered would never reach the pin question below, which is exactly
-  // the shape of the parts that question exists to rescue.
+  // Skipped, rather than returned from, when it asks for none.
   //
   // A render failure is not an extraction failure. `renderPages` returns fewer
   // pages rather than throwing, and a host with no working renderer produces
@@ -119,71 +119,10 @@ export async function runExtraction(
     }
   }
 
-  let combined = combine(first, second);
-
-  // Pass 3: the pin table, asked ALONE on the page the model said it was on.
-  //
-  // Only when the two passes above left `pins` unanswered, which is not an edge
-  // case: measured on 2026-08-13 over 14 parts, asking the whole document for
-  // pins produced an answer on 2 of them. The other 12 were REFUSALS, and the
-  // model gave its reason each time, e.g. INA240: "available in both TSSOP-8
-  // (PW) and SOIC-8 (D) packages, which have differing pin assignments". A
-  // document offering several packages has several pinouts, and the model is
-  // told not to guess between them, so it correctly declines.
-  //
-  // One page does not have that ambiguity, because one page is one package's
-  // pin table. The same model, same prompt, asked about a single page, answered
-  // 10 of 13 exactly against the hand-read oracle, including SN65HVD230, which
-  // the whole-document pass got WRONG rather than merely missing.
-  //
-  // So this is a coverage fix that happens to be cheap, not a cost optimisation:
-  // ~1,700 input and ~470 output tokens, against ~21,000 and ~940 for a
-  // whole-document pass.
-  //
-  // The page comes from the MODEL, never from a locator. Two attempts to find it
-  // any other way both failed on this same corpus: a heading regex sent AD590 to
-  // a mechanical drawing, and `pagesWorthRendering` sent INA240 to one, because
-  // that list means "render these", not "the pinout is here".
-  // Taken from the FIRST pass, not from `combined`. `combine` keeps values,
-  // notes and usage and drops everything else, and the page request is only ever
-  // asked on pass 1, so reading it off the combined result would silently find
-  // nothing and this pass would never fire.
-  const pinPages = pinTablePages(first, doc);
-  if (combined.values.pins === undefined && pinPages.length > 0 && request.fields.includes("pins")) {
-    try {
-      const third = await model.extract({
-        ...request,
-        fields: ["pins", "pinCount"].filter((field) =>
-          request.fields.includes(field as (typeof request.fields)[number])
-        ) as typeof request.fields,
-        images: [],
-        pages: request.pages.filter((page) => pinPages.includes(page.page))
-      });
-      // Fills gaps only. A narrow answer must not displace one the wider passes
-      // already gave, because they saw the whole document and this one did not.
-      combined = combine(third, combined);
-    } catch {
-      // A refused or failed pin question costs nothing already read.
-    }
-  }
+  const combined = combine(first, second);
 
   return { ...mergeModelValues(part, doc, combined, model.name, rendered), renderedPages: rendered, lookedAtPages: rendered.length > 0 };
 }
 
-/**
- * Pin-table pages the model named, filtered to pages the document really has.
- *
- * Capped, because this feeds a request: a model that answers with fifty pages
- * would otherwise rebuild the whole-document question this pass exists to avoid.
- */
-const MAX_PIN_TABLE_PAGES = 3;
-
-function pinTablePages(result: ExtractionResult, doc: DatasheetText): number[] {
-  const exists = new Set(doc.pages.map((page) => page.page));
-  return [...new Set(result.pinTablePages ?? [])]
-    .filter((page) => Number.isInteger(page) && exists.has(page))
-    .sort((left, right) => left - right)
-    .slice(0, MAX_PIN_TABLE_PAGES);
-}
 
 export { type ExtractionRequest };

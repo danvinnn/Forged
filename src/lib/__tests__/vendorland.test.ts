@@ -2,8 +2,37 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { datasheetTextFromPages } from "../pdftext";
 import { findVendorLandPattern, crossCheckLandPattern } from "../vendorland";
-import { computeLandPattern } from "../ipc7351";
-import { findPackageDefinition } from "../packages";
+import { computeLandPattern, type LeadDimensions } from "../ipc7351";
+
+/**
+ * Lead dimensions read off the drawings named beside them.
+ *
+ * These arrived here as `findPackageDefinition("TSSOP-8", 8)` calls against a
+ * hand-typed family table. The table is gone; these tests were never about it,
+ * they are about reading a printed land pattern off a document and comparing it,
+ * so the numbers the lookup would have returned are inlined with their source.
+ */
+const TSSOP_8: LeadDimensions = {
+  // TI PW0008A in the INA240 datasheet, JEDEC MO-153 AA.
+  form: "gullwing",
+  span: { minMm: 6.2, maxMm: 6.6 },
+  contact: { minMm: 0.5, maxMm: 0.6 },
+  width: { minMm: 0.19, maxMm: 0.3 }
+};
+const SOIC_8: LeadDimensions = {
+  // TI D0008A in the UCC27524 datasheet, JEDEC MS-012.
+  form: "gullwing",
+  span: { minMm: 5.8, maxMm: 6.2 },
+  contact: { minMm: 0.4, maxMm: 0.625 },
+  width: { minMm: 0.31, maxMm: 0.51 }
+};
+const LQFP_64: LeadDimensions = {
+  // JEDEC MS-026, span 12.00 BSC, from Table 84 of the STM32G071RB datasheet.
+  form: "gullwing",
+  span: { minMm: 11.8, maxMm: 12.2 },
+  contact: { minMm: 0.45, maxMm: 0.6 },
+  width: { minMm: 0.17, maxMm: 0.27 }
+};
 
 // The vendor prints its own recommended land pattern. Reading it gives a second,
 // independent opinion on the footprint we compute, which is worth having because
@@ -51,12 +80,8 @@ test("the land pattern for the requested family is the one that is read", () => 
 });
 
 test("a computed TSSOP land agrees with the pattern TI prints", () => {
-  const lookup = findPackageDefinition("TSSOP-8", 8);
-  assert.equal(lookup.ok, true);
-  if (!lookup.ok) return;
-
-  const land = computeLandPattern(lookup.definition.lead);
-  const check = crossCheckLandPattern(twoPackages, land, lookup.definition.family);
+  const land = computeLandPattern(TSSOP_8);
+  const check = crossCheckLandPattern(twoPackages, land, "TSSOP");
 
   assert.equal(check.agreement, "agrees", check.detail);
   assert.match(check.detail, /page 3/, "the comparison cites the page it read");
@@ -64,21 +89,13 @@ test("a computed TSSOP land agrees with the pattern TI prints", () => {
 
 test("a datasheet with no printed land pattern is unavailable, not a disagreement", () => {
   const bare = datasheetTextFromPages([["ACME1 Amplifier", "No drawings here."].join("\n")]);
-  const lookup = findPackageDefinition("SOIC-8", 8);
-  assert.equal(lookup.ok, true);
-  if (!lookup.ok) return;
-
-  const check = crossCheckLandPattern(bare, computeLandPattern(lookup.definition.lead), "SOIC narrow");
+  const check = crossCheckLandPattern(bare, computeLandPattern(SOIC_8), "SOIC narrow");
   assert.equal(check.agreement, "unavailable");
 });
 
 test("a real disagreement is reported rather than hidden", () => {
   // Same drawing, but our computed land is deliberately nothing like it.
-  const lookup = findPackageDefinition("TSSOP-8", 8);
-  assert.equal(lookup.ok, true);
-  if (!lookup.ok) return;
-
-  const wrong = { ...computeLandPattern(lookup.definition.lead), padCentreMm: 12, padLengthMm: 9 };
+  const wrong = { ...computeLandPattern(TSSOP_8), padCentreMm: 12, padLengthMm: 9 };
   const check = crossCheckLandPattern(twoPackages, wrong, "TSSOP");
 
   assert.equal(check.agreement, "differs");
@@ -95,9 +112,7 @@ test("a footprint drawing that cannot be parsed is reported as present, not abse
     ["ACME071 Microcontroller"].join("\n"),
     ["Figure 48. LQFP64 - Footprint example", "12.70", "10.30", "1.20", "0.30"].join("\n")
   ]);
-  const lookup = findPackageDefinition("LQFP64", 64);
-  assert.ok(lookup.ok);
-  const check = crossCheckLandPattern(doc, computeLandPattern(lookup.definition.lead), lookup.definition.family);
+  const check = crossCheckLandPattern(doc, computeLandPattern(LQFP_64), "LQFP-64");
 
   assert.equal(check.agreement, "unavailable", "unreadable is not a disagreement");
   assert.equal(check.page, 2, "the page is where the drawing is");
@@ -114,9 +129,7 @@ test("a contents entry is not mistaken for the drawing it lists", () => {
     ["filler"].join("\n"),
     ["Figure 48. LQFP64 - Footprint example", "12.70", "10.30"].join("\n")
   ]);
-  const lookup = findPackageDefinition("LQFP64", 64);
-  assert.ok(lookup.ok);
-  const check = crossCheckLandPattern(doc, computeLandPattern(lookup.definition.lead), lookup.definition.family);
+  const check = crossCheckLandPattern(doc, computeLandPattern(LQFP_64), "LQFP-64");
 
   assert.equal(check.page, 3, "the contents entry on page 1 is not the drawing");
 });
@@ -126,9 +139,7 @@ test("a footprint example for ANOTHER package is not offered as this one's", () 
     ["ACME071 Microcontroller"].join("\n"),
     ["Figure 40. LQFP32 - Footprint example", "8.70", "6.30"].join("\n")
   ]);
-  const lookup = findPackageDefinition("LQFP64", 64);
-  assert.ok(lookup.ok);
-  const check = crossCheckLandPattern(doc, computeLandPattern(lookup.definition.lead), lookup.definition.family);
+  const check = crossCheckLandPattern(doc, computeLandPattern(LQFP_64), "LQFP-64");
 
   assert.equal(check.agreement, "unavailable");
   assert.match(check.detail, /does not print/, "a different package's drawing is not this one's");

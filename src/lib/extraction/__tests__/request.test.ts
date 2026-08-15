@@ -63,8 +63,11 @@ test("on a real datasheet the WHOLE document is sent, answers included", async (
   const part = buildPartRecord(doc, "LMP7704-SP.pdf");
 
   const missing = unresolvedFields(part);
-  assert.equal(part.dimensions.pitchMm.value, 1.27, "the pitch is read off the drawing, not asked of a model");
-  assert.ok(missing.includes("dimensions.bodyHeightMm"), "the fixture still has a gap to ask about");
+  // Everything geometric is asked of the model now. The deterministic reader that
+  // used to answer the pitch off the drawing was deleted on 2026-08-14, having
+  // been measured to contribute nothing to any dimension.
+  assert.ok(missing.includes("dimensions.pitchMm"), "the pitch is a question for the model");
+  assert.ok(missing.includes("dimensions.bodyHeightMm"), "so is the body height");
 
   const request = buildExtractionRequest(part, doc, "LMP7704-SP.pdf");
   assert.ok(request);

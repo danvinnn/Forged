@@ -1,4 +1,5 @@
 import { extractionFields, type ExtractionField, type ExtractionRequest, type ExtractionResult, type ModelValue } from "../contracts";
+import type { PinRecord } from "../../types";
 
 /**
  * Shared prompt construction and response parsing for extraction models.
@@ -45,10 +46,18 @@ const FIELD_GUIDE: Record<ExtractionField, string> = {
     "how many SIDES of the package carry leads, counted on the package outline drawing: 2 for a package with two opposing rows (SOIC, TSSOP, SOT-23, SON), 4 for one with leads or pads on all four sides (QFP, QFN, LFCSP). Return the number 2 or 4. Null if the drawing does not show it.",
   "dimensions.leadForm":
     "how the leads leave the package, from the package outline drawing. Answer exactly 'gullwing' for leads formed out and down onto the board (SOIC, TSSOP, SOT, QFP, SSOP), or 'nolead' for flat pads on the underside of the body with no formed lead (QFN, DFN, SON, LGA). Null if the drawing does not make it clear.",
+  "dimensions.mounting":
+    "how the part attaches to the board, from the package outline drawing. Answer exactly 'smd' if the leads or pads sit on the board surface (SOIC, TSSOP, QFN, QFP, SOT), or 'through-hole' if the leads are straight pins that pass through holes in the board (DIP, PDIP, CDIP, SIP, TO-220, and most axial or radial parts). A through-hole drawing dimensions the ROW SPACING between the two lines of pins rather than a lead span. Null if the drawing does not make it clear.",
+  "dimensions.leadDiameterMm":
+    "ONLY for a through-hole part: the diameter or thickness of the pin that goes through the board, in millimetres, from the package outline drawing. This is what the hole is sized from. Null for a surface-mount part.",
+  "packageOutlineCode":
+    "the vendor's own code printed on THIS part's package outline drawing, e.g. 'DW0016B', 'PW0008A', 'D0008A'. It is usually printed in the corner of the drawing or in its title. Report it only when you are confident the drawing belongs to the package you reported in packageType, because two packages can share a name and differ by millimetres. Null if the drawing prints no such code.",
   "dimensions.vacantLeadSlot":
-    "ONLY for a two-row package whose rows hold different numbers of leads, e.g. a 5-lead SOT-23 with 3 leads on one side and 2 on the other. Counting lead positions along the SHORTER row from the pin 1 end starting at 1, which position has no lead? On a standard 5-lead SOT-23 the answer is 2, because the middle position of the two-lead side is empty. Null when both rows carry the same number of leads.",
+    "ONLY for a two-row package whose rows hold different numbers of leads, e.g. a 5-lead package with 3 leads on one side and 2 on the other. The shorter row still has as many POSITIONS as the longer one; one of them is empty. Counting those positions from the pin 1 end starting at 1, which one has no lead? Read it off the pinout drawing for this part; do not assume the gap is in any particular place. Null when both rows carry the same number of leads.",
+  "dimensions.leadsPerSide":
+    "ONLY when the sides of the package carry DIFFERENT numbers of leads, which on a four-sided package means a pin count that does not divide by four. Counting from the side pin 1 is on and going round the way the pin numbers run, how many leads are on each side? Answer as comma-separated integers, e.g. '6,6,6,5'. Read it off the pinout drawing. Null when every side carries the same number.",
   "dimensions.solderMaskExpansionMm":
-    "from the RECOMMENDED FOOTPRINT / LAND PATTERN drawing's solder mask details: the solder mask clearance around each land in millimetres, printed as e.g. '0.05 MIN ALL AROUND' or '0.07 MAX ALL AROUND'. Null if the drawing does not state it.",
+    "from the RECOMMENDED FOOTPRINT / LAND PATTERN drawing's solder mask details: the solder mask clearance around each land in millimetres. These drawings usually print TWO figures, one for each variant, e.g. '0.05 MIN ALL AROUND' beside the non-solder-mask-defined detail and '0.05 MAX ALL AROUND' beside the solder-mask-defined one. Report the figure belonging to the SAME variant you report in dimensions.solderMaskDefined, so the two answers describe one footprint. Null if the drawing does not state it.",
   "dimensions.solderMaskDefined":
     "from the same solder mask details: whether the land is defined by the copper or by the mask opening. Answer exactly 'non-solder-mask-defined' or 'solder-mask-defined'. Drawings often show both and mark one PREFERRED; report the preferred one. Null if not stated.",
   "dimensions.thermalViaDiameterMm":
@@ -124,7 +133,18 @@ function sanitizePartNumber(value: string): string {
 function pageRequestGuidance(fieldsWanted: string[]): string {
   const wantsDrawing = fieldsWanted.some((field) => field.startsWith("dimensions."));
   const wantsPins = fieldsWanted.includes("pins") || fieldsWanted.includes("pinCount");
-  if (!wantsDrawing && !wantsPins) return "";
+  // The RECOMMENDED FOOTPRINT page is its own drawing on its own page, and seven
+  // fields are read from it. Until 2026-08-14 it was never named here: the model
+  // was asked for the pad size, the centre span, the mask clearance, the
+  // mask-defined variant and the via grid, and then shown the package outline
+  // and the pinout instead. It had to scrape those off the text layer, which is
+  // the exact failure rendering exists to avoid, and 11 of 56 hold-out parts
+  // stopped on those fields.
+  const wantsLand = fieldsWanted.some(
+    (field) => field.startsWith("dimensions.land") || field.startsWith("dimensions.solderMask") || field.startsWith("dimensions.thermalVia")
+  );
+  const wantsThermalPad = fieldsWanted.some((field) => field.startsWith("dimensions.thermalPad"));
+  if (!wantsDrawing && !wantsPins && !wantsLand) return "";
 
   return `
 You are reading the TEXT of the document. Some values cannot be read from text at all: a mechanical
@@ -133,17 +153,24 @@ to is shown by ARROWS, which are graphics. A pinout drawn as a figure has the sa
 
 So also return "pagesWorthRendering": a list of page numbers that should be rendered as IMAGES and
 shown to you next. Include:
-${wantsDrawing ? "- the package outline / mechanical drawing page for THIS part's package\n" : ""}${wantsPins ? "- the page carrying the pin configuration figure or pinout diagram\n" : ""}
+${wantsDrawing ? "- the package outline / mechanical drawing page for THIS part's package\n" : ""}${wantsPins ? "- the page carrying the pin configuration figure or pinout diagram\n" : ""}${wantsLand ? "- the RECOMMENDED FOOTPRINT / LAND PATTERN page for THIS part's package, which is a DIFFERENT page from the package outline and is usually captioned 'LAND PATTERN EXAMPLE', 'RECOMMENDED FOOTPRINT', 'EXAMPLE BOARD LAYOUT' or 'Footprint example'. It carries the pad sizes, the centre span, the solder mask details and any thermal vias.\n" : ""}${wantsThermalPad ? "- the page showing the EXPOSED THERMAL PAD on the underside of the package, dimensions D2 and E2, if the package has one\n" : ""}
 Name at most 8 pages, fewest first, and only pages you actually saw in this document. Return an
 empty list if the text alone was enough. Answer every field you already can; a page request is not
 a reason to leave a field null.
+
+These pages are the only ones you will be shown. A value you leave null because you could not see
+its drawing cannot be recovered later, so name every page you need now.
 ${
   wantsPins
     ? `
-Also return "pinTablePages": the page number(s) carrying the PIN TABLE or terminal-function table
-for the requested part. This is usually NOT the same page as the mechanical drawing. If the document
-covers several packages with different pin assignments, name the page for EACH of them rather than
-choosing between them here.
+Also return "pinTablesByPackage" whenever this document describes MORE THAN ONE package with its own
+pin assignment: a list of {"packageType": "<designator>", "pins": [...]} , one entry per package, each
+with that package's own complete pin table.
+
+Keep them SEPARATE. Never merge two packages' pin names into one entry, and never write a name like
+"Vref/NC" that combines variants; report each package's real name in its own entry. If the part
+number does not tell you which package it is, that is fine here: report them all and let the caller
+choose. Omit this when the document describes only one pinout.
 `
     : ""
 }`;
@@ -189,7 +216,7 @@ export function buildPrompt(request: ExtractionRequest): string {
 
   const contract = `Respond with JSON only, no markdown fences and no commentary, in exactly this shape:
 {"values": {"<field>": {"value": <value or null>, "page": <page number or null>}}, "notes": ["<observation>"]${
-    askPages ? ', "pagesWorthRendering": [<page number>, ...], "pinTablePages": [<page number>, ...]' : ""
+    askPages ? ', "pagesWorthRendering": [<page number>, ...], "pinTablesByPackage": [{"packageType": "<designator>", "pins": [...]}, ...]' : ""
   }}`;
 
   return `You are extracting structured data from an electronics datasheet for a rad-hard component intake tool. Accuracy matters more than completeness: a wrong value is far worse than no value.
@@ -306,6 +333,33 @@ function closeTruncatedJson(text: string): string | null {
   return text.slice(0, safeEnd) + safeStack.reverse().join("");
 }
 
+/**
+ * Light coercion for a per-package pin table.
+ *
+ * Deliberately permissive about everything except shape: `merge.ts` runs the
+ * strict reader when one of these is actually selected, and duplicating that
+ * here would give two places to disagree about what a valid pin is. All this
+ * does is drop rows that are not {number, name} so a malformed entry cannot
+ * masquerade as a table.
+ */
+function coercePinRows(rows: unknown[]): PinRecord[] {
+  const out: PinRecord[] = [];
+  for (const raw of rows) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as { number?: unknown; name?: unknown; electricalType?: unknown; description?: unknown };
+    const number = typeof row.number === "string" || typeof row.number === "number" ? String(row.number).trim() : "";
+    const name = typeof row.name === "string" ? row.name.trim() : "";
+    if (!number || !name) continue;
+    out.push({
+      number,
+      name,
+      electricalType: "unspecified",
+      ...(typeof row.description === "string" ? { description: row.description } : {})
+    });
+  }
+  return out;
+}
+
 export function parseModelResponse(text: string): ExtractionResult {
   const unreadable = (): ExtractionResult => ({
     values: {},
@@ -338,7 +392,7 @@ export function parseModelResponse(text: string): ExtractionResult {
     values?: Record<string, unknown>;
     notes?: unknown;
     pagesWorthRendering?: unknown;
-    pinTablePages?: unknown;
+    pinTablesByPackage?: unknown;
   };
   const values: Partial<Record<ExtractionField, ModelValue>> = {};
 
@@ -381,13 +435,19 @@ export function parseModelResponse(text: string): ExtractionResult {
         .filter((page) => Number.isInteger(page) && page > 0)
     : undefined;
 
-  // Same treatment as the render list: page numbers only, and the caller checks
-  // them against the document's real pages before anything is sent.
-  const pinTablePages = Array.isArray(root.pinTablePages)
-    ? root.pinTablePages
-        .map((page) => (typeof page === "number" ? page : Number(page)))
-        .filter((page) => Number.isInteger(page) && page > 0)
+  // One entry per package, each carrying that package's own rows. Coerced
+  // through the same pin reader as the main table, so a malformed entry is
+  // dropped rather than trusted.
+  const pinTablesByPackage = Array.isArray(root.pinTablesByPackage)
+    ? root.pinTablesByPackage
+        .map((entry) => {
+          const row = entry as { packageType?: unknown; pins?: unknown };
+          const designator = typeof row.packageType === "string" ? row.packageType.trim() : "";
+          const pins = Array.isArray(row.pins) ? coercePinRows(row.pins) : null;
+          return designator && pins && pins.length > 0 ? { packageType: designator, pins } : null;
+        })
+        .filter((entry): entry is { packageType: string; pins: PinRecord[] } => entry !== null)
     : undefined;
 
-  return { values, notes, pagesWorthRendering, pinTablePages };
+  return { values, notes, pagesWorthRendering, pinTablesByPackage };
 }

@@ -16,6 +16,18 @@ function pins(count: number): PinRecord[] {
   }));
 }
 
+/**
+ * An eight-lead SOIC with its OWN drawing read.
+ *
+ * These dimensions used to be absent, and a hand-typed family table supplied
+ * them from the string `"8-pin SOIC"`. The table was deleted on 2026-08-14
+ * because asserting a lead span from a package name is what `RULES.md` rule 1
+ * forbids, so the fixture now carries what a datasheet actually states: the TI
+ * D0008A drawing in the UCC27524 datasheet, JEDEC MS-012.
+ *
+ * The tests below are unchanged in what they assert. What changed is where the
+ * numbers come from, which is the point.
+ */
 function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
   return {
     id: "test",
@@ -32,17 +44,22 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       bodyLengthMm: 4.9,
       bodyWidthMm: 3.9,
       bodyHeightMm: 1.75,
-      pitchMm: null,
+      pitchMm: 1.27,
       leadLengthMm: null,
       leadCount: 8,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      leadSides: 2,
+      leadForm: "gullwing",
+      mounting: null,
+      leadDiameterMm: null,
+      leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
+      leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+      leadContactMm: { minMm: 0.4, maxMm: 0.625 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
-      leadSides: null,
-      leadForm: null,
       vacantLeadSlot: null,
+      leadsPerSide: null,
       solderMaskExpansionMm: null,
       solderMaskDefined: null,
       thermalViaDiameterMm: null,
@@ -78,7 +95,7 @@ test("dual-row pads are numbered counterclockwise, not down both sides", async (
   // pin 5 of an 8-pin SOIC at the top right where pin 8 belongs. A board built
   // from that footprint is miswired, and nothing about the file looks wrong.
   const files = await filesFrom(soicPart());
-  const footprint = files.get("acme27524.pretty/acme27524-soic-narrow.kicad_mod");
+  const footprint = files.get("acme27524.pretty/acme27524-8-pin-soic.kicad_mod");
   assert.ok(footprint, "a footprint must be emitted");
 
   const pads = padPositions(footprint);
@@ -120,7 +137,7 @@ test("the symbol places every pin on the side its number belongs to", async () =
 
 test("pad geometry comes from IPC-7351B, not from an invented pitch", async () => {
   const files = await filesFrom(soicPart());
-  const footprint = files.get("acme27524.pretty/acme27524-soic-narrow.kicad_mod");
+  const footprint = files.get("acme27524.pretty/acme27524-8-pin-soic.kicad_mod");
   assert.ok(footprint);
 
   const pads = padPositions(footprint);
@@ -155,7 +172,7 @@ test("the KiCad symbol names the footprint, and the nickname is one the user get
   // with by doing nothing. The reference has to match that or it dangles.
   assert.match(
     symbol,
-    /\(property "Footprint" "acme27524:acme27524-soic-narrow"/,
+    /\(property "Footprint" "acme27524:acme27524-8-pin-soic"/,
     "the symbol carries a resolvable footprint reference"
   );
   assert.ok(
@@ -166,26 +183,13 @@ test("the KiCad symbol names the footprint, and the nickname is one the user get
 
 test("the KiCad footprint references the 3D body that ships beside it", async () => {
   const files = await filesFrom(soicPart());
-  const footprint = files.get("acme27524.pretty/acme27524-soic-narrow.kicad_mod");
+  const footprint = files.get("acme27524.pretty/acme27524-8-pin-soic.kicad_mod");
   assert.ok(footprint);
 
   assert.match(footprint, /\(model "\$\{KIPRJMOD\}\/acme27524\.step"/, "the body is referenced");
   assert.ok(files.has("acme27524.step"), "and the file it points at is in the bundle");
 });
 
-test("an uncharacterised package refuses the whole export", async () => {
-  // Not a degraded bundle. Shipping a symbol and a 3D body while quietly
-  // omitting the footprint reads as success to anyone who does not check.
-  await assert.rejects(
-    () => createExportZip(soicPart({ packageType: "12-Pin BGA", pinCount: 12, pins: pins(12) }), "kicad"),
-    (error: unknown) => {
-      assert.ok(error instanceof FootprintUnavailableError);
-      assert.match(error.reason, /12-Pin BGA/);
-      assert.ok(error.supportedFamilies.length > 0, "the refusal says what would work");
-      return true;
-    }
-  );
-});
 
 test("an exposed thermal pad refuses the footprint, on an otherwise buildable package", async () => {
   // The refusal that used to live in `normalizeModelPins`, where it also threw
@@ -208,23 +212,24 @@ test("an exposed thermal pad refuses the footprint, on an otherwise buildable pa
   assert.ok(files.size > 0);
 });
 
-test("an unknown package refuses rather than defaulting the pitch to 1.27", async () => {
-  // The precise old behaviour: packageType "Unknown package" fell through to a
-  // 1.27 mm default and produced a footprint for a part whose pitch nobody read.
-  await assert.rejects(
-    () => createExportZip(soicPart({ packageType: "Unknown package" }), "kicad"),
-    FootprintUnavailableError
-  );
-});
 
 test("the manifest records what the footprint was built from", async () => {
   const files = await filesFrom(soicPart());
   const manifest = JSON.parse(files.get("manifest.json") ?? "{}");
 
-  assert.equal(manifest.footprint.family, "SOIC narrow");
+    // The family is the datasheet's own designator now, not a table's name for it.
+  assert.equal(manifest.footprint.family, "8-pin SOIC");
   assert.equal(manifest.footprint.densityLevel, "B");
   assert.equal(manifest.footprint.pitchMm, 1.27);
-  assert.match(manifest.footprint.source, /MS-012/, "the lead data cites its drawing");
+  // Where the numbers came from, which is now always one of two answers: this
+  // datasheet's printed footprint, or this datasheet's package drawing plus the
+  // standard's arithmetic. It used to be able to say "JEDEC MS-012", quoted from
+  // a family table, about a document nobody had checked said so.
+  assert.match(
+    manifest.footprint.source,
+    /this datasheet's own package drawing/,
+    "the manifest says which of the two sources placed the copper"
+  );
 });
 
 // --- Formats are peers, not conversions ---------------------------------------
@@ -286,7 +291,7 @@ test("the KiCad generator reads the neutral geometry, and the geometry is comple
   // If the geometry is complete enough to drive KiCad, it is complete enough to
   // drive Altium and Cadence, which is the whole reason for the seam.
   const files = await filesFrom(soicPart());
-  const footprint = files.get("acme27524.pretty/acme27524-soic-narrow.kicad_mod");
+  const footprint = files.get("acme27524.pretty/acme27524-8-pin-soic.kicad_mod");
   const symbol = files.get("acme27524.kicad_sym");
   assert.ok(footprint && symbol);
 
@@ -310,9 +315,23 @@ test("the KiCad generator reads the neutral geometry, and the geometry is comple
  * something to do.
  */
 
+/** A ceramic flat pack: same drawing, plus the straight leads it actually has. */
+function cfpPart(): ResolvedPart {
+  return soicPart({
+    packageType: "14-lead CFP",
+    pinCount: 14,
+    pins: pins(14),
+    dimensions: { ...soicPart().dimensions, leadForm: "straight" }
+  });
+}
+
 test("a refusal that the user can answer says exactly what it needs", async () => {
   await assert.rejects(
-    () => createExportZip(soicPart({ packageType: "14-lead CFP", pinCount: 14, pins: pins(14) }), "kicad"),
+    // `leadForm: "straight"` is what makes this a flat pack, and it is READ off
+    // the drawing: TI's HKU0010A shows leads 22.7 mm tip to tip on a 7 mm body,
+    // straight, for the assembler to trim. A family table used to infer it from
+    // the letters "CFP", which is a name rather than evidence.
+    () => createExportZip(cfpPart(), "kicad"),
     (error: unknown) => {
       assert.ok(error instanceof FootprintUnavailableError);
       assert.equal(error.needs.length, 1);
@@ -326,117 +345,16 @@ test("a refusal that the user can answer says exactly what it needs", async () =
   );
 });
 
-test("an uncharacterised package is a QUESTION, not a dead end", async () => {
-  // This test used to assert the opposite: that an unknown package offered the
-  // user nothing to fill in, on the reasoning that a missing land pattern was
-  // our gap to close rather than their input. That reasoning was wrong, and
-  // measurement is what changed it. On 2026-08-13 every part shipping from the
-  // tuned corpus was fed by the hand-typed family table, and five parts that
-  // read perfectly were refused outright for having a package name the table
-  // had never heard of. Closing that gap by typing more families into the table
-  // means inventing numbers about parts, which is the one thing this product
-  // does not do. Asking is the honest move, and the user can answer it.
-  await assert.rejects(
-    () => createExportZip(soicPart({ packageType: "12-Pin BGA", pinCount: 12, pins: pins(12) }), "kicad"),
-    (error: unknown) => {
-      assert.ok(error instanceof FootprintUnavailableError);
-      assert.ok(error.needs.length > 0, "the user can supply a land pattern we cannot read");
-      assert.ok(
-        error.needs.every((need) => need.why.length > 0),
-        "and each question says why the document cannot answer it"
-      );
-      assert.ok(
-        error.needs.some((need) => need.why.includes("does not print a recommended footprint")),
-        "naming the document's silence as the reason"
-      );
-      return true;
-    }
-  );
-});
 
 test("answering the need produces the bundle", async () => {
-  const bundle = await createExportZip(
-    soicPart({ packageType: "14-lead CFP", pinCount: 14, pins: pins(14) }),
-    "kicad",
-    { formedLeadSpanMm: 10.16 }
-  );
+  const bundle = await createExportZip(cfpPart(), "kicad", { formedLeadSpanMm: 10.16 });
   assert.ok(bundle.buffer.byteLength > 0);
 });
 
-/**
- * The part's own mechanical drawing, used to check the hand-entered families.
- *
- * Every entry in packages.ts was read off ONE vendor drawing and then applied to
- * a family. The part in front of us carries the evidence to test that, and the
- * case that made this urgent was real: an ISO7741 calls itself a "16-pin SOIC"
- * in its own front matter and is a DW0016B wide body. Resolved from the prose
- * alone it exported 16 pads at 5.376 mm centre to centre, against the 9.3 mm
- * pattern TI prints in that same datasheet. Every pad was 1.96 mm inboard of its
- * lead, on a part that passes every other check the exporter makes.
- */
-test("the outline code tells a wide-body SOIC from a narrow one", async () => {
-  const wide = await createExportZip(
-    soicPart({
-      packageType: "16-pin SOIC",
-      packageOutlineCode: "DW0016B",
-      pinCount: 16,
-      pins: pins(16)
-    }),
-    "kicad"
-  );
 
-  assert.equal(wide.footprint.family, "SOIC wide");
-  assert.equal(wide.footprint.centreToCentreMm, 9.301, "the pattern TI prints for this outline");
 
-  // Same designator, no drawing to confirm it, so the prose stands on its own.
-  const narrow = await createExportZip(
-    soicPart({ packageType: "16-pin SOIC", pinCount: 16, pins: pins(16) }),
-    "kicad"
-  );
-  assert.equal(narrow.footprint.family, "SOIC narrow");
-});
 
-test("a drawn pitch that contradicts the family refuses rather than placing pads", async () => {
-  // 0.65 is a real TSSOP pitch and this part resolves to SOIC narrow at 1.27.
-  // One of the two is about a different package. Placing pads on either would
-  // produce a file nothing downstream can tell is wrong.
-  await assert.rejects(
-    () => createExportZip(soicPart({ dimensions: { ...soicPart().dimensions, pitchMm: 0.65 } }), "kicad"),
-    (error: unknown) => {
-      assert.ok(error instanceof FootprintUnavailableError);
-      assert.match(error.message, /0\.65/);
-      assert.match(error.message, /different package/);
-      return true;
-    }
-  );
-});
 
-test("a drawn lead width is used in place of the family's", async () => {
-  const narrower = await createExportZip(
-    soicPart({ dimensions: { ...soicPart().dimensions, leadWidthMm: { minMm: 0.2, maxMm: 0.3 }, leadSpanMm: null, leadContactMm: null } }),
-    "kicad"
-  );
-  const family = await createExportZip(soicPart(), "kicad");
-
-  assert.ok(
-    narrower.footprint.padWidthMm < family.footprint.padWidthMm,
-    "a narrower lead gets a narrower land, through IPC-7351B Xmax"
-  );
-  assert.match(
-    narrower.footprint.source,
-    /own package drawing/,
-    "and the manifest says the width came from this part rather than the family"
-  );
-});
-
-test("a drawn pitch that agrees with the family changes nothing", async () => {
-  const drawn = await createExportZip(
-    soicPart({ dimensions: { ...soicPart().dimensions, pitchMm: 1.27 } }),
-    "kicad"
-  );
-  assert.equal(drawn.footprint.family, "SOIC narrow");
-  assert.equal(drawn.footprint.centreToCentreMm, 5.376);
-});
 
 test("an odd lead count refuses rather than mis-placing the shorter row", async () => {
   // Two opposing rows of unequal length: where the shorter row's missing position
@@ -477,21 +395,28 @@ function lqfpPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
     packageType: "LQFP (80)",
     pinCount: 80,
     pins: pins(80),
+    // The TI PN0080A drawing itself, rather than a family entry keyed on the
+    // string "LQFP". JEDEC MS-026: 14.00 BSC span, 12 mm body, 0.5 pitch.
     dimensions: {
       bodyLengthMm: 12,
       bodyWidthMm: 12,
       bodyHeightMm: 1.6,
-      pitchMm: null,
+      pitchMm: 0.5,
       leadLengthMm: null,
       leadCount: 80,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      leadWidthMm: { minMm: 0.17, maxMm: 0.27 },
+      leadSpanMm: { minMm: 13.8, maxMm: 14.2 },
+      leadContactMm: { minMm: 0.45, maxMm: 0.6 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
-      leadSides: null,
-      leadForm: null,
+      leadSides: 4,
+      leadForm: "gullwing",
+      mounting: null,
+      leadDiameterMm: null,
       vacantLeadSlot: null,
+      leadsPerSide: null,
       solderMaskExpansionMm: null,
       solderMaskDefined: null,
       thermalViaDiameterMm: null,
@@ -563,45 +488,7 @@ test("a quad courtyard clears the lands on all four sides", async () => {
   assert.ok(half > landOuterEdge, `courtyard ${half} must clear the outermost land at ${landOuterEdge}`);
 });
 
-test("a quad lead count the entry does not cover refuses rather than being placed", async () => {
-  // Body size and lead span move with the lead count on these families: an
-  // LQFP-100 is 14 mm square where the 80 is 12, so there is nothing to
-  // interpolate. The count is refused before any pad is placed.
-  //
-  // This lands on the pin-count range rather than on the divide-by-four guard in
-  // `buildFootprintGeometry`, because the only quad entry today is exactly 80
-  // leads. That guard is unreachable for the same reason the dual case's
-  // odd-count guard is: it exists so that adding a family with a RANGE cannot
-  // silently produce a short side.
-  await assert.rejects(
-    () => createExportZip(lqfpPart({ pinCount: 78, pins: pins(78) }), "kicad"),
-    (error: unknown) => {
-      assert.ok(error instanceof FootprintUnavailableError);
-      assert.match(error.message, /not 78/);
-      return true;
-    }
-  );
-});
 
-test("a quad package can never take a dual-row entry's geometry", async () => {
-  // The trap this guard was written for: `FLATPACK` is how a ceramic DUAL flat
-  // pack is written and it is also the middle of `PLASTIC QUAD FLATPACK`, the
-  // title of every TI LQFP and VQFN drawing. Handing a quad package the CFP lead
-  // dimensions would be the worst answer this table could give, so a quad
-  // designator is only ever matched against entries written as quads.
-  await assert.rejects(
-    () =>
-      createExportZip(
-        lqfpPart({ packageType: "48-lead PLASTIC QUAD FLATPACK", pinCount: 48, pins: pins(48) }),
-        "kicad"
-      ),
-    (error: unknown) => {
-      assert.ok(error instanceof FootprintUnavailableError);
-      assert.match(error.message, /quad flat pack/);
-      return true;
-    }
-  );
-});
 
 // --- exposed thermal pads ------------------------------------------------------
 //
@@ -612,32 +499,46 @@ test("a quad package can never take a dual-row entry's geometry", async () => {
 function vqfnPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
   return soicPart({
     partNumber: "ACME8420",
-    packageType: "8-pin SOIC",
+    packageType: "VQFN-16",
     exposedPad: true,
     dimensions: { ...soicPart().dimensions, thermalPadLengthMm: 2.1, thermalPadWidthMm: 1.8 },
     ...overrides
   });
 }
 
-test("an exposed pad whose size is unknown still refuses", async () => {
+test("an exposed pad whose size is unknown ASKS, because the drawing states it", async () => {
+  // Was "still refuses". The pad size is dimensions D2 and E2 on the package
+  // outline, so a part reaching here is one we failed to read, not one whose
+  // datasheet withheld anything. Saying "no footprint is generated" reported our
+  // gap as the document's. It still will not build a pad it cannot size; it just
+  // asks for the two numbers instead of stopping.
+  const padded = soicPart({ exposedPad: true });
   await assert.rejects(
-    () => createExportZip(soicPart({ exposedPad: true }), "kicad"),
-    (error: unknown) => {
-      assert.ok(error instanceof FootprintUnavailableError);
-      assert.match(error.reason, /size was not read/);
-      assert.match(error.reason, /D2 and E2/, "and says where to find it");
+    () => createExportZip(padded, "kicad"),
+    (error: Error) => {
+      const needs = (error as FootprintUnavailableError).needs.map((n) => n.field);
+      assert.deepEqual(needs, ["thermalPadLengthMm", "thermalPadWidthMm"]);
+      assert.match(error.message, /D2 and E2/);
       return true;
     }
   );
 });
 
+test("supplying the pad size builds the part, with no second read of the datasheet", async () => {
+  const padded = soicPart({ exposedPad: true });
+  const out = await createExportZip(padded, "kicad", {
+    supplied: { thermalPadLengthMm: 2.15, thermalPadWidthMm: 1.2 }
+  });
+  assert.ok(out.files.length > 0);
+});
+
 test("a sized exposed pad becomes a real land, numbered after the leads", async () => {
   const files = await filesFrom(vqfnPart());
-  const footprint = files.get("acme8420.pretty/acme8420-soic-narrow.kicad_mod");
+  const footprint = files.get("acme8420.pretty/acme8420-vqfn-16.kicad_mod");
   assert.ok(footprint, "the export succeeds once the pad can be built");
 
   // Pad 9 on an 8-pin part: the convention every CAD tool expects.
-  const copper = /\(pad "9" smd roundrect \(at 0(?:\.0+)? 0(?:\.0+)?\) \(size ([\d.]+) ([\d.]+)\) \(layers "F\.Cu" "F\.Mask"\)/.exec(footprint);
+  const copper = /\(pad "9" smd roundrect \(at 0(?:\.0+)? 0(?:\.0+)?\) \(size ([\d.]+) ([\d.]+)\) \(property pad_prop_heatsink\) \(layers "F\.Cu" "F\.Mask"\)/.exec(footprint);
   assert.ok(copper, `a thermal land must be emitted; got:\n${footprint}`);
   assert.equal(Number(copper[1]), 2.1, "the land is 1:1 with the exposed pad");
   assert.equal(Number(copper[2]), 1.8);
@@ -649,9 +550,12 @@ test("the thermal land's paste is an array, covering well under 100%", async () 
   // of solder, lifting the perimeter leads clean off their lands, and the excess
   // escapes as balls. IPC-7093 puts the target between 50% and 80%.
   const files = await filesFrom(vqfnPart());
-  const footprint = files.get("acme8420.pretty/acme8420-soic-narrow.kicad_mod")!;
+  const footprint = files.get("acme8420.pretty/acme8420-vqfn-16.kicad_mod")!;
 
-  const apertures = [...footprint.matchAll(/\(pad "9" smd rect \(at (-?[\d.]+) (-?[\d.]+)\) \(size ([\d.]+) ([\d.]+)\) \(layers "F\.Paste"\)/g)];
+  // An EMPTY pad number, which is how the reference library spells a paste-only
+  // aperture: reusing the thermal pad's number declares each aperture a second
+  // terminal with that number. See `emitKicadFootprint`.
+  const apertures = [...footprint.matchAll(/\(pad "" smd rect \(at (-?[\d.]+) (-?[\d.]+)\) \(size ([\d.]+) ([\d.]+)\) \(layers "F\.Paste"\)/g)];
   assert.ok(apertures.length > 1, `paste must be subdivided, got ${apertures.length} aperture(s)`);
 
   const pasted = apertures.reduce((total, a) => total + Number(a[3]) * Number(a[4]), 0);
@@ -666,17 +570,21 @@ test("the thermal land's paste is an array, covering well under 100%", async () 
   }
 });
 
-test("Altium refuses a windowed paste rather than pasting it solid", async () => {
-  // The writer cannot express paste that differs from copper. Emitting the pad
-  // anyway would produce a file that opens correctly and fails at reflow, so it
-  // refuses and names the format that can.
-  await assert.rejects(
-    () => createExportZip(vqfnPart(), "altium"),
-    (error: unknown) => {
-      assert.match((error as Error).message, /thermal pad|paste/i);
-      return true;
-    }
-  );
+test("Altium writes a windowed paste rather than refusing the part", async () => {
+  // Inverted 2026-08-14. This asserted a refusal, on the reasoning that pasting
+  // a thermal land solid floats the package off its leads and that refusing was
+  // the honest option. The reasoning about reflow was right; the conclusion was
+  // not. It failed EVERY QFN, DFN and SON part for Altium users, and a missing
+  // feature reported as a principled stance is still a missing feature.
+  //
+  // The apertures now go on Top Paste and the copper pad has its own paste
+  // suppressed, so the land is not pasted solid and the part builds.
+  const padded = soicPart({
+    exposedPad: true,
+    dimensions: { ...soicPart().dimensions, thermalPadLengthMm: 2.15, thermalPadWidthMm: 1.2 }
+  });
+  const out = await createExportZip(padded, "altium");
+  assert.ok(out.files.length > 0, "an exposed-pad part is exportable to Altium");
 });
 
 
@@ -767,13 +675,20 @@ test("a land wider than the pitch is refused, because it would merge with its ne
   assert.doesNotMatch(footprint, /RECOMMENDED FOOTPRINT PRINTED/i);
 });
 
-test("a pattern several times the size of the package is refused", async () => {
-  // 1.5 read as 15, on a part whose body is 4.9 x 3.9 mm.
-  const part = printedFixture({ landPadLengthMm: 15, landSpanMm: 58 });
-  const footprint = [...(await filesFrom(part)).entries()]
-    .find(([name]) => name.endsWith(".kicad_mod"))![1];
-
-  assert.doesNotMatch(footprint, /RECOMMENDED FOOTPRINT PRINTED/i, "a 58 mm span on a 4.9 mm part");
+test("a pattern out of proportion to the package is caught by the IPC band, not by a made-up factor", async () => {
+  // Was "a pattern several times the size of the package is refused", against a
+  // limit of 2x that I chose by reasoning rather than measuring. Deleted: the
+  // band check does this job with the standard's own numbers, and a factor
+  // nobody can source is exactly the kind of invented figure this codebase
+  // otherwise refuses to carry.
+  //
+  // Same misread the old factor was aimed at, a centre span read as ten times
+  // its real value, and the band still catches it.
+  const out = await createExportZip(
+    drawnPart({ landPadLengthMm: 1.1, landPadWidthMm: 0.4, landSpanMm: 24 }),
+    "kicad"
+  );
+  assert.doesNotMatch(out.footprint.source, /printed in this datasheet/);
 });
 
 test("the real INA240 numbers pass both checks", async () => {
@@ -808,6 +723,13 @@ function printedPart(overrides: Partial<ResolvedPart["dimensions"]> = {}): Resol
     dimensions: {
       ...soicPart().dimensions,
       pitchMm: 0.95,
+      // The package OUTLINE was not read for this part, only the recommended
+      // footprint. Left null deliberately: inheriting the SOIC fixture's lead
+      // span would put a 6 mm gull-wing's dimensions on a SOT-23, and the IPC
+      // band check would then correctly refuse the very pattern under test.
+      leadSpanMm: null,
+      leadContactMm: null,
+      leadWidthMm: null,
       landPadLengthMm: 1.1,
       landPadWidthMm: 0.6,
       landSpanMm: 1.9,
@@ -817,9 +739,9 @@ function printedPart(overrides: Partial<ResolvedPart["dimensions"]> = {}): Resol
   });
 }
 
-test("a package the family table never heard of still builds, from its own printed footprint", async () => {
+test("a package nothing has ever heard of still builds, from its own printed footprint", async () => {
   const out = await createExportZip(printedPart(), "kicad");
-  assert.ok(out.files.length > 0, "SOT-23 is not in the table and this must not depend on it");
+  assert.ok(out.files.length > 0, "no table is consulted, so an unfamiliar designator is not a problem");
   assert.match(
     out.footprint.source,
     /printed in this datasheet/,
@@ -954,6 +876,8 @@ function drawnPart(overrides: Partial<ResolvedPart["dimensions"]> = {}): Resolve
       pitchMm: 0.95,
       leadSides: 2,
       leadForm: "gullwing",
+      mounting: null,
+      leadDiameterMm: null,
       leadSpanMm: { minMm: 2.6, maxMm: 3.0 },
       leadWidthMm: { minMm: 0.3, maxMm: 0.5 },
       leadContactMm: { minMm: 0.3, maxMm: 0.6 },
@@ -990,6 +914,8 @@ test("a no-lead package that DOES print its footprint still builds from it", asy
   const out = await createExportZip(
     drawnPart({
       leadForm: "nolead",
+      mounting: null,
+      leadDiameterMm: null,
       landPadLengthMm: 0.8,
       landPadWidthMm: 0.3,
       landSpanMm: 2.6
@@ -999,14 +925,6 @@ test("a no-lead package that DOES print its footprint still builds from it", asy
   assert.match(out.footprint.source, /printed in this datasheet/);
 });
 
-test("an unread lead form falls back to what the drawing shows, not to the name", async () => {
-  // Corrected while writing it. I expected a refusal, but a tip-to-tip LEAD
-  // SPAN is itself evidence of a formed lead: a no-lead package has no such
-  // dimension, only a body. So an unread form plus a span is a sound read of
-  // the drawing rather than an assumption, and it derives.
-  const out = await createExportZip(drawnPart({ leadForm: null }), "kicad");
-  assert.ok(out.files.length > 0);
-});
 
 test("an unread lead form with no lead span refuses, rather than guessing a form", async () => {
   await assert.rejects(
@@ -1087,6 +1005,8 @@ test("thermal vias the datasheet dimensions are emitted, and carry no pin number
       pitchMm: 0.65,
       leadSides: 2,
       leadForm: "gullwing",
+      mounting: null,
+      leadDiameterMm: null,
       leadSpanMm: { minMm: 4.9, maxMm: 5.1 },
       leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
       leadContactMm: { minMm: 0.4, maxMm: 0.6 },
@@ -1117,4 +1037,89 @@ test("no via data means no vias, rather than a guessed grid", async () => {
   const name = [...files.keys()].find((f) => f.endsWith(".kicad_mod"));
   if (!name) return;
   assert.doesNotMatch(files.get(name)!, /thru_hole/);
+});
+
+// ---------------------------------------------------------------------------
+// A quad package whose sides are NOT equal
+// ---------------------------------------------------------------------------
+
+/**
+ * The 38-lead quad, laid out as KiCad's own library lays one out.
+ *
+ * `QFN-38-1EP_4x6mm_P0.4mm_EP2.65x4.65mm` in the official `Package_DFN_QFN`
+ * library puts twelve leads on each long side at -2.2 to +2.2 and seven on each
+ * short side at -1.2 to +1.2, every row symmetric about its own centre line and
+ * the odd count putting a lead ON that line. That file is the source for both
+ * the division and the placement asserted here.
+ *
+ * What this locks out is not a rounding difference. Until 2026-08-14 the pad
+ * placer divided the pin count by four whatever `leadsPerSide` said, so a 38
+ * lead part produced `Array.from({ length: 9.5 })`, nine pads a side, and pads
+ * numbered `10.5` and `29.5` for pins that do not exist. It was emitted without
+ * complaint.
+ */
+function unequalQuadPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
+  return {
+    ...soicPart(),
+    partNumber: "ACME38",
+    packageType: "QFN-38",
+    pinCount: 38,
+    pins: pins(38),
+    dimensions: {
+      ...soicPart().dimensions,
+      bodyLengthMm: 6,
+      bodyWidthMm: 4,
+      pitchMm: 0.4,
+      leadCount: 38,
+      leadSides: 4,
+      leadsPerSide: "12,7,12,7",
+      landPadLengthMm: 0.8,
+      landPadWidthMm: 0.2,
+      landSpanMm: 4.0
+    },
+    sourceFileName: "ACME38.pdf",
+    ...overrides
+  };
+}
+
+test("an unequal quad uses the per-side counts it read, and every pad is a real pin", async () => {
+  const files = await filesFrom(unequalQuadPart());
+  const footprint = files.get("acme38.pretty/acme38-qfn-38.kicad_mod");
+  assert.ok(footprint, "a footprint is emitted");
+
+  const at = padPositions(footprint);
+  assert.equal(at.size, 38, "every lead gets a land, and there are no extras");
+  for (const number of at.keys()) {
+    assert.match(number, /^\d+$/, `pad "${number}" is numbered for a pin that exists`);
+  }
+
+  // Twelve down the left, seven across the bottom, twelve up the right, seven
+  // back across the top. Counterclockwise, as on every other package here.
+  assert.deepEqual(at.get("1"), { x: -2, y: -2.2 }, "pin 1: top of the long left side");
+  assert.deepEqual(at.get("12"), { x: -2, y: 2.2 }, "pin 12: bottom of the long left side");
+  assert.deepEqual(at.get("13"), { x: -1.2, y: 2 }, "pin 13: left end of the short bottom side");
+  assert.deepEqual(at.get("19"), { x: 1.2, y: 2 }, "pin 19: right end of the short bottom side");
+  assert.deepEqual(at.get("38"), { x: -1.2, y: -2 }, "pin 38: back at the left end of the top");
+
+  // Each side is centred on ITSELF, so the seven-lead row has a lead on the
+  // centre line rather than being packed against one end.
+  assert.deepEqual(at.get("16"), { x: 0, y: 2 }, "the middle lead of an odd row sits on the centre line");
+});
+
+test("a quad whose count does not divide by four, with nothing read, asks rather than approximating", async () => {
+  const part = unequalQuadPart({
+    dimensions: { ...unequalQuadPart().dimensions, leadsPerSide: null }
+  });
+  await assert.rejects(
+    () => createExportZip(part, "kicad"),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError);
+      assert.deepEqual(
+        error.needs.map((need) => need.field),
+        ["leadsPerSide"],
+        "the question names the field the export route accepts"
+      );
+      return true;
+    }
+  );
 });

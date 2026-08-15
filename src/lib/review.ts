@@ -129,10 +129,52 @@ const REVIEWABLE: Array<{ field: string; label: string; consequence: string }> =
     label: "Lead width",
     consequence: "Sets how wide each land is. Too wide risks bridging to the neighbouring pin."
   },
+  // THE PRINTED LAND PATTERN.
+  //
+  // These three are the pads themselves wherever the datasheet drew its own
+  // recommended footprint, which is 36 of 39 hold-out documents. They were not
+  // reviewable until 2026-08-14, so the panel was asking a person to check the
+  // lead span, which only matters when the pattern has to be COMPUTED, while the
+  // numbers that were being emitted as copper went unmentioned.
+  {
+    field: "dimensions.landPadLengthMm",
+    label: "Land length (printed footprint)",
+    consequence: "This IS the pad, along the lead, when the datasheet printed its own footprint. Read wrongly, every land is the wrong size."
+  },
+  {
+    field: "dimensions.landPadWidthMm",
+    label: "Land width (printed footprint)",
+    consequence: "This IS the pad, across the lead. Too wide and neighbouring lands bridge at reflow."
+  },
+  {
+    field: "dimensions.landSpanMm",
+    label: "Land centre span (printed footprint)",
+    consequence: "Sets how far apart the two rows of lands sit. Wrong here and the whole footprint misses the leads."
+  },
+  {
+    field: "dimensions.leadSides",
+    label: "Sides carrying leads",
+    consequence: "Decides whether the pads are laid out in two rows or four. The wrong answer is a completely different footprint."
+  },
+  {
+    field: "dimensions.leadForm",
+    label: "Lead form",
+    consequence: "Decides which land-pattern model applies. A no-lead package computed as gull-wing looks correct in CAD and is not."
+  },
+  {
+    field: "dimensions.thermalPadLengthMm",
+    label: "Exposed pad length",
+    consequence: "The thermal land is soldered and mandatory. Wrong size means the part does not sit down, or solder bridges to the leads."
+  },
+  {
+    field: "dimensions.thermalPadWidthMm",
+    label: "Exposed pad width",
+    consequence: "As above, across the pad."
+  },
   {
     field: "dimensions.leadContactMm",
     label: "Lead contact length",
-    consequence: "Recorded for review. Land length uses the characterised family value, not this one."
+    consequence: "The seated foot. Sets the land length wherever the pattern has to be computed from the package drawing."
   },
   {
     field: "dimensions.bodyLengthMm",

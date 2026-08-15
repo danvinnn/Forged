@@ -62,7 +62,18 @@ test("model output that survives still cannot produce an exportable record on it
   // Worst case: a prompt-injected model returns confident values for everything
   // it was asked. It still cannot overwrite deterministic values, and the export
   // gate still applies, so injection cannot silently reach generated geometry.
-  const part = buildPartRecord(doc, "VA10820.pdf");
+  // A field already settled, which after 2026-08-14 means a person confirmed it
+  // rather than a deterministic reader having read it. The property under test
+  // is merge's, not the parser's: a settled value is never overwritten.
+  const part = {
+    ...buildPartRecord(doc, "VA10820.pdf"),
+    manufacturer: {
+      value: "VORAGO Technologies",
+      confidence: 1,
+      method: "user-confirmed" as const,
+      citation: { page: 1, snippet: "VORAGO Technologies", region: null }
+    }
+  };
   const result: ExtractionResult = {
     values: {
       pins: { value: [{ number: "1", name: "EVIL", electricalType: "power" }], page: 1 },
@@ -71,13 +82,18 @@ test("model output that survives still cannot produce an exportable record on it
   };
   const { part: merged } = mergeModelValues(part, doc, result, "test-model");
 
-  assert.equal(merged.manufacturer.value, "VORAGO Technologies", "deterministic still wins");
+  assert.equal(merged.manufacturer.value, "VORAGO Technologies", "a settled value still wins");
 
   // The model-supplied pin table carries no verified citation, so the export
   // boundary refuses it outright. Injection cannot reach generated geometry.
-  const resolved = resolveForExport(merged);
+  // A settled pin count so the resolve reaches the traceability gate rather than
+  // stopping at "missing", which is what this test is about.
+  const resolved = resolveForExport({
+    ...merged,
+    pinCount: { value: 1, confidence: 1, method: "user", citation: null }
+  });
   assert.equal(resolved.ok, false, "an untraceable pin table must not export");
-  if (!resolved.ok) assert.ok(resolved.untraceable?.includes("pins"));
+  if (!resolved.ok) assert.ok(resolved.untraceable?.includes("pins"), JSON.stringify(resolved));
 
   assert.ok(partSchema.safeParse(JSON.parse(JSON.stringify(merged))).success);
 });

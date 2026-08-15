@@ -21,8 +21,27 @@ const doc = datasheetTextFromPages([
   "Mechanical Data\nTerminal spacing is 0.5 mm nominal.\nStorage temperature range applies."
 ]);
 
+/**
+ * A record with ONE field already settled, and the rest open.
+ *
+ * The settled field used to come from the deterministic parser reading page 1.
+ * That parser was deleted on 2026-08-14, so it is set here instead. Nothing the
+ * tests below assert was about the parser: they are about merge, which fills
+ * gaps and never overwrites, and which has to keep doing both whatever put the
+ * value there. A user confirming a field in the review panel produces exactly
+ * this shape.
+ */
 function deterministic(): PartRecord {
-  return buildPartRecord(doc, "VA10820.pdf");
+  const part = buildPartRecord(doc, "VA10820.pdf");
+  return {
+    ...part,
+    manufacturer: {
+      value: "VORAGO Technologies",
+      confidence: 0.9,
+      method: "deterministic",
+      citation: { page: 1, snippet: "VORAGO Technologies", region: null }
+    }
+  };
 }
 
 test("only fields the text pass could not resolve are offered to a model", () => {
@@ -132,7 +151,13 @@ test("model-filled pins cannot export without a verified citation", () => {
   const { part: merged } = mergeModelValues(part, doc, result, "test-model");
 
   assert.equal(merged.pins.citation, null);
-  const resolved = resolveForExport(merged);
+  // A settled pin count, so the resolve gets past "missing" and reaches the
+  // traceability gate this test is actually about. It used to come from the
+  // deterministic parser reading page 1.
+  const resolved = resolveForExport({
+    ...merged,
+    pinCount: { value: 1, confidence: 1, method: "user", citation: null }
+  });
   assert.equal(resolved.ok, false, "untraceable geometry must not reach a generated part");
   if (!resolved.ok) assert.ok(resolved.untraceable?.includes("pins"));
 });
@@ -146,7 +171,14 @@ test("no request is built when the text pass resolved everything it can", () => 
   const part = deterministic();
   // Force every field resolved.
   const full = JSON.parse(JSON.stringify(part)) as PartRecord;
-  for (const key of ["partNumber", "manufacturer", "packageType", "pinCount", "jedecOutline"] as const) {
+  for (const key of [
+    "partNumber",
+    "manufacturer",
+    "packageType",
+    "pinCount",
+    "jedecOutline",
+    "packageOutlineCode"
+  ] as const) {
     full[key] = { value: key === "pinCount" ? 8 : "x", confidence: 1, method: "deterministic", citation: null } as never;
   }
   full.pins = { value: [{ number: "1", name: "A", electricalType: "unspecified" }], confidence: 1, method: "deterministic", citation: null };
@@ -593,9 +625,25 @@ const twoPackages = datasheetTextFromPages([
   "PACKAGE OUTLINE\nSOIC (8) body outline and lead form."
 ]);
 
+/** A record already holding a package reading, as a confirmed field would be. */
+function withPackage(part: PartRecord, value: string): PartRecord {
+  return {
+    ...part,
+    packageType: {
+      value,
+      confidence: 0.9,
+      method: "deterministic",
+      citation: { page: 1, snippet: value, region: null }
+    }
+  };
+}
+
 test("when the model outranks the code, each reading is still attributed to its own reader", () => {
-  const part = buildPartRecord(twoPackages, "ACME1234.pdf");
-  assert.equal(part.packageType.value, "14-lead CFP", "the code reads page 1");
+  // The record already holds a reading, as it does after a person confirms a
+  // field in the review panel. That used to come from the deterministic parser;
+  // with it gone, a confirmed value is what the model can now disagree with, and
+  // the conflict machinery is unchanged.
+  const part = withPackage(buildPartRecord(twoPackages, "ACME1234.pdf"), "14-lead CFP");
 
   const { part: merged } = mergeModelValues(
     part,
@@ -614,8 +662,8 @@ test("when the model outranks the code, each reading is still attributed to its 
 });
 
 test("when the code holds its ground, the conflict says so", () => {
-  const part = buildPartRecord(twoPackages, "ACME1234.pdf");
-  // An uncited claim cannot outrank, so the record keeps the code's reading.
+  const part = withPackage(buildPartRecord(twoPackages, "ACME1234.pdf"), "14-lead CFP");
+  // An uncited claim cannot outrank, so the record keeps the reading it had.
   const { part: merged } = mergeModelValues(
     part,
     twoPackages,

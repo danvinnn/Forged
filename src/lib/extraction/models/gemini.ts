@@ -206,6 +206,9 @@ export class GeminiExtractionModel implements ExtractionModel {
           "Gemini extraction"
         );
         const parsed = parseModelResponse(response.response.text());
+        // Every attempt reached the provider and was charged, including the ones
+        // that threw before this line.
+        parsed.attempts = attempt + 1;
         // `thoughtsTokenCount` is billed as output but is reported separately
         // and is NOT included in `candidatesTokenCount`. Measured on LM358:
         // 256 candidate tokens against 2,779 reasoning tokens, so leaving it

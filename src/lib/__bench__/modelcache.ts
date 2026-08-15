@@ -515,11 +515,22 @@ export function cachingModel(inner: ExtractionModel, mode: CacheMode, labelFor: 
       try {
         result = await extractWithRateLimitRetry(inner, request, stats);
       } catch (error) {
+        // A failed call is still a charge. Recording it here is the whole point:
+        // the cache directory only ever knew about successes, so every failure
+        // and every retry was spend nobody could see.
         stats.failed += 1;
+        if (wasPaidFor(inner.name, !freeTier())) recordBilled(1, null);
         throw error;
       }
       stats.inputTokens += result.usage?.inputTokens ?? 0;
       stats.outputTokens += result.usage?.outputTokens ?? 0;
+
+      // Every attempt the model made, not just the one that came back. A 503
+      // retried twice is three charges and one cache entry.
+      if (wasPaidFor(inner.name, !freeTier())) {
+        const usd = result.usage ? estimateUsd(result.usage.inputTokens, result.usage.outputTokens) : null;
+        recordBilled(result.attempts ?? 1, usd);
+      }
 
       const entry: CacheEntry = {
         version: CACHE_VERSION,
@@ -541,9 +552,10 @@ export function cachingModel(inner: ExtractionModel, mode: CacheMode, labelFor: 
       // write and did exactly that.
       if (wasPaidFor(inner.name, !freeTier())) {
         const limit = spendLimitUsd();
-        // Everything the cache has ever cost, this call included, since the
-        // entry above is already written.
-        const spent = cumulativeSpend().usd;
+        // The CHARGED total, not the stored one. Checking the cache directory
+        // here is what let a run reported at $1.88 actually cost $3.16 and sail
+        // past a ceiling that was supposed to be a hard stop.
+        const spent = chargedSpend().usd;
         if (limit > 0 && spent > limit) throw new SpendLimitReached(spent, limit);
       }
 
@@ -552,11 +564,94 @@ export function cachingModel(inner: ExtractionModel, mode: CacheMode, labelFor: 
   };
 }
 
+/**
+ * Every provider call this cache has CAUSED TO BE BILLED, including the ones
+ * that returned nothing.
+ *
+ * The cache directory is a record of successes. Google charges for attempts.
+ * Those are different numbers, and quoting the first as the second under-reported
+ * spend by 40% on 2026-08-14: a run reported at $1.88 was charged $3.16, the gap
+ * being 503s retried up to three times each, every attempt billed and only the
+ * winner stored.
+ *
+ * So attempts are appended here as they happen, priced at their real usage where
+ * the call came back and at the running average where it did not. This file is
+ * the number to trust and the number the ceiling checks.
+ */
+/**
+ * The ledger is a sidecar, not an answer. Every scan of the cache directory has
+ * to skip it, and they all go through this so adding another sidecar cannot
+ * silently turn into a phantom cache entry the way the first one did.
+ */
+function isEntryFile(name: string): boolean {
+  return name.endsWith(".json") && name !== "_billed.json";
+}
+
+function ledgerPath(): string {
+  return join(modelCacheDir(), "_billed.json");
+}
+
+interface Ledger {
+  /** Provider calls billed, successful or not. */
+  attempts: number;
+  /** Best estimate of what they cost, in USD. */
+  usd: number;
+}
+
+function readLedger(): Ledger {
+  try {
+    const raw = JSON.parse(readFileSync(ledgerPath(), "utf8")) as Partial<Ledger>;
+    return { attempts: raw.attempts ?? 0, usd: raw.usd ?? 0 };
+  } catch {
+    return { attempts: 0, usd: 0 };
+  }
+}
+
+/**
+ * Records billed attempts.
+ *
+ * `usd` may be null when the call failed and reported no usage, in which case
+ * the running average stands in. An estimate that exists beats a charge that is
+ * invisible, which is what the previous accounting did with every failure.
+ */
+function recordBilled(attempts: number, usd: number | null): void {
+  if (attempts <= 0) return;
+  const dir = modelCacheDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const current = readLedger();
+  const perCall = usd ?? averagePaidCallUsd();
+  const next: Ledger = {
+    attempts: current.attempts + attempts,
+    usd: current.usd + (usd === null ? perCall * attempts : usd + perCall * (attempts - 1))
+  };
+  try {
+    writeFileSync(ledgerPath(), JSON.stringify(next, null, 2));
+  } catch {
+    // A ledger that cannot be written must not fail the run; the report will say
+    // it is falling back to the cached-successes floor.
+  }
+}
+
+/** What a paid call has cost on average, for pricing attempts that returned nothing. */
+function averagePaidCallUsd(): number {
+  const dir = modelCacheDir();
+  if (!existsSync(dir)) return 0;
+  let input = 0, output = 0, calls = 0;
+  for (const file of readdirSync(dir).filter(isEntryFile)) {
+    const entry = readEntry(join(dir, file));
+    if (!entry?.usage || !wasPaidFor(entry.model, entry.billed)) continue;
+    input += entry.usage.inputTokens;
+    output += entry.usage.outputTokens;
+    calls += 1;
+  }
+  return calls === 0 ? 0 : estimateUsd(input / calls, output / calls);
+}
+
 /** Entries currently on disk. Reported so a run says what it is standing on. */
 export function cacheSize(): number {
   const dir = modelCacheDir();
   if (!existsSync(dir)) return 0;
-  return readdirSync(dir).filter((f) => f.endsWith(".json")).length;
+  return readdirSync(dir).filter(isEntryFile).length;
 }
 
 /**
@@ -612,7 +707,7 @@ export function cumulativeSpend(): { usd: number; calls: number } {
   let input = 0;
   let output = 0;
   let calls = 0;
-  for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+  for (const file of readdirSync(dir).filter(isEntryFile)) {
     const entry = readEntry(join(dir, file));
     if (!entry?.usage || !wasPaidFor(entry.model, entry.billed)) continue;
     input += entry.usage.inputTokens;
@@ -620,6 +715,19 @@ export function cumulativeSpend(): { usd: number; calls: number } {
     calls += 1;
   }
   return { usd: estimateUsd(input, output), calls };
+}
+
+/**
+ * What the account was actually CHARGED, as opposed to what landed on disk.
+ *
+ * Falls back to the cached-successes total when no ledger exists yet, which is
+ * every cache written before 2026-08-14. That fallback is a floor and says so.
+ */
+export function chargedSpend(): { usd: number; calls: number; fromLedger: boolean } {
+  const ledger = readLedger();
+  if (ledger.attempts > 0) return { usd: ledger.usd, calls: ledger.attempts, fromLedger: true };
+  const cached = cumulativeSpend();
+  return { usd: cached.usd, calls: cached.calls, fromLedger: false };
 }
 
 export function estimateUsd(inputTokens: number, outputTokens: number): number {
@@ -644,7 +752,7 @@ export function projectCost(calls: number): string {
   let input = 0;
   let output = 0;
   let sampled = 0;
-  for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+  for (const file of readdirSync(dir).filter(isEntryFile)) {
     const entry = readEntry(join(dir, file));
     // PAID entries only. A local model reports usage too, and averaging its
     // calls in with the cloud model's prices a run off calls that cost nothing,
@@ -684,7 +792,7 @@ export function cacheCensus(): CacheCensus {
   const census: CacheCensus = { reachable: 0, stranded: 0, unknown: 0 };
   if (!existsSync(dir)) return census;
   const current = promptFingerprint();
-  for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+  for (const file of readdirSync(dir).filter(isEntryFile)) {
     const entry = readEntry(join(dir, file));
     if (!entry) continue;
     if (!entry.prompt) census.unknown += 1;
@@ -748,10 +856,10 @@ export function preRunProjection(options: {
   // the worst case and says that is what it is.
   lines.push(projectCost(ceiling).replace(/^ {2}(\d+) live calls needed$/m, "  at most $1 live calls"));
 
-  const total = cumulativeSpend();
+  const total = chargedSpend();
   const limit = spendLimitUsd();
   lines.push(
-    `  spent already   ~$${total.usd.toFixed(2)} over ${total.calls} call(s)` +
+    `  spent already   ~$${total.usd.toFixed(2)} over ${total.calls} ${total.fromLedger ? "billed" : "cached"} call(s)` +
       (limit > 0 ? `, ceiling $${limit.toFixed(2)}` : ", no ceiling set")
   );
 
@@ -811,10 +919,12 @@ export function formatCacheStats(stats: CacheStats): string {
   //
   // A floor, not the bill: a call that fails after the model has generated is
   // charged and writes no cache entry, so it cannot be counted here.
-  const total = cumulativeSpend();
-  if (total.calls > 0) {
+  const charged = chargedSpend();
+  if (charged.calls > 0) {
     lines.push(
-      `  spent IN TOTAL  ~$${total.usd.toFixed(2)} over ${total.calls} cached call(s), all runs ever (a floor: failed calls are billed and not cached)`
+      charged.fromLedger
+        ? `  CHARGED TOTAL   ~$${charged.usd.toFixed(2)} over ${charged.calls} billed call(s), all runs ever (includes failures and retries)`
+        : `  spent IN TOTAL  ~$${charged.usd.toFixed(2)} over ${charged.calls} cached call(s) — a FLOOR, this cache predates attempt tracking`
     );
   }
   if (stats.hits > 0 && stats.savedInputTokens > 0) {

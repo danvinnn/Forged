@@ -242,6 +242,12 @@ export function emitAltiumSchLib(geometry: SymbolGeometry, links: AltiumSymbolLi
 
   const halfWidth = toSchematicUnits(geometry.body.halfWidthMm, "Symbol body half width");
   const halfHeight = toSchematicUnits(geometry.body.halfHeightMm, "Symbol body half height");
+  // The body's own centre line, which is not always the origin: an even number of
+  // pin rows cannot be both centred and on the 100 mil grid, and the pins keep the
+  // grid. See `SymbolGeometry.bodyCentreYMm`.
+  const centreY = toSchematicUnits(geometry.bodyCentreYMm, "Symbol body centre");
+  const bodyTop = centreY + halfHeight;
+  const bodyBottom = centreY - halfHeight;
 
   const records: Buffer[] = [];
 
@@ -249,7 +255,10 @@ export function emitAltiumSchLib(geometry: SymbolGeometry, links: AltiumSymbolLi
     parameterRecord([
       ["RECORD", String(RECORD.component)],
       ["LibReference", name],
-      ["ComponentDescription", partNumber],
+      // The library panel's description column, and what Altium searches. It was
+      // the part number, which every other field on the record already carries;
+      // a search for "op-amp SOIC-8" matched nothing in a library of them.
+      ["ComponentDescription", parameterSafe(geometry.description ?? partNumber)],
       ["PartCount", "1"],
       ["DisplayModeCount", "1"],
       ["IndexInSheet", "-1"],
@@ -278,9 +287,9 @@ export function emitAltiumSchLib(geometry: SymbolGeometry, links: AltiumSymbolLi
       ["IndexInSheet", String(geometry.pins.length)],
       ["OwnerPartId", "1"],
       ["Location.X", String(-halfWidth)],
-      ["Location.Y", String(-halfHeight)],
+      ["Location.Y", String(bodyBottom)],
       ["Corner.X", String(halfWidth)],
-      ["Corner.Y", String(halfHeight)],
+      ["Corner.Y", String(bodyTop)],
       ["LineWidth", "1"],
       ["AreaColor", "16777215"],
       ["UniqueID", uniqueId(`${seed}:body`)]
@@ -295,7 +304,7 @@ export function emitAltiumSchLib(geometry: SymbolGeometry, links: AltiumSymbolLi
       ["IndexInSheet", "-1"],
       ["OwnerPartId", "-1"],
       ["Location.X", String(-halfWidth)],
-      ["Location.Y", String(halfHeight + 1)],
+      ["Location.Y", String(bodyTop + 1)],
       ["Color", "8388608"],
       ["FontID", "1"],
       ["Text", "U?"],
@@ -311,7 +320,7 @@ export function emitAltiumSchLib(geometry: SymbolGeometry, links: AltiumSymbolLi
       ["IndexInSheet", "-1"],
       ["OwnerPartId", "-1"],
       ["Location.X", String(-halfWidth)],
-      ["Location.Y", String(-halfHeight - 3)],
+      ["Location.Y", String(bodyBottom - 3)],
       ["Color", "8388608"],
       ["FontID", "1"],
       ["Text", partNumber],
@@ -319,6 +328,31 @@ export function emitAltiumSchLib(geometry: SymbolGeometry, links: AltiumSymbolLi
       ["UniqueID", uniqueId(`${seed}:comment`)]
     ])
   );
+
+  // The link back to the document this part was read from.
+  //
+  // A hidden parameter, which is how Altium carries a datasheet reference: it
+  // shows in the properties panel and travels with the part into a schematic.
+  // This product's whole claim is that every value is traceable to a page of a
+  // PDF, and until 2026-08-14 the Altium output shipped without the address of
+  // that PDF anywhere in it.
+  if (geometry.datasheetUrl) {
+    records.push(
+      parameterRecord([
+        ["RECORD", String(RECORD.parameter)],
+        ["IndexInSheet", "-1"],
+        ["OwnerPartId", "-1"],
+        ["Location.X", String(-halfWidth)],
+        ["Location.Y", String(bodyBottom - 6)],
+        ["Color", "8388608"],
+        ["FontID", "1"],
+        ["Text", parameterSafe(geometry.datasheetUrl)],
+        ["Name", "Datasheet"],
+        ["IsHidden", "T"],
+        ["UniqueID", uniqueId(`${seed}:datasheet`)]
+      ])
+    );
+  }
 
   // The footprint link, when the exporter knows which footprint this symbol
   // belongs to. Without it Altium places a symbol with no model attached.

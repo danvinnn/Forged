@@ -160,17 +160,26 @@ function soicPart(): ResolvedPart {
       bodyLengthMm: 4.9,
       bodyWidthMm: 3.9,
       bodyHeightMm: 1.75,
-      pitchMm: null,
+      // The part's own drawing: TI D0008A, JEDEC MS-012. These used to be absent
+      // and a hand-typed family table supplied them from the package NAME. The
+      // table was deleted 2026-08-14; a datasheet's numbers come from the
+      // datasheet.
+      pitchMm: 1.27,
       leadLengthMm: null,
       leadCount: 8,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
+      leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+      leadContactMm: { minMm: 0.4, maxMm: 0.625 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
-      leadSides: null,
-      leadForm: null,
+      leadSides: 2,
+      leadForm: "gullwing",
+      mounting: null,
+      leadDiameterMm: null,
       vacantLeadSlot: null,
+      leadsPerSide: null,
       solderMaskExpansionMm: null,
       solderMaskDefined: null,
       thermalViaDiameterMm: null,
@@ -200,7 +209,9 @@ test("AltiumSharp reads the exported footprint library end to end", async () => 
 
   const part = result.parts[0];
   assert.equal(part.padCount, 8, "eight lands");
-  assert.equal(part.trackCount, 8, "body outline and courtyard, four segments each");
+  // Ten: four courtyard segments, plus a silkscreen outline of six, which is the
+  // body cut back to clear the lead rows. See `silkscreenTracks`.
+  assert.equal(part.trackCount, 10, "courtyard, plus a silkscreen outline that clears the pads");
   assert.equal(part.arcCount, 1, "the pin-1 marker");
   assert.equal(part.textCount, 1, "the designator");
 });
@@ -242,7 +253,7 @@ test("AltiumSharp sees the footprint link that pyaltiumlib cannot", async () => 
 
   const implementations = part.implementations ?? [];
   assert.equal(implementations.length, 1, "the symbol names exactly one model");
-  assert.equal(implementations[0].modelName, "acme27524-soic-narrow", "and it is the footprint we shipped");
+  assert.equal(implementations[0].modelName, "acme27524-8-pin-soic", "and it is the footprint we shipped");
   assert.equal(implementations[0].modelType, "PCBLIB");
   assert.equal(implementations[0].isCurrent, true);
   assert.equal(
@@ -308,6 +319,7 @@ test("a footprint with no model given carries no body and no model store", () =>
       }
     ],
     body: { halfWidthMm: 1.95, halfHeightMm: 2.45 },
+    bodyCentreYMm: 0,
     courtyard: { halfWidthMm: 3.2, halfHeightMm: 2.7 },
     pin1Marker: { xMm: -2.7, yMm: -2.2 },
     thermalVias: [],
@@ -346,6 +358,7 @@ test("a footprint written without a terminator byte is what a strict reader requ
       }
     ],
     body: { halfWidthMm: 1.95, halfHeightMm: 2.45 },
+    bodyCentreYMm: 0,
     courtyard: { halfWidthMm: 3.2, halfHeightMm: 2.7 },
     pin1Marker: { xMm: -2.7, yMm: -2.2 },
     thermalVias: [],
@@ -389,7 +402,7 @@ test("the symbol library survives being written back out by another implementati
   assert.equal(result.after.parts[0].pinCount, 8);
   assert.equal(
     result.after.parts[0].implementations?.[0].modelName,
-    "acme27524-soic-narrow",
+    "acme27524-8-pin-soic",
     "the footprint link is still there on the far side"
   );
 });
@@ -399,6 +412,7 @@ test("a symbol with no footprint named carries no implementation", () => {
     name: "FORGE-SYM",
     partNumber: "FORGE-SYM",
     body: { halfWidthMm: 7.62, halfHeightMm: 6.35 },
+    bodyCentreYMm: 0,
     pins: [
       {
         number: "1",

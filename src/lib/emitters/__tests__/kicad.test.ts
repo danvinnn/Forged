@@ -105,17 +105,26 @@ function soicPart(): ResolvedPart {
       bodyLengthMm: 4.9,
       bodyWidthMm: 3.9,
       bodyHeightMm: 1.75,
-      pitchMm: null,
+      // The part's own drawing: TI D0008A, JEDEC MS-012. These used to be absent
+      // and a hand-typed family table supplied them from the package NAME. The
+      // table was deleted 2026-08-14; a datasheet's numbers come from the
+      // datasheet.
+      pitchMm: 1.27,
       leadLengthMm: null,
       leadCount: 8,
-      leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
+      leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+      leadContactMm: { minMm: 0.4, maxMm: 0.625 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
-      leadSides: null,
-      leadForm: null,
+      leadSides: 2,
+      leadForm: "gullwing",
+      mounting: null,
+      leadDiameterMm: null,
       vacantLeadSlot: null,
+      leadsPerSide: null,
       solderMaskExpansionMm: null,
       solderMaskDefined: null,
       thermalViaDiameterMm: null,
@@ -132,7 +141,7 @@ async function exported(): Promise<{ symbol: Buffer; footprint: Buffer; names: s
   const zip = await JSZip.loadAsync(bundle.buffer);
   return {
     symbol: await zip.files["acme27524.kicad_sym"].async("nodebuffer"),
-    footprint: await zip.files["acme27524.pretty/acme27524-soic-narrow.kicad_mod"].async("nodebuffer"),
+    footprint: await zip.files["acme27524.pretty/acme27524-8-pin-soic.kicad_mod"].async("nodebuffer"),
     names: Object.keys(zip.files)
   };
 }
@@ -167,7 +176,7 @@ test("the symbol names its footprint, and the bundle makes that name resolvable"
   const { symbol, names } = await exported();
   const parsed = readBack<SymbolResult>(symbol, "acme27524.kicad_sym").symbols[0];
 
-  assert.equal(parsed.properties.Footprint, "acme27524:acme27524-soic-narrow");
+  assert.equal(parsed.properties.Footprint, "acme27524:acme27524-8-pin-soic");
   assert.equal(parsed.properties.Reference, "U");
   assert.equal(parsed.properties.Value, "ACME27524");
 
@@ -181,7 +190,7 @@ test("the symbol names its footprint, and the bundle makes that name resolvable"
 
 test("an independent reader recovers the land pattern from the footprint", async () => {
   const { footprint } = await exported();
-  const result = readBack<FootprintResult>(footprint, "acme27524-soic-narrow.kicad_mod");
+  const result = readBack<FootprintResult>(footprint, "acme27524-8-pin-soic.kicad_mod");
 
   assert.equal(result.pads.length, 8);
   const byNumber = new Map(result.pads.map((pad) => [pad.number, pad]));
@@ -202,7 +211,7 @@ test("an independent reader recovers the land pattern from the footprint", async
 
 test("the footprint carries its courtyard, its body and its 3D model", async () => {
   const { footprint } = await exported();
-  const result = readBack<FootprintResult>(footprint, "acme27524-soic-narrow.kicad_mod");
+  const result = readBack<FootprintResult>(footprint, "acme27524-8-pin-soic.kicad_mod");
 
   assert.ok(result.graphicLayers.includes("F.CrtYd"), "a courtyard is drawn");
   assert.ok(result.graphicLayers.includes("F.Fab"), "and a body outline");

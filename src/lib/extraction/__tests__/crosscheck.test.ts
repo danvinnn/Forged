@@ -167,7 +167,7 @@ test("a REAL name difference still disagrees, whatever the number type", () => {
   assert.ok(!valuesAgree("pins", glued, clean), "a wrong name is a wrong netlist");
 });
 
-test("an unsettled disagreement blocks the bundle until a person decides", () => {
+test("an unsettled disagreement blocks the bundle in BLOCK mode, and is flagged in flag mode", () => {
   // The control that makes model-first safe to ship. Two readers returned
   // different numbers for something that places copper, and which one the record
   // holds was decided by a precedence rule rather than by evidence. Shipping on
@@ -187,7 +187,19 @@ test("an unsettled disagreement blocks the bundle until a person decides", () =>
   const result: ExtractionResult = { values: { "dimensions.bodyWidthMm": { value: 7.5, page: 3 } } };
   const { part: merged } = mergeModelValues(part, doc, result, "gemini");
 
-  const blocked = resolveForExport(merged, { requireTraceableGeometry: false });
+  // BLOCK mode is the behaviour this test was written for, and it remains the
+  // right setting wherever documents are untrusted: it is the last line against
+  // prompt injection, because a crafted datasheet can get a value onto the
+  // record but not into a generated part without a person seeing both readings
+  // and both pages.
+  //
+  // It is no longer the default. Measured on 56 unseen datasheets 2026-08-14, it
+  // withheld 14 of them, and wherever the document could settle the argument the
+  // model was right 11 times out of 11. Note what it does NOT protect: a field
+  // only ONE reader reads can never conflict, and the land pattern, lead sides,
+  // lead form and thermal pad are all read by the model alone. So this was
+  // always a partial defence over the overlap, not a gate on everything.
+  const blocked = resolveForExport(merged, { requireTraceableGeometry: false, onDisagreement: "block" });
   assert.equal(blocked.ok, false, "an open disagreement is not exportable");
   if (!blocked.ok) assert.deepEqual(blocked.unsettled, ["dimensions.bodyWidthMm"]);
 
@@ -208,9 +220,25 @@ test("an unsettled disagreement blocks the bundle until a person decides", () =>
  * that nobody can act on costs a part and teaches the user to click past the
  * holds that matter.
  */
-test("an outline code and its prose spelling are not a disagreement", () => {
-  // Both resolve to SOIC narrow, so both produce the same land pattern.
-  assert.ok(valuesAgree("packageType", "D (SOIC)", "SOIC (8)", 8));
+test("an outline code against a prose designator IS reported, now that nothing can relate them", () => {
+  // Inverted 2026-08-14, with the reason recorded because it is a real cost.
+  //
+  // A family table used to resolve `D (SOIC)` and `SOIC (8)` to the same entry,
+  // so the two were treated as one reading spelled two ways. The table asserted
+  // lead spans per package NAME, which `RULES.md` rule 1 does not allow, and it
+  // was deleted. Nothing left in this repo knows that TI's `D` means a narrow
+  // SOIC, and the only way to teach it would be another hand-typed vocabulary.
+  //
+  // So the comparison says what is true: two readers returned different strings,
+  // and it cannot tell whether that matters. That is a FLAG, not a block, and the
+  // review panel shows both readings with the page each came from. One glance is
+  // the price; a table of synonyms would be an invented answer.
+  assert.ok(!valuesAgree("packageType", "D (SOIC)", "SOIC (8)", 8));
+
+  // What still agrees is the thing that never needed a vocabulary: the same
+  // designator spelled with different punctuation and ordering.
+  assert.ok(valuesAgree("packageType", "SOIC-8", "8-Pin SOIC", 8));
+  assert.ok(valuesAgree("packageType", "SOIC 8", "SOIC (D) 8", 8));
 });
 
 /**
@@ -235,4 +263,24 @@ test("an unresolvable designator still falls back to token comparison", () => {
   // the token rule must still be doing its job.
   assert.ok(valuesAgree("packageType", "8-Pin XYZZY", "XYZZY-8", 8));
   assert.ok(!valuesAgree("packageType", "XYZZY-8", "PLUGH-8", 8));
+});
+
+test("flag mode still records the disagreement, so nothing goes silent", () => {
+  // The trade being made: the part is generated, and both readings stay on the
+  // record and in the review panel. A flag is not a suppression. If this ever
+  // stops holding, flag mode becomes the thing it was accused of being.
+  const part = withDeterministic("dimensions.bodyWidthMm", 10.3, 2);
+  part.pinCount = { value: 8, confidence: 1, method: "deterministic", citation: { page: 1, snippet: "8", region: null } };
+  part.pins = {
+    value: [{ number: "1", name: "A", electricalType: "unspecified" }],
+    confidence: 1,
+    method: "deterministic",
+    citation: { page: 1, snippet: "pins", region: null }
+  };
+  const result: ExtractionResult = { values: { "dimensions.bodyWidthMm": { value: 7.5, page: 3 } } };
+  const { part: merged } = mergeModelValues(part, doc, result, "gemini");
+
+  const flagged = resolveForExport(merged, { requireTraceableGeometry: false });
+  assert.equal(flagged.ok, true, "the part is generated");
+  assert.ok(merged.conflicts.some((c) => c.field === "dimensions.bodyWidthMm"), "and the disagreement is still on the record");
 });

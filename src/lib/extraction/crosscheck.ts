@@ -15,7 +15,6 @@
 
 import type { ExtractionField } from "./contracts";
 import type { LeadWidth, PinRecord } from "../types";
-import { findPackageDefinition } from "../packages";
 import { declaredLeadCount } from "../packagevariants";
 
 /** Fields asked about even when the deterministic pass already answered them. */
@@ -62,29 +61,23 @@ function asRange(value: unknown): LeadWidth | null {
 }
 
 /**
- * Package designators, compared by WHAT THEY RESOLVE TO before how they read.
+ * Package designators, compared by the count they declare and then by tokens.
  *
  * `8-Pin SOIC`, `SOIC-8` and `SOIC (D) 8` are the same package written three
  * ways, and treating those as a disagreement would bury the real ones. Token
- * comparison handles those, but it cannot handle the vocabularies: a vendor
- * OUTLINE CODE (`D`, `DW`) and a prose designator (`SOIC`) share no tokens at
- * all, so `D (SOIC)` against `SOIC (8)` read as a contradiction and held a part
- * back from export for a difference that is purely notational.
+ * containment handles all three.
  *
- * So resolution comes first. Two designators that resolve to the same package
- * definition produce the SAME LAND PATTERN, which is the only sense in which a
- * package disagreement can matter here, and no synonym table is needed to say
- * so: the resolver already owns that vocabulary.
+ * The count comes FIRST because it is printed rather than inferred, and because
+ * it is the difference that matters most. Measured on ISO7841, where the code
+ * said `DW (16)` and the model said `16-pin SOIC`: those are a wide body and a
+ * narrow one, 4.3 mm apart in lead span, and the prose reading would have put
+ * every pad about 1.96 mm inboard of the leads. Tokens still separate them, and
+ * the comparison must keep reporting it.
  *
- * This deliberately does NOT collapse everything that reads alike. Measured on
- * ISO7841, where the code said `DW (16)` and the model said `16-pin SOIC`:
- *
- *   DW (16)      -> SOIC wide
- *   16-pin SOIC  -> SOIC narrow
- *
- * Those are 4.3 mm apart in lead span, the model's prose reading would have put
- * every pad about 1.96 mm inboard of the leads, and this comparison must keep
- * reporting it. Same resolved family is the test, not similar spelling.
+ * A family-table lookup used to sit between the two rules, collapsing designators
+ * that resolved to the same entry. It went with the table, and it was never the
+ * load-bearing part: either side failing to resolve already fell through to
+ * tokens, which is now the only path.
  */
 function samePackage(left: string, right: string, pinCount?: number | null): boolean {
   // A count printed in the designator itself outranks the record's, and two
@@ -93,15 +86,13 @@ function samePackage(left: string, right: string, pinCount?: number | null): boo
   const rightCount = declaredLeadCount(right);
   if (leftCount !== null && rightCount !== null && leftCount !== rightCount) return false;
 
-  const count = leftCount ?? rightCount ?? pinCount ?? null;
-  if (count !== null) {
-    const a = findPackageDefinition(left, count);
-    const b = findPackageDefinition(right, count);
-    // Only when BOTH resolve. One side resolving proves nothing about the other,
-    // and an unresolved designator falls through to the token rule below rather
-    // than being treated as agreement by default.
-    if (a.ok && b.ok) return a.definition.family === b.definition.family;
-  }
+  // A family-table lookup used to run here, treating two designators as the
+  // same package when both resolved to the same family entry. It was a
+  // refinement rather than the rule: either side failing to resolve fell through
+  // to the token comparison below, which is what every designator does now that
+  // the table is gone. The declared-count check above is the part that does the
+  // work, and it is the part that came off the printed designator rather than
+  // off a list of names.
 
   const tokens = (text: string) =>
     new Set(

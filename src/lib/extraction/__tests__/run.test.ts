@@ -209,32 +209,12 @@ test("the second pass does not resend the document it already read", async () =>
 // oracle. This pass exists to turn those refusals into answers.
 // ---------------------------------------------------------------------------
 
-test("pins left unanswered trigger a third pass on the page the model named", async () => {
-  // No render is possible here, so pass 2 never reaches the model and these two
-  // calls are pass 1 and pass 3. That isolates exactly what is under test.
-  const model = stub([
-    // Pass 1 refuses pins, as the real model does on a multi-package document,
-    // but says where the table is.
-    { values: {}, notes: ["two packages with different pin assignments"], pinTablePages: [1] },
-    { values: { pins: { value: [{ number: "1", name: "OUT", electricalType: "output" as const }], page: 1 } } }
-  ]);
-
-  const part = buildPartRecord(doc, "ACME555.pdf");
-  const run = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
-
-  assert.equal(model.seen.length, 2, "the pin question was asked");
-  const third = model.seen[1];
-  assert.deepEqual(third.pages.map((page) => page.page), [1], "only the page it named");
-  assert.ok(!third.fields.includes("manufacturer"), "and only the pin question");
-  assert.equal(third.images.length, 0, "text alone was enough in the measurement");
-  assert.ok((run?.part.pins.value ?? []).length > 0, "the pins arrive in the record");
-});
 
 test("pins already answered mean no pin question at all", async () => {
   // Conditional on purpose. A part the wider passes already read must not pay
   // for a question whose answer is in hand.
   const model = stub([
-    { values: { pins: { value: [{ number: "1", name: "OUT", electricalType: "output" as const }], page: 1 } }, pinTablePages: [1] }
+    { values: { pins: { value: [{ number: "1", name: "OUT", electricalType: "output" as const }], page: 1 } } }
   ]);
 
   const part = buildPartRecord(doc, "ACME555.pdf");
@@ -245,7 +225,7 @@ test("pins already answered mean no pin question at all", async () => {
 test("a pin-table page the document does not have is ignored", async () => {
   // Same rule the render list already follows: a page claim is checked against
   // the real document before anything is sent.
-  const model = stub([{ values: {}, pinTablePages: [99] }]);
+  const model = stub([{ values: {} }]);
 
   const part = buildPartRecord(doc, "ACME555.pdf");
   await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
@@ -253,32 +233,6 @@ test("a pin-table page the document does not have is ignored", async () => {
   assert.ok(!model.seen.some((r) => r.pages.length === 0), "and nothing was sent with no pages");
 });
 
-test("a narrow pin answer never displaces what the wider passes read", async () => {
-  // The wider passes saw the whole document and this one saw a page, so it fills
-  // gaps and does not overrule. Its own document, because the shared one lets
-  // the deterministic reader resolve the package, and a deterministic value
-  // outranks every model value regardless of which pass produced it.
-  const rad = datasheetTextFromPages([
-    "ACME777 Timer. ACME Semiconductor.",
-    "Radiation: TID 100krad(Si) typical. Some units screened to TID 300krad(Si).",
-    "PACKAGE OUTLINE. 8X 1.27 pitch."
-  ]);
-  const model = stub([
-    { values: { "radiation.tid": { value: "100krad(Si)", page: 2 } }, pinTablePages: [2] },
-    {
-      values: {
-        "radiation.tid": { value: "300krad(Si)", page: 2 },
-        pins: { value: [{ number: "1", name: "OUT", electricalType: "output" as const }], page: 2 }
-      }
-    }
-  ]);
-
-  const part = buildPartRecord(rad, "ACME777.pdf");
-  const run = await runExtraction(part, rad, NOT_A_PDF, model, "ACME777.pdf", "ACME777");
-  assert.equal(model.seen.length, 2, "the pin question was asked");
-  assert.equal(run?.part.radiation.tid.value, "100krad(Si)", "the wider pass keeps the field it answered");
-  assert.ok((run?.part.pins.value ?? []).length > 0, "and the narrow answer still fills the gap");
-});
 
 test("a failure on the pin question keeps everything already read", async () => {
   let call = 0;
@@ -288,7 +242,7 @@ test("a failure on the pin question keeps everything already read", async () => 
     extract: async () => {
       call += 1;
       if (call === 1) {
-        return { values: { manufacturer: { value: "ACME Semiconductor", page: 1 } }, pinTablePages: [1] };
+        return { values: { manufacturer: { value: "ACME Semiconductor", page: 1 } } };
       }
       throw new Error("pin question failed");
     }
@@ -297,4 +251,57 @@ test("a failure on the pin question keeps everything already read", async () => 
   const part = buildPartRecord(doc, "ACME555.pdf");
   const run = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
   assert.equal(run?.part.manufacturer.value, "ACME Semiconductor");
+});
+
+// ---------------------------------------------------------------------------
+// Pin tables per package, read in the pass that already has the document.
+//
+// Replaces a third model call. That pass existed because the model refused to
+// report pins when the part number did not say which package it meant, so a
+// narrow second question was asked about one page. The refusal was the thing to
+// fix: pass 1 already has the whole document and can just report what it found,
+// labelled by package. Two calls instead of three, and the answer is in hand
+// before anyone is asked to choose.
+// ---------------------------------------------------------------------------
+
+test("per-package pin tables are kept on the record, so choosing costs no call", async () => {
+  const model = stub([
+    {
+      values: {},
+      notes: ["the part number does not name a package"],
+      pinTablesByPackage: [
+        { packageType: "SOT23-5", pins: [{ number: "1", name: "OUT", electricalType: "unspecified" }] },
+        { packageType: "SC70-5", pins: [{ number: "1", name: "OUT", electricalType: "unspecified" }] }
+      ]
+    }
+  ]);
+
+  const part = buildPartRecord(doc, "ACME555.pdf");
+  const run = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
+
+  assert.equal(model.seen.length, 1, "one call, not two questions about pins");
+  assert.equal(run?.part.pinTablesByPackage?.length, 2, "both tables are on the record");
+  assert.deepEqual(
+    run?.part.pinTablesByPackage?.map((t) => t.packageType),
+    ["SOT23-5", "SC70-5"],
+    "kept separate and labelled, never merged into one"
+  );
+});
+
+test("a document with one pinout carries no per-package tables", async () => {
+  // Only populated where it means something. A single-package datasheet should
+  // not grow a list with one entry in it.
+  const model = stub([{ values: {} }]);
+  const part = buildPartRecord(doc, "ACME555.pdf");
+  const run = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
+  assert.equal(run?.part.pinTablesByPackage, undefined);
+});
+
+test("the pipeline makes at most two model calls", async () => {
+  // The count is the point. Three passes meant a workaround was living in the
+  // pipeline; two is the text pass and the render pass, both structural.
+  const model = stub([{ values: {}, pagesWorthRendering: [3] }, { values: {} }]);
+  const part = buildPartRecord(doc, "ACME555.pdf");
+  await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
+  assert.ok(model.seen.length <= 2, `expected at most 2 calls, saw ${model.seen.length}`);
 });
