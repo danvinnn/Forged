@@ -98,7 +98,6 @@ body {
 .num,
 .prov,
 .rev-value,
-.rev-alt,
 .pkg-name,
 .identity-facts dd,
 .ident-part,
@@ -543,11 +542,6 @@ button:disabled {
   font-size: 0.875rem;
 }
 
-.rev-alt {
-  font-size: 0.875rem;
-  color: var(--warn);
-}
-
 .rev-where {
   margin-left: auto;
   color: var(--ink-3);
@@ -602,12 +596,6 @@ button:disabled {
 
 .rev-correct input {
   width: 11rem;
-}
-
-.rev-compare {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.6rem;
 }
 
 /* --- rendered datasheet pages --------------------------------------------- */

@@ -437,6 +437,23 @@ export const partSchema = z.object({
   pinCount: extracted(z.number().int().positive()),
   pins: extracted(z.array(pinSchema)),
   /**
+   * One pin table per package, where the document describes more than one.
+   *
+   * On the SCHEMA and not only on the type, which is the half that was missing:
+   * `/api/export` validates the posted record with this schema, zod strips keys
+   * it does not know about, and the field would have been dropped on exactly the
+   * route that relabels a part as a sibling package. Adding it to the TypeScript
+   * type alone would have left `asPackage` unable to find the right table there
+   * while finding it everywhere else.
+   *
+   * Optional rather than defaulted: absent means the document described one
+   * pinout, which is a different statement from an empty list.
+   */
+  pinTablesByPackage: z
+    .array(z.object({ packageType: z.string().min(1).max(64), pins: z.array(pinSchema) }))
+    .max(16)
+    .optional(),
+  /**
    * The part has an exposed thermal pad, so no footprint can be built for it yet.
    *
    * Recorded on the RECORD and enforced at the FOOTPRINT rather than by throwing
@@ -450,34 +467,6 @@ export const partSchema = z.object({
    * Defaulted, so a record stored before this field existed is still valid.
    */
   exposedPad: z.boolean().default(false),
-  /**
-   * Fields where the code and the model read the page differently.
-   *
-   * Neither side wins here. The deterministic value stays on the record, because
-   * it is the one measured against the hand-read oracles (31/31 pin names, 24/24
-   * package families), and the disagreement is carried alongside it so a person
-   * can settle it with both pages in front of them.
-   *
-   * This is what makes asking the model about ALREADY-ANSWERED fields worth the
-   * tokens. Before it, a model reading a field the code had also read was thrown
-   * away unexamined, so the one case that matters, the code being confidently
-   * wrong, was invisible. Dimensions have no oracle at all and place copper.
-   */
-  conflicts: z
-    .array(
-      z.object({
-        field: z.string().min(1),
-        deterministic: z.object({ display: z.string(), page: z.number().int().positive().nullable() }),
-        model: z.object({ display: z.string(), page: z.number().int().positive().nullable() }),
-        // Defaulted, so a record written before this field existed still parses.
-        // Those records were built by the supersede path with the two readings
-        // the wrong way round, and there is no way to tell from the data which
-        // they were, so the default names the case that was always safe to
-        // assume: the record holds the deterministic reading.
-        holding: z.enum(["deterministic", "model"]).default("deterministic")
-      })
-    )
-    .default([]),
   dimensions: packageDimensionsSchema,
   radiation: radiationDataSchema,
   sourceFileName: z.string().min(1),
@@ -557,31 +546,6 @@ export type RadiationData = {
 export type PackageVariantRecord = z.infer<typeof packageVariantSchema>;
 
 /** One field, read two ways. Both sides carry the page so a reviewer can check both. */
-/**
- * Two readings of the same field that do not agree.
- *
- * `deterministic` and `model` mean exactly what they are named, ALWAYS. That
- * sounds too obvious to state, and it is stated because the opposite shipped:
- * the supersede path wrote the model's value into `deterministic` and the
- * code's into `model`, on the reasoning that the record now held the model's
- * value so it belonged in the "current" slot. The struct has no "current" slot.
- * Every reader, the review panel and the bench alike, took the names at face
- * value and showed both provenances BACKWARDS on exactly the fields where the
- * model had overruled the code.
- *
- * Which side the record currently holds is a SEPARATE question, so it gets a
- * separate field. It is required, so a new construction site cannot quietly
- * default to the wrong one.
- */
-export interface FieldConflict {
-  field: string;
-  /** What the deterministic reader read. Never the model's value. */
-  deterministic: { display: string; page: number | null };
-  /** What the model read. Never the code's value. */
-  model: { display: string; page: number | null };
-  /** Which of the two the record is currently carrying. */
-  holding: "deterministic" | "model";
-}
 
 export type PartRecord = {
   id: string;
@@ -607,8 +571,6 @@ export type PartRecord = {
   pins: Extracted<PinRecord[]>;
   /** True when a reader saw a non-numbered terminal. Blocks the footprint, not the pinout. */
   exposedPad: boolean;
-  /** Fields the code and the model read differently. Settled by a person, not by precedence. */
-  conflicts: FieldConflict[];
   dimensions: PackageDimensions;
   radiation: RadiationData;
   sourceFileName: string;
@@ -651,6 +613,16 @@ export interface ResolvedPart {
   vendorLandPattern: { page: number; valuesMm: number[] } | null;
   pinCount: number;
   pins: PinRecord[];
+  /**
+   * One pin table per package, where the document describes more than one.
+   *
+   * Carried through to generation so that RELABELLING a part as a sibling
+   * package can take that package's own pinout instead of the one above.
+   * `asPackage` already blanks every dimension when it relabels, precisely
+   * because they describe a different package; the pin table is the same kind
+   * of value and was the one thing carried across unchanged.
+   */
+  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[] }>;
   /** True when the part has an exposed thermal pad; `buildFootprintGeometry` refuses. */
   exposedPad: boolean;
   dimensions: {
@@ -692,7 +664,7 @@ export interface ResolvedPart {
 
 export type ResolveResult =
   | { ok: true; part: ResolvedPart }
-  | { ok: false; missing: string[]; untraceable?: string[]; unsettled?: string[] };
+  | { ok: false; missing: string[]; untraceable?: string[] };
 
 /**
  * Fields whose values become physical geometry rather than metadata.
@@ -732,26 +704,6 @@ export interface ResolveOptions {
    * lower-assurance workflow.
    */
   requireTraceableGeometry?: boolean;
-  /**
-   * What to do when the two readers disagree about a field.
-   *
-   * `"block"` holds the part for a person to settle, which is the behaviour this
-   * function has always had and the right one for sign-off work: nothing reaches
-   * copper that two readers read differently.
-   *
-   * `"flag"` generates from the merged value and leaves the disagreement on the
-   * record, visible in review. The default, because blocking was costing more
-   * correctness than it bought: measured on 56 unseen datasheets on 2026-08-14,
-   * 14 of them were held this way, and wherever the document itself could settle
-   * the argument the MODEL was right 11 times out of 11 while the deterministic
-   * reader was right none. Its mistakes were not marginal either, reading an
-   * 8-pin op-amp as a 14-pin DIP and a 48-pin MCU as 20 pins.
-   *
-   * So the block was mostly stopping correct answers on the say-so of a reader
-   * that was wrong. It is kept as a mode rather than deleted because the
-   * argument for it is real where a person signs the record.
-   */
-  onDisagreement?: "flag" | "block";
 }
 
 /**
@@ -788,33 +740,6 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
     if (untraceable.length > 0) return { ok: false, missing: [], untraceable };
   }
 
-  // An UNSETTLED disagreement blocks the bundle.
-  //
-  // Two readers looked at the document and returned different numbers for
-  // something that places copper. The record holds one of them, and which one is
-  // decided by a precedence rule rather than by evidence. Shipping on that is
-  // shipping a coin toss with a citation attached.
-  //
-  // This is also the control that makes model-first safe under prompt injection.
-  // A crafted document can, in principle, get a value onto the record; it cannot
-  // get one into a generated part without a person seeing both readings and both
-  // pages and choosing. Confirming or correcting the field in the review panel
-  // clears the conflict, which is what `user` and `user-confirmed` mean.
-  const unsettled = (part.conflicts ?? []).filter((conflict) => {
-    const field = conflict.field;
-    const settled = ["user", "user-confirmed"];
-    const at = field.startsWith("dimensions.")
-      ? part.dimensions[field.slice("dimensions.".length) as keyof PackageDimensions]
-      : (part as unknown as Record<string, Extracted<unknown>>)[field];
-    return !(at && at.method && settled.includes(at.method));
-  });
-  // Blocking is now a MODE. See `onDisagreement`. In `flag` mode the conflict
-  // stays on the record and in the review panel, so nothing goes silent; what
-  // changes is that it no longer withholds the part.
-  if (unsettled.length > 0 && (options.onDisagreement ?? "flag") === "block") {
-    return { ok: false, missing: [], untraceable: [], unsettled: unsettled.map((c) => c.field) };
-  }
-
   return {
     ok: true,
     part: {
@@ -827,6 +752,7 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
       vendorLandPattern: part.vendorLandPattern,
       pinCount: pinCount as number,
       pins,
+      pinTablesByPackage: part.pinTablesByPackage,
       exposedPad: part.exposedPad,
       dimensions: {
         bodyLengthMm: part.dimensions.bodyLengthMm.value,

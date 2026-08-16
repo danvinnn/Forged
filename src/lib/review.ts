@@ -47,18 +47,7 @@ export type ReviewReason =
    * user an export: `resolveForExport` refuses it, and before this the only
    * recourse was to re-parse and hope.
    */
-  | "unverifiable"
-  /**
-   * The code and the model read the page differently, and both claims check out
-   * against pages of this document.
-   *
-   * Ranked above everything else because it is the only item here backed by two
-   * independent readings rather than one uncertain one. Every other reason says
-   * "nobody has checked this"; this one says "two readers checked it and got
-   * different answers", which is the strongest signal available that something
-   * is actually wrong.
-   */
-  | "disagreement";
+  | "unverifiable";
 
 export interface ReviewItem {
   /** Dotted path into the record, e.g. `dimensions.leadSpanMm`. */
@@ -76,18 +65,6 @@ export interface ReviewItem {
   consequence: string;
   /** Whether the export is currently BLOCKED by this item. */
   blocking: boolean;
-  /**
-   * Present only on a `disagreement`: the other reading, and the page it came
-   * from, so the reviewer can open both and settle it in one look.
-   *
-   * `display` above holds the value ON THE RECORD and this holds the one that
-   * was NOT taken, which is the useful way round for a reviewer. Which reader
-   * produced which is read from the conflict's `holding`, NOT assumed: the
-   * record carries the model's value wherever the model outranked the code, and
-   * assuming otherwise attributed both readings to the wrong reader on exactly
-   * those fields. `source` below names the reader of the alternative.
-   */
-  alternative?: { display: string; page: number | null; source: "model" | "deterministic" };
 }
 
 /**
@@ -245,47 +222,6 @@ function reasonFor(field: Extracted<unknown>): ReviewReason | null {
  */
 export function collectReviewItems(part: PartRecord): ReviewItem[] {
   const items: ReviewItem[] = [];
-  const byField = new Map(REVIEWABLE.map((entry) => [entry.field, entry]));
-
-  // Disagreements first, and they are their own kind of item: the value is on
-  // the record and traceable, so no `reasonFor` check would ever surface it.
-  // Without this the strongest evidence we have that something is wrong is the
-  // one thing the panel does not mention.
-  // Defaulted at the point of use: this module reads records that arrive over
-  // the wire, including ones serialised before the field existed.
-  for (const conflict of part.conflicts ?? []) {
-    const entry = byField.get(conflict.field);
-    if (!entry) continue;
-    // A conflict a person already decided is not a question any more. Same rule
-    // the export gate uses, so the panel and the gate can never disagree about
-    // whether something is still open.
-    const method = fieldAt(part, conflict.field)?.method;
-    if (method === "user" || method === "user-confirmed") continue;
-    // Which reading the record actually holds, and which one is the road not
-    // taken. Read from `holding` rather than assumed to be the deterministic
-    // side; see the note on `alternative`.
-    const held = conflict.holding === "model" ? conflict.model : conflict.deterministic;
-    const other = conflict.holding === "model" ? conflict.deterministic : conflict.model;
-    items.push({
-      field: conflict.field,
-      label: entry.label,
-      display: held.display,
-      page: held.page,
-      snippet: null,
-      confidence: fieldAt(part, conflict.field)?.confidence ?? null,
-      reason: "disagreement",
-      consequence: entry.consequence,
-      // Not blocking. Both readings are cited, the record holds the one with an
-      // oracle behind it, and stopping an export over a difference the user has
-      // not looked at yet would make the safer behaviour the more annoying one.
-      blocking: false,
-      alternative: {
-        display: other.display,
-        page: other.page,
-        source: conflict.holding === "model" ? "deterministic" : "model"
-      }
-    });
-  }
 
   for (const entry of REVIEWABLE) {
     const field = fieldAt(part, entry.field);
@@ -317,7 +253,7 @@ export function collectReviewItems(part: PartRecord): ReviewItem[] {
   // second is rarer and more likely to be a real defect, and it is also the
   // cheapest to settle, because both pages are named.
   const order = REVIEWABLE.map((entry) => entry.field);
-  const rank = (item: ReviewItem) => (item.reason === "disagreement" ? 0 : item.blocking ? 1 : 2);
+  const rank = (item: ReviewItem) => (item.blocking ? 0 : 1);
   return items.sort((left, right) => {
     if (rank(left) !== rank(right)) return rank(left) - rank(right);
     return order.indexOf(left.field) - order.indexOf(right.field);
@@ -330,9 +266,6 @@ export function reviewPages(items: readonly ReviewItem[], limit = 3): number[] {
   for (const item of items) {
     // A disagreement is only settleable with BOTH pages, so both are counted.
     // Rendering one side of a contradiction is worse than rendering neither.
-    if (item.alternative?.page != null) {
-      counts.set(item.alternative.page, (counts.get(item.alternative.page) ?? 0) + 1);
-    }
     if (item.page === null) continue;
     counts.set(item.page, (counts.get(item.page) ?? 0) + 1);
   }

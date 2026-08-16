@@ -326,3 +326,35 @@ test("the aperture bound is a setting, because no published rule fixes it", asyn
     );
   }
 });
+
+/**
+ * The three line widths, transcribed from the same reference file.
+ *
+ * KLC F5.1/F5.2/F5.3 publish these and `SOIC-8_3.9x4.9mm_P1.27mm` uses exactly
+ * them. Mutation testing on 2026-08-16 found that changing the courtyard width
+ * from 0.05 to 0.2 left every test passing: this file compared WHERE the
+ * courtyard is and never how it is drawn, so a footprint that fails KiCad's own
+ * library checker would have shipped green.
+ */
+const REFERENCE_WIDTHS = { silk: 0.12, fab: 0.1, courtyard: 0.05 };
+
+test("the drawn lines are the widths the reference uses", async () => {
+  const { footprint } = await bundle();
+
+  const widthOn = (layer: string): number[] =>
+    [...footprint.matchAll(new RegExp(`\\(layer "${layer}"\\) \\(width ([\\d.]+)\\)`, "g"))].map((match) =>
+      Number(match[1])
+    );
+
+  const silk = widthOn("F\\.SilkS");
+  const courtyard = widthOn("F\\.CrtYd");
+  const fab = widthOn("F\\.Fab");
+
+  assert.ok(silk.length > 0, "silkscreen is drawn");
+  assert.ok(courtyard.length > 0, "a courtyard is drawn");
+  assert.ok(fab.length > 0, "a fabrication outline is drawn");
+
+  for (const width of silk) near(width, REFERENCE_WIDTHS.silk, "silkscreen width");
+  for (const width of courtyard) near(width, REFERENCE_WIDTHS.courtyard, "courtyard width");
+  for (const width of fab) near(width, REFERENCE_WIDTHS.fab, "fabrication width");
+});

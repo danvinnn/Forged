@@ -16,15 +16,6 @@ import { computeLandPattern, LandPatternError, type LeadDimensions } from "../ip
 // `landpattern.test.ts`, which drives the real generator off a datasheet's own
 // numbers.
 
-/** How close a computed land has to sit to the published one, in mm. */
-const TOLERANCE_MM = 0.05;
-
-function assertClose(actual: number, expected: number, what: string): void {
-  assert.ok(
-    Math.abs(actual - expected) <= TOLERANCE_MM,
-    `${what}: computed ${actual.toFixed(3)} mm, published ${expected.toFixed(3)} mm, difference ${Math.abs(actual - expected).toFixed(3)} mm exceeds the ${TOLERANCE_MM} mm tolerance`
-  );
-}
 
 test("a missing lead dimension refuses instead of defaulting", () => {
   // The failure this whole module exists to prevent. The old exporter defaulted

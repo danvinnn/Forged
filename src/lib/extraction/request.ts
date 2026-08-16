@@ -1,24 +1,8 @@
 import { renderPages, type RenderLimits } from "../pagerender";
 import type { DatasheetText } from "../pdftext";
 import type { PartRecord } from "../types";
-import { extractionFields, type ExtractionField, type ExtractionRequest, type PageSelection } from "./contracts";
+import { extractionFields, type ExtractionRequest, type PageSelection } from "./contracts";
 import { unresolvedFields } from "./merge";
-import { CROSS_CHECKED_FIELDS } from "./crosscheck";
-
-/**
- * Every field to ask about: the gaps, plus the ones worth contradicting.
- *
- * Not simply `extractionFields`. Asking about a radiation rating the code
- * already read spends output tokens on a value nothing generated depends on,
- * and the interruption budget belongs to the values that place copper. Identity
- * is excluded for the same reason: a disagreement about the manufacturer string
- * is not a reason to stop a board.
- */
-function crossCheckFields(unresolved: ExtractionField[]): ExtractionField[] {
-  const asked = new Set<ExtractionField>(unresolved);
-  for (const field of CROSS_CHECKED_FIELDS) asked.add(field);
-  return extractionFields.filter((field) => asked.has(field));
-}
 
 /**
  * The packages this document names, as the record already recorded them.
@@ -138,14 +122,18 @@ export function buildExtractionRequest(
 ): ExtractionRequest | null {
   const unresolved = unresolvedFields(part);
 
-  // Asked about EVERY field, not just the gaps.
+  // Asked about the GAPS, and only the gaps.
   //
-  // A model answer can still never overwrite a deterministic one. What changes
-  // is that an answer about an already-resolved field is now compared instead of
-  // discarded, so the code being confidently wrong becomes visible rather than
-  // silently preferred. That is the whole point: the dimension fields place
-  // copper and have no hand-read oracle behind them.
-  const fields = crossCheckFields(unresolved);
+  // This asked about every field for a while, so that a model answer could be
+  // compared against the deterministic parser's and a confidently wrong reading
+  // become visible. That comparison is gone with the parser: the only fields
+  // still arriving filled are the ones the USER supplied, `mergeModelValues`
+  // will not overwrite those, and asking about them buys an answer that is
+  // discarded on arrival. See the note above `alreadyAnswered` in `merge.ts`.
+  //
+  // Kept as a filter over `extractionFields` rather than using `unresolved`
+  // directly, because the contract's order is what the prompt is written in.
+  const fields = extractionFields.filter((field) => unresolved.includes(field));
   if (fields.length === 0) return null;
 
   const selection = wholeDocument(doc);

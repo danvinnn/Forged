@@ -7,7 +7,6 @@ import { buildPrompt } from "../models/prompt";
 import { extractDatasheetText, datasheetTextFromPages } from "../../pdftext";
 import { buildPartRecord } from "../../datasheet";
 import { unresolvedFields } from "../merge";
-import type { ExtractionField } from "../contracts";
 
 /**
  * What gets sent to the model.
@@ -108,37 +107,6 @@ test("the first pass asks the model which pages to render, and attaches none", (
 // hands. All three were invisible until pages started being rendered, because a
 // text-only model could not have used the drawing anyway.
 
-const DRAWING_FIELDS: ExtractionField[] = ["dimensions.pitchMm", "dimensions.bodyHeightMm"];
-const DRAWING_LIMITS = { maxPages: 6, maxCharsPerPage: 6000, maxTotalChars: 24_000 };
-
-
-test("a document with no resolved package offers its candidates to the model", () => {
-  const part = buildPartRecord(
-    datasheetTextFromPages([
-      "ACME476RG Microcontroller. Available in LQFP64, LQFP100 and LQFP144 packages."
-    ]),
-    "ACME476RG.pdf"
-  );
-  assert.equal(part.packageType.value, null, "fixture must leave the package unsettled");
-
-  const request = buildExtractionRequest(
-    part,
-    datasheetTextFromPages([
-      "ACME476RG Microcontroller. Available in LQFP64, LQFP100 and LQFP144 packages."
-    ]),
-    "ACME476RG.pdf",
-    "ACME476RG"
-  );
-
-  const prompt = buildPrompt(request!);
-  assert.match(prompt, /describes several packages/, "the candidates are named");
-  assert.match(prompt, /LQFP64/);
-  assert.match(
-    prompt,
-    /does not determine which of them it is, return null/,
-    "and refusing is still explicitly allowed"
-  );
-});
 
 
 test("a resolved package is a SUGGESTION the model may reject", () => {

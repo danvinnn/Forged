@@ -166,7 +166,6 @@ export function buildPartRecord(
       ? { page: printed.page, valuesMm: printed.dimensions.map((dimension) => dimension.valueMm) }
       : null,
     exposedPad: false,
-    conflicts: [],
     pinCount: unknown<number>(),
     pins: unknown<PinRecord[]>(),
     dimensions: {

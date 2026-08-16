@@ -1,8 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { buildPartRecord, parseDatasheetPdf } from "../datasheet";
+import { buildPartRecord } from "../datasheet";
 import { datasheetTextFromPages } from "../pdftext";
 import { partSchema, resolveForExport } from "../types";
 

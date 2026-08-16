@@ -336,3 +336,54 @@ test("every emitted number is finite", async () => {
     assert.doesNotMatch(footprint, /NaN|Infinity|undefined|null/, `${shape.label}: unprintable value emitted`);
   }
 });
+
+test("every surface-mount land carries solder paste", async () => {
+  // THE HOLE MUTATION TESTING FOUND, on 2026-08-16.
+  //
+  // Deleting `F.Paste` from the ordinary SMD pad line left all 595 tests
+  // passing. That is not a cosmetic defect: no paste aperture means no solder is
+  // printed for that land, so the part is placed and never soldered. Every board
+  // built from the library would come back with every part loose.
+  //
+  // Nothing caught it because the paste assertions in this repo were all about
+  // the THERMAL pad, where paste deliberately does not follow copper. The
+  // ordinary case, which is every land on every part, was covered by nothing.
+  for (const { shape, footprint } of await everyFootprint()) {
+    const lands = [...footprint.matchAll(/\(pad "(\d+)" smd \w+ \(at [^)]*\) \(size [^)]*\) ([^\n]*)/g)];
+    assert.ok(lands.length > 0, `${shape.label}: no lands at all`);
+    for (const [, number, rest] of lands) {
+      // The exposed thermal pad is the ONE land that must not be pasted 1:1; it
+      // gets its own aperture array instead, asserted separately above.
+      if (shape.exposedPad && number === String(shape.pinCount + 1)) continue;
+      assert.match(
+        rest,
+        /\(layers "F\.Cu" "F\.Paste" "F\.Mask"\)/,
+        `${shape.label}: land ${number} has no solder paste, so nothing would solder it`
+      );
+    }
+  }
+});
+
+test("a through-hole pad never carries paste, and a surface-mount one always does", async () => {
+  // The other half of the same rule, and the reason it cannot simply be "every
+  // pad has paste": a plated hole is soldered by wave or by hand, and paste in
+  // the hole fouls it. The two mountings are opposite and both are load-bearing.
+  const throughHole = await createExportZip(
+    partFor({
+      label: "dip-8",
+      pinCount: 8,
+      pitchMm: 2.54,
+      sides: 2,
+      landLengthMm: 1.5,
+      landWidthMm: 1.5,
+      landSpanMm: 7.62,
+      bodyMm: [9.27, 6.35]
+    }),
+    "kicad"
+  ).then(async (bundle) => {
+    const zip = await JSZip.loadAsync(bundle.buffer);
+    const name = Object.keys(zip.files).find((file) => file.endsWith(".kicad_mod"))!;
+    return zip.files[name].async("string");
+  });
+  assert.doesNotMatch(throughHole, /thru_hole[^\n]*F\.Paste/, "a hole is not pasted");
+});

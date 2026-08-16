@@ -366,7 +366,11 @@ test("an odd lead count refuses rather than mis-placing the shorter row", async 
   // Nine rather than five so the family's own 8-to-16 range check does not fire
   // first. Either way it is a refusal; this asserts it is refused for the RIGHT
   // reason, because the row placement is what would have been wrong.
-  const part = soicPart({ pinCount: 9, pins: pins(9) });
+  //
+  // The designator has to declare nine too. It read "8-pin SOIC" while the
+  // record carried nine pins, so the lead-count guard refused it first and this
+  // test passed on a refusal about the wrong thing.
+  const part = soicPart({ packageType: "9-pin SOIC", pinCount: 9, pins: pins(9) });
 
   await assert.rejects(
     () => createExportZip(part, "kicad"),
@@ -499,7 +503,11 @@ test("a quad courtyard clears the lands on all four sides", async () => {
 function vqfnPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
   return soicPart({
     partNumber: "ACME8420",
-    packageType: "VQFN-16",
+    // EIGHT, matching `soicPart`'s pin table. This said `VQFN-16` while the
+    // record carried eight pins, which is the contradiction the lead-count guard
+    // in `buildFootprintGeometry` now refuses. The fixture was wrong, not the
+    // guard: a footprint built from it would have been an eight-pad VQFN-16.
+    packageType: "VQFN-8",
     exposedPad: true,
     dimensions: { ...soicPart().dimensions, thermalPadLengthMm: 2.1, thermalPadWidthMm: 1.8 },
     ...overrides
@@ -534,7 +542,7 @@ test("supplying the pad size builds the part, with no second read of the datashe
 
 test("a sized exposed pad becomes a real land, numbered after the leads", async () => {
   const files = await filesFrom(vqfnPart());
-  const footprint = files.get("acme8420.pretty/acme8420-vqfn-16.kicad_mod");
+  const footprint = files.get("acme8420.pretty/acme8420-vqfn-8.kicad_mod");
   assert.ok(footprint, "the export succeeds once the pad can be built");
 
   // Pad 9 on an 8-pin part: the convention every CAD tool expects.
@@ -550,7 +558,7 @@ test("the thermal land's paste is an array, covering well under 100%", async () 
   // of solder, lifting the perimeter leads clean off their lands, and the excess
   // escapes as balls. IPC-7093 puts the target between 50% and 80%.
   const files = await filesFrom(vqfnPart());
-  const footprint = files.get("acme8420.pretty/acme8420-vqfn-16.kicad_mod")!;
+  const footprint = files.get("acme8420.pretty/acme8420-vqfn-8.kicad_mod")!;
 
   // An EMPTY pad number, which is how the reference library spells a paste-only
   // aperture: reusing the thermal pad's number declares each aperture a second

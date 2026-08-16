@@ -19,7 +19,7 @@ const MARKER = "\u0001Sh33tJ5";
 
 function paths(library: Buffer): string[] {
   const container = CFB.read(library, { type: "buffer" });
-  return container.FullPaths.filter((path, index) => container.FileIndex[index].type !== 0);
+  return container.FullPaths.filter((_path, index) => container.FileIndex[index].type !== 0);
 }
 
 test("the container holds exactly the streams it was given", () => {

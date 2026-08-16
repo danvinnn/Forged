@@ -18,6 +18,7 @@ import {
   type ThermalPadLand
 } from "./ipc7351";
 import { landDisagreements } from "./vendorland";
+import { declaredLeadCount, pinTableFor } from "./packagevariants";
 import {
   type FootprintGeometry,
   type Pad,
@@ -586,6 +587,37 @@ function buildFootprintGeometry(
   supplied?: SuppliedDimensions
 ): FootprintGeometry {
   part = withSupplied(part, supplied);
+
+  // THE PACKAGE NAME AND THE PIN TABLE HAVE TO AGREE.
+  //
+  // A designator that states its own lead count is a fact about the package, and
+  // a pin table with a different number of rows belongs to a different one.
+  // Building from the pair produces a footprint with the wrong number of pads
+  // under the right name, which is the defect this product can least afford: it
+  // looks entirely ordinary in CAD and no confidence check covers it, because
+  // every check runs on the inputs and the inputs are individually fine.
+  //
+  // Placed here rather than at any of the three call sites, because all three
+  // reached it: the package chooser, `/api/export` with a `packageType`
+  // override, and the UI relabel, which until 2026-08-16 answered a package
+  // click with "the pinout was already read, so it was kept". `asPackage` now
+  // swaps in the right table where the document printed one; this refuses what
+  // is left rather than trusting that it did.
+  //
+  // `declaredLeadCount` answers null wherever the number in a name is not a lead
+  // count, which is what stops this refusing correct parts: SOT-223, TO-220,
+  // TO-92, SOT-563, SOD-123 and 2N2222 all answer null.
+  const declared = declaredLeadCount(part.packageType);
+  if (declared !== null && declared !== part.pinCount) {
+    throw new FootprintUnavailableError(
+      `${part.packageType} is a ${declared}-lead package and the pin table read from this datasheet has ` +
+        `${part.pinCount} pins, so the two describe different packages. This document covers several, and the ` +
+        `pinout on the record belongs to one of the others. Re-read the datasheet for ${part.packageType} to ` +
+        `get its own pinout; no footprint is generated from a pin table that is not this package's.`,
+      []
+    );
+  }
+
   // An exposed thermal pad is laid out when its size is known, and refused when
   // it is not. It is a mandatory soldered feature: the numbered lands alone are
   // a footprint the board house builds wrong.
@@ -1736,9 +1768,28 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
   const blank = Object.fromEntries(
     Object.keys(part.dimensions).map((key) => [key, null])
   ) as ResolvedPart["dimensions"];
+  // THE PIN TABLE IS PACKAGE DATA TOO.
+  //
+  // Everything below this line was already understood: those values were read
+  // off the drawings for ONE package and describe the wrong pages against a
+  // different designator, so they are dropped. The pin table is exactly the same
+  // kind of value and was the one thing carried across unchanged.
+  //
+  // That is not a hypothetical. Measured over the cached hold-out answers on
+  // 2026-08-16, 21 of the 56 cached documents describe more than one package with
+  // its own pin table and TEN of them differ in LEAD COUNT: an ADS1256 is an SSOP-20 or
+  // an SSOP-28, an SN74HC595 a 16-pin SOIC or a 20-pin FK, an LT1013 an 8, 14 or
+  // 16 lead part. Relabelling carried twenty pins into a twenty-eight pin
+  // package and built a twenty-pad footprint under its name.
+  //
+  // Where the document printed a table for THIS package, it replaces the one
+  // above. Where it did not, the pins are left alone and the count check in
+  // `buildFootprintGeometry` refuses anything that still contradicts.
+  const table = pinTableFor(part.pinTablesByPackage, designator);
   return {
     ...part,
     packageType: designator,
+    ...(table ? { pins: table.pins, pinCount: table.pins.length } : {}),
     packageOutlineCode: null,
     jedecOutline: null,
     vendorLandPattern: null,

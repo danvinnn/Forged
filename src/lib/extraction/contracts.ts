@@ -229,25 +229,6 @@ export interface ExtractionResult {
    */
   pagesWorthRendering?: number[];
   /**
-   * The page(s) carrying the PIN TABLE for the requested part, named by the
-   * model after it has read the whole document.
-   *
-   * Separate from `pagesWorthRendering`, which is a request for DRAWINGS. The
-   * two were conflated once, on the assumption that the pages a model wants
-   * rendered would include its pinout, and the measurement said otherwise:
-   * INA240 asked for pages 33, 34, 36 and 37, all mechanical drawings, while
-   * its pin table is on pages 2 to 3. A narrow pin question aimed at the render
-   * list therefore read nothing at all.
-   *
-   * Why the model is asked instead of a locator being written: measured on
-   * 2026-08-13, asking the whole document for pins returned an answer on 2 of
-   * 14 parts, because a datasheet covering several packages has several
-   * pinouts and the model correctly declines to pick. Asked about ONE page it
-   * answered 10 of 13 exactly, because one page is one package's pin table. The
-   * two attempts to find that page WITHOUT the model both failed: a heading
-   * regex sent AD590 to a drawing, and the render list sent INA240 to one.
-   */
-  /**
    * A pin table for EACH package the document describes, kept separate.
    *
    * Replaces `pinTablePages` and the third model call that went with it. That

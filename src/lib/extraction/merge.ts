@@ -1,7 +1,6 @@
 import type { DatasheetText } from "../pdftext";
-import { pinElectricalTypes, type Citation, type Extracted, type ExtractionMethod, type FieldConflict, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
+import { pinElectricalTypes, type Citation, type Extracted, type ExtractionMethod, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
 import { extractionFields, type ExtractionField, type ExtractionResult, type ModelValue } from "./contracts";
-import { CROSS_CHECKED_FIELDS, displayValue, valuesAgree } from "./crosscheck";
 import { citableText, quarantinedRegions } from "./untrusted";
 
 /**
@@ -390,75 +389,44 @@ export interface MergeOutcome {
  *    when the claim was verified against the page.
  */
 /**
- * Records a disagreement, but only one worth a person's time.
+ * Whether a value already on the record is the USER'S, and so not the model's to
+ * overwrite.
  *
- * Three things have to hold before a difference is reported, and each was added
- * because without it the list fills with noise and a real conflict gets clicked
- * past:
+ * ## What this replaced, and why it shrank to one line
  *
- * - the field must be one that places copper or wires a symbol
- * - the two readings must actually differ, by `valuesAgree`, which knows that
- *   `SOIC-8` and `8-Pin SOIC` are the same package
- * - the model's page claim must CHECK OUT against the document
+ * There used to be a cross-check here: a 217-line module comparing the
+ * deterministic parser's reading of thirteen fields against the model's,
+ * recording disagreements as `conflicts`, holding parts for review, and
+ * reporting a disagreement count in both benches.
  *
- * The last one matters most. An unverifiable model claim is not evidence that
- * the code is wrong, it is a claim about a page that does not say what the model
- * says it says, and putting that in front of a user as a contradiction would
- * spend their attention on a hallucination.
+ * It stopped being able to do anything when the parser was deleted. Comparing
+ * two readers needs two readers, and `extractPartRecord` now fills exactly two
+ * fields: `partNumber` from the file the user named, and `packageType` from the
+ * package the user picked. The other eleven cross-checked fields are
+ * permanently null, and `valuesAgree` treats a null side as agreement, so the
+ * comparison could not fire. It reported "0 disagreements on 0/56 parts", which
+ * reads like a pass and means nothing was examined.
+ *
+ * What was NOT purely reporting, and is kept here, is the precedence: a field
+ * that already had a value was only replaced when the model OUTRANKED it, and
+ * otherwise the model's reading was dropped. That survives as one line: a value
+ * already on the record is not the model's to overwrite.
+ *
+ * ## One deliberate behaviour change, stated rather than absorbed
+ *
+ * Under the old rule the model COULD displace a cross-checked field, and
+ * `packageType` was cross-checked. The only way `packageType` is non-null now is
+ * that the user picked it, so that path meant a model reading could silently
+ * replace the package a user chose. It no longer can. The user chose from a list
+ * this product generated out of their own document, and that choice is the more
+ * authoritative of the two.
+ *
+ * If a model disagreeing with that choice turns out to be worth surfacing, it is
+ * a comparison of two values at one call site, to be written then rather than
+ * kept alive as a module against the possibility.
  */
-/**
- * Whether the model's reading should replace the code's, and what it displaces.
- *
- * Returns the displaced reading when the model wins, `null` when it does not.
- * Three things have to hold, and the third is the one that keeps the product's
- * traceability guarantee intact under model-first:
- *
- * - the field is one of the cross-checked ones, so identity and radiation are
- *   untouched by a precedence change made for GEOMETRY reasons
- * - the two readings actually differ, by `valuesAgree`
- * - the model's page claim VERIFIES against the document
- *
- * Without the last, "model-first" would mean an unverifiable assertion beating a
- * value someone can find on a page, which is the opposite of what a record
- * signed off for flight is meant to be.
- */
-function modelOutranks(
-  doc: DatasheetText,
-  field: ExtractionField,
-  existing: Extracted<unknown>,
-  claimed: ModelValue,
-  pinCount: number | null
-): FieldConflict["deterministic"] | null {
-  if (!CROSS_CHECKED_FIELDS.includes(field)) return null;
-  if (valuesAgree(field, existing.value, claimed.value, pinCount)) return null;
-  if (!verifyCitation(doc, claimed)) return null;
-  return { display: displayValue(existing.value), page: existing.citation?.page ?? null };
-}
-
-function recordConflict(
-  merged: PartRecord,
-  doc: DatasheetText,
-  field: ExtractionField,
-  existing: Extracted<unknown>,
-  claimed: ModelValue,
-  pinCount: number | null
-): void {
-  if (!CROSS_CHECKED_FIELDS.includes(field)) return;
-  if (valuesAgree(field, existing.value, claimed.value, pinCount)) return;
-
-  const citation = verifyCitation(doc, claimed);
-  if (!citation) return;
-
-  merged.conflicts = [
-    ...merged.conflicts,
-    {
-      field,
-      deterministic: { display: displayValue(existing.value), page: existing.citation?.page ?? null },
-      model: { display: displayValue(claimed.value), page: citation.page },
-      // The model did not outrank here, so the record kept the code's reading.
-      holding: "deterministic"
-    }
-  ];
+function alreadyAnswered(existing: Extracted<unknown>): boolean {
+  return existing.value !== null;
 }
 
 export function mergeModelValues(
@@ -477,8 +445,6 @@ export function mergeModelValues(
   const filled: ExtractionField[] = [];
   const uncited: ExtractionField[] = [];
   const rejected: Array<{ field: ExtractionField; reason: string }> = [];
-  /** Readings the model displaced, kept so a swap is visible rather than silent. */
-  const supersededBy = new Map<ExtractionField, FieldConflict["deterministic"]>();
 
   for (const field of extractionFields) {
     const claimed = result.values[field];
@@ -508,17 +474,8 @@ export function mergeModelValues(
     // traced to a page. Model-first means the model wins among readings that can
     // both be checked, not that assertion beats evidence.
     const existing = fieldAt(merged, field);
-    if (existing.value !== null) {
-      const displaced = modelOutranks(doc, field, existing, claimed, merged.pinCount.value);
-      if (!displaced) {
-        recordConflict(merged, doc, field, existing, claimed, merged.pinCount.value);
-        continue;
-      }
-      // Fall through: the model's reading replaces the record's, and the reading
-      // it displaced is kept beside it so the swap is visible and reversible in
-      // the review panel rather than silent.
-      supersededBy.set(field, displaced);
-    }
+    // A value already on the record is not the model's to overwrite. See above.
+    if (alreadyAnswered(existing)) continue;
 
     // A pin table is coerced to the record contract and held to the same
     // gap-free 1..N proof the deterministic readers must pass. A table that
@@ -622,18 +579,6 @@ export function mergeModelValues(
     //
     // Recorded only after the value is actually stored, so a row rejected
     // further up never claims to have superseded anything.
-    const displaced = supersededBy.get(field);
-    if (displaced) {
-      merged.conflicts = [
-        ...merged.conflicts,
-        {
-          field,
-          deterministic: displaced,
-          model: { display: displayValue(value), page: citation?.page ?? null },
-          holding: "model"
-        }
-      ];
-    }
   }
 
   if (filled.length > 0) {

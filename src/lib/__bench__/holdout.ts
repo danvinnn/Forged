@@ -39,7 +39,7 @@ import { join } from "node:path";
 import { extractPartRecord } from "../datasheet";
 import { makeExtractionModel, runExtraction } from "../extraction";
 import { resolveForExport, type PartRecord } from "../types";
-import { createExportZip, FootprintUnavailableError } from "../exporters";
+import { createExportZip, packageOptions, FootprintUnavailableError, type RequiredInput } from "../exporters";
 import {
   cachingModel,
   cacheSize,
@@ -242,6 +242,80 @@ function classify(record: PartRecord): string {
   return "read";
 }
 
+
+/**
+ * What the USER would actually be able to get, which is not what this measured
+ * before.
+ *
+ * The bench used to call `createExportZip` on the record and count a success.
+ * The product does not do that. It calls `packageOptions`, which runs the real
+ * footprint build once per package the document offers, and shows the user a
+ * chooser saying which of them work. On a family datasheet those are different
+ * questions with different answers: a part whose record resolved to the SOIC can
+ * still offer a working QFN, and the old measure could not see it.
+ *
+ * So SHIPS here is: can the user obtain at least one library without answering a
+ * question. Two routes count, and they are the two the product actually offers:
+ *
+ *   1. the record exports as it stands, which is what happens when the document
+ *      names one package and there is no choice to make
+ *   2. some offered package exports
+ *
+ * No model calls. `packageOptions` is pure generation over a record already
+ * read, so this costs nothing to re-measure from cache.
+ */
+async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: string }> {
+  const resolved = resolveForExport(record);
+  if (!resolved.ok) {
+    // A part `resolveForExport` declines never reached the exporter, so it was
+    // landing in NEITHER bucket: ten parts of one run were invisible, and SHIPS
+    // looked like it had regressed when the parts were in fact being HELD. A
+    // refusal nobody can see is the one kind mistaken for a coverage loss.
+    const why =
+      resolved.untraceable && resolved.untraceable.length > 0
+        ? `held: uncitable ${[...new Set(resolved.untraceable)].join(",")}`
+        : `held: missing ${resolved.missing.join(",")}`;
+    return { ships: false, why };
+  }
+
+  // ROUTE ONE: the record as it stands, which is what the user gets when the
+  // document names one package and there is no choice to make.
+  let direct: FootprintUnavailableError | null = null;
+  try {
+    await createExportZip(resolved.part, "kicad");
+    return { ships: true, why: "" };
+  } catch (error) {
+    if (!(error instanceof FootprintUnavailableError)) throw error;
+    direct = error;
+  }
+
+  // ROUTE TWO: whatever the chooser offers. Empty when the document names no
+  // alternatives, which is why route one's refusal is kept rather than replaced.
+  const choice = packageOptions(record);
+  if (choice.ok && choice.options.some((option) => option.status === "ships")) {
+    return { ships: true, why: "" };
+  }
+
+  // The SMALLEST question set across every route, because that is the friction
+  // the product actually imposes: the user takes the cheapest path on offer.
+  const asks: RequiredInput[][] = choice.ok
+    ? choice.options.filter((option) => option.status === "needs-input").map((option) => option.needs)
+    : [];
+  if (direct.needs.length > 0) asks.push(direct.needs);
+
+  if (asks.length === 0) {
+    // Nothing anywhere is answerable. Prefer route one's own words: it is about
+    // the package actually read, and an option's reason is about a sibling.
+    const unsupported = choice.ok ? choice.options.find((option) => option.status === "unsupported") : undefined;
+    return {
+      ships: false,
+      why: `unsupported: ${(direct.reason ?? unsupported?.reason ?? "no land pattern").slice(0, 60)}`
+    };
+  }
+  const fewest = asks.reduce((best, needs) => (needs.length < best.length ? needs : best));
+  return { ships: false, why: `needs ${fewest.map((need) => need.field).join(",")}` };
+}
+
 async function main(): Promise<void> {
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
 
@@ -287,8 +361,6 @@ async function main(): Promise<void> {
   const shipRefusals = new Map<string, string[]>();
   /** Which fields the model filled that the parser could not, per part. */
   const modelFilled = new Map<string, string[]>();
-/** Fields where the code and the model both answered and disagreed. */
-const modelConflicts = new Map<string, PartRecord["conflicts"]>();
   /** Fields the model answered in a shape or with a citation that failed the check. */
   const modelRejected = new Map<string, string[]>();
 
@@ -325,7 +397,6 @@ const modelConflicts = new Map<string, PartRecord["conflicts"]>();
             );
             if (outcome) {
               record = outcome.part;
-              if (outcome.part.conflicts.length > 0) modelConflicts.set(part.partNumber, outcome.part.conflicts);
               if (outcome.filled.length > 0) modelFilled.set(part.partNumber, outcome.filled);
               if (outcome.rejected.length > 0) {
                 modelRejected.set(part.partNumber, outcome.rejected.map((entry) => entry.field));
@@ -359,32 +430,9 @@ const modelConflicts = new Map<string, PartRecord["conflicts"]>();
     if (reason === "read") {
       read += 1;
       kind.read += 1;
-      const resolved = resolveForExport(record);
-      if (resolved.ok) {
-        try {
-          await createExportZip(resolved.part, "kicad");
-          ships += 1;
-        } catch (error) {
-          const why =
-            error instanceof FootprintUnavailableError && error.needs.length > 0
-              ? `needs ${error.needs.map((n) => n.field).join(",")}`
-              : "no land pattern";
-          shipRefusals.set(why, [...(shipRefusals.get(why) ?? []), part.partNumber]);
-        }
-      } else {
-        // A part `resolveForExport` declines never reached the exporter, so it
-        // was landing in NEITHER bucket: ten parts of this run were invisible,
-        // and SHIPS looked like it had regressed when the parts were in fact
-        // being HELD for review. A refusal nobody can see is the one kind that
-        // gets mistaken for a coverage loss.
-        const why =
-          resolved.unsettled && resolved.unsettled.length > 0
-            ? `held: code and model disagree (${[...new Set(resolved.unsettled)].join(",")})`
-            : resolved.untraceable && resolved.untraceable.length > 0
-              ? `held: uncitable ${[...new Set(resolved.untraceable)].join(",")}`
-              : `held: missing ${resolved.missing.join(",")}`;
-        shipRefusals.set(why, [...(shipRefusals.get(why) ?? []), part.partNumber]);
-      }
+      const outcome = await shipOutcome(record);
+      if (outcome.ships) ships += 1;
+      else shipRefusals.set(outcome.why, [...(shipRefusals.get(outcome.why) ?? []), part.partNumber]);
     }
     byKind.set(part.kind, kind);
   }
@@ -431,21 +479,6 @@ const modelConflicts = new Map<string, PartRecord["conflicts"]>();
     for (const fields of modelFilled.values()) {
       for (const field of fields) byField.set(field, (byField.get(field) ?? 0) + 1);
     }
-    // The number that decides whether the model should ever outrank the code.
-    // Every row here is a field where both sides answered, both cited a real
-    // page, and they disagreed. Each one has to be settled by hand against the
-    // datasheet; there is no automatic verdict.
-    const conflictCount = [...modelConflicts.values()].reduce((sum, list) => sum + list.length, 0);
-    console.log(`\nCROSS-CHECK: ${conflictCount} disagreement(s) on ${modelConflicts.size}/${cached} parts`);
-    for (const [partNumber, list] of modelConflicts) {
-      for (const conflict of list) {
-        console.log(
-          `  ${partNumber} ${conflict.field}: code ${conflict.deterministic.display} (p${conflict.deterministic.page}) ` +
-            `vs model ${conflict.model.display} (p${conflict.model.page})`
-        );
-      }
-    }
-
     console.log(`\nMODEL: filled a field on ${modelFilled.size}/${cached} parts`);
     for (const [field, count] of [...byField].sort((a, b) => b[1] - a[1])) {
       console.log(`  ${String(count).padStart(3)}  ${field}`);

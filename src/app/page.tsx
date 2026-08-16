@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { isUntraceable } from "../lib/provenance";
 import type { Extracted, ExportFormat, LeadWidth, PartRecord, PinRecord } from "../lib/types";
+// Runtime import, and safe in the browser bundle: `packagevariants.ts` imports
+// nothing at all and is pure string work over designators.
+import { declaredLeadCount, pinTableFor } from "../lib/packagevariants";
 // Type-only import: erased at compile time, so no retrieval-layer runtime code
 // (node:crypto, the resolvers) is pulled into the client bundle.
 import type { DeploymentMode } from "../lib/retrieval";
@@ -68,7 +71,6 @@ const defaultPart: PartRecord = {
   packageVariants: [],
   vendorLandPattern: null,
   exposedPad: false,
-  conflicts: [],
   pinCount: nothing<number>(),
   pins: nothing<PinRecord[]>(),
   dimensions: {
@@ -463,16 +465,46 @@ export default function HomePage() {
   }
 
   /**
-   * Answers a package choice by reading the datasheet AGAIN with that package.
+   * Answers a package choice, re-reading the datasheet only when it has to.
    *
-   * Two cases do not re-read: the source is no longer to hand, or the record is
-   * already complete. A re-read can only take a working pinout away, and a
-   * complete record is one the user can already export, so the click means
-   * "label it this" and is honoured as written.
+   * ## Keeping the pinout was wrong on exactly the documents this button is for
+   *
+   * This used to relabel the record and keep the pins whenever the record was
+   * complete, on the reasoning that a re-read can only take a working pinout
+   * away. That holds for a document with one pinout. This button only appears
+   * when the document describes SEVERAL, and their pinouts differ: an ADS1256 is
+   * an SSOP-20 or an SSOP-28, an LT1013 an 8, 14 or 16 lead part. Relabelling a
+   * twenty-pin reading as an SSOP-28 produced a record claiming twenty pins in a
+   * twenty-eight pin package, and the status line said the pinout had been kept
+   * as though that were a courtesy. The lead count was on screen beside the
+   * button the whole time.
+   *
+   * So there are three cases, and only the middle one is new:
+   *
+   *   1. the document gave THIS package its own pin table -> take it, no re-read
+   *   2. the pins we hold contradict the package's own lead count -> re-read
+   *   3. nothing contradicts -> relabel, as before
    */
   async function handlePackageChoice(designator: string) {
-    const alreadyComplete = (part.pins.value?.length ?? 0) > 0 && part.pinCount.value !== null;
-    if (alreadyComplete) {
+    const held = part.pins.value ?? [];
+    const complete = held.length > 0 && part.pinCount.value !== null;
+
+    const table = pinTableFor(part.pinTablesByPackage, designator);
+    if (table) {
+      setPart({
+        ...part,
+        packageType: userEdited(designator),
+        pins: userEdited(table.pins),
+        pinCount: userEdited(table.pins.length)
+      });
+      setStatus(`Package set to ${designator}, with the ${table.pins.length}-pin table this datasheet prints for it.`);
+      return;
+    }
+
+    const declared = declaredLeadCount(designator);
+    const contradicts = complete && declared !== null && declared !== part.pinCount.value;
+
+    if (complete && !contradicts) {
       setPart({ ...part, packageType: userEdited(designator) });
       setStatus(`Package set to ${designator}. The pinout was already read, so it was kept.`);
       return;
@@ -814,7 +846,6 @@ export default function HomePage() {
                   {review.map((item) => {
                     const open = openReview === item.field;
                     const image = imageFor(item.page);
-                    const alt = item.alternative ? imageFor(item.alternative.page) : undefined;
                     return (
                       <li key={item.field} className={`rev${item.blocking ? " rev-block" : ""}`}>
                         <button
@@ -829,7 +860,6 @@ export default function HomePage() {
                           <span className="rev-caret">{open ? "▾" : "▸"}</span>
                           <span className="rev-label">{item.label}</span>
                           <span className="rev-value">{item.display}</span>
-                          {item.alternative && <span className="rev-alt">vs {item.alternative.display}</span>}
                           <span className="rev-where">{item.page ? `p${item.page}` : "no page"}</span>
                         </button>
 
@@ -861,14 +891,7 @@ export default function HomePage() {
                               </div>
                             </div>
                             <div className="rev-right">
-                              {item.alternative ? (
-                                <div className="rev-compare">
-                                  <PageImage image={image} caption="On the record" page={item.page} />
-                                  <PageImage image={alt} caption="The other reading" page={item.alternative.page} />
-                                </div>
-                              ) : (
-                                <PageImage image={image} caption="Cited page" page={item.page} />
-                              )}
+                              <PageImage image={image} caption="Cited page" page={item.page} />
                             </div>
                           </div>
                         )}

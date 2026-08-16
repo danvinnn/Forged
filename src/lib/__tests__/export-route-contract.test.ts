@@ -54,7 +54,6 @@ function exportablePart(
     packageVariants: [],
   vendorLandPattern: null,
   exposedPad: false,
-  conflicts: [],
     pinCount: citedValue(pinCount),
     pins: citedValue(pins(pinCount)),
     dimensions: {

@@ -496,3 +496,48 @@ export function findOrderablePackages(text: string, partNumber: string): Package
 
   return found;
 }
+
+/**
+ * The pin table belonging to ONE package of a family datasheet.
+ *
+ * ## The defect this closes
+ *
+ * A document describing several packages returns one pin table per package, and
+ * the record separately carries a single `pins` answer for whichever package the
+ * reading settled on. Relabelling the part as a sibling kept that single answer:
+ * the package chooser offered every package the document names, `asPackage`
+ * blanked every dimension because they describe the wrong package, and then
+ * handed the wrong package's PINS to the generator. The UI did the same thing
+ * more directly, replying "the pinout was already read, so it was kept".
+ *
+ * The packages genuinely differ. Measured over the cached hold-out answers on
+ * 2026-08-16, 21 of the 56 cached documents describe more than one package with
+ * its own pin table, and on TEN of them the lead counts differ: an ADS1256 is an SSOP-20 or
+ * an SSOP-28, an SN74HC595 a 16-pin SOIC or a 20-pin FK, an LT1013 an 8, 14 or
+ * 16 lead part. A 20-pad footprint labelled SSOP-28 is a board nobody can build.
+ *
+ * ## Matched on the lead count, and only on that
+ *
+ * The two sides name packages in different vocabularies. The model writes what
+ * the document prints (`SSOP-28`, `HSOIC (DDA, 8)`, `DB, DGV, DW, N, NS, PW,
+ * RGY`) and the variant scanner writes its own normalised designator. The one
+ * thing both express comparably is the LEAD COUNT, so that is the key. Inventing
+ * a normaliser for the family spellings would be fitting a rule to the handful
+ * of spellings that happen to be in the cache, which rule 4 forbids.
+ *
+ * Returns null when the count does not identify exactly one table, which is the
+ * honest answer rather than a guess. The caller decides what to do with that,
+ * and `buildFootprintGeometry` refuses anything left contradictory.
+ */
+export function pinTableFor<T extends { packageType: string; pins: unknown[] }>(
+  tables: readonly T[] | undefined,
+  designator: string
+): T | null {
+  if (!tables || tables.length === 0) return null;
+  const wanted = declaredLeadCount(designator);
+  if (wanted === null) return null;
+  // The table's own row count is what it actually contains, which is a stronger
+  // statement than the count its label happens to declare.
+  const matching = tables.filter((table) => table.pins.length === wanted);
+  return matching.length === 1 ? matching[0] : null;
+}

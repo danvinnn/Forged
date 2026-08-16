@@ -80,25 +80,6 @@ test("a page request for a page that does not exist is ignored", async () => {
   assert.equal(model.seen.length, 1, "no second pass for pages this document does not have");
 });
 
-test("second-pass values override first-pass ones without becoming a conflict", async () => {
-  // One reader with better evidence is not two opinions. A dimension guessed
-  // from a text fragment and then read off the drawing must not be presented to
-  // the user as a disagreement to settle.
-  const part = buildPartRecord(doc, "ACME555.pdf");
-  assert.equal(part.dimensions.bodyLengthMm.value, null, "fixture leaves a gap");
-
-  const model = stub([
-    { values: { "dimensions.bodyLengthMm": { value: 4.9, page: 3 } }, pagesWorthRendering: [3] },
-    { values: { "dimensions.bodyLengthMm": { value: 5.0, page: 3 } } }
-  ]);
-
-  // Rendering fails on the fake PDF, so force the combine path directly by
-  // checking the merge of the two results rather than the render.
-  const outcome = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf");
-  assert.ok(outcome);
-  assert.equal(outcome.part.conflicts.length, 0, "two passes of one reader never conflict");
-});
-
 test("a model failure on the first pass is not swallowed", async () => {
   // Callers keep the deterministic record when this throws; they cannot do that
   // if the failure is hidden as an empty answer.

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   declaredLeadCount,
+  pinTableFor,
   findOrderablePackages,
   findPackageVariants,
   namesPackageFamily,
@@ -284,4 +285,57 @@ test("a shipping form is not a package", () => {
     ),
     ["CFP (HKJ)/8"]
   );
+});
+
+// ---------------------------------------------------------------------------
+// Selecting one package's pin table out of a family datasheet
+// ---------------------------------------------------------------------------
+
+/**
+ * The defect these lock out shipped a wrong footprint by the shortest possible
+ * route: the package chooser offered every package a document names, and both
+ * the UI relabel and `asPackage` carried ONE package's pin table across to all
+ * of them. An ADS1256 read as a 20-pin SSOP-20 became an "SSOP-28" holding
+ * twenty pins, and the UI said the pinout had been kept as though that were a
+ * service.
+ */
+test("a package's own pin table is selected by the lead count it declares", () => {
+  const tables = [
+    { packageType: "SSOP-20", pins: Array.from({ length: 20 }, () => ({})) },
+    { packageType: "SSOP-28", pins: Array.from({ length: 28 }, () => ({})) }
+  ];
+  assert.equal(pinTableFor(tables, "28-Lead SSOP")?.packageType, "SSOP-28");
+  assert.equal(pinTableFor(tables, "SSOP-20")?.packageType, "SSOP-20");
+});
+
+test("the table's own row count decides, not the label it carries", () => {
+  // The model writes the designator the DOCUMENT prints, which is spelled every
+  // way there is: "TSSOPPW", "HSOIC (DDA, 8)", "DB, DGV, DW, N, NS, PW, RGY".
+  // Matching those to a variant designator would need a normaliser fitted to
+  // whichever spellings happen to be in the cache.
+  const tables = [
+    { packageType: "TSSOPPW", pins: Array.from({ length: 16 }, () => ({})) },
+    { packageType: "VQFNRVA", pins: Array.from({ length: 24 }, () => ({})) }
+  ];
+  assert.equal(pinTableFor(tables, "24-Lead VQFN")?.packageType, "VQFNRVA");
+});
+
+test("an ambiguous or absent count selects nothing, rather than guessing", () => {
+  const sameCount = [
+    { packageType: "TSSOP-16", pins: Array.from({ length: 16 }, () => ({})) },
+    { packageType: "VQFN-16", pins: Array.from({ length: 16 }, () => ({})) }
+  ];
+  // Two tables of sixteen. Which one a "16-Lead TSSOP" means cannot be settled
+  // on the count, and the names are not comparable, so this answers null and
+  // lets the caller refuse rather than picking one.
+  assert.equal(pinTableFor(sameCount, "16-Lead TSSOP"), null);
+  // A designator that declares no count at all: SOT-23, TO-220, SOD-123.
+  assert.equal(pinTableFor(sameCount, "SOT-23"), null);
+  assert.equal(pinTableFor(undefined, "SSOP-28"), null);
+  assert.equal(pinTableFor([], "SSOP-28"), null);
+});
+
+test("no table matches a count the document never printed", () => {
+  const tables = [{ packageType: "SSOP-20", pins: Array.from({ length: 20 }, () => ({})) }];
+  assert.equal(pinTableFor(tables, "28-Lead SSOP"), null);
 });

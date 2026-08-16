@@ -202,19 +202,25 @@ function silkscreenOutline(geometry: FootprintGeometry): string[] {
    * and from y -1.33 to 8.95 outside pads that end at -0.8 and 8.42. The
    * outline is MOVED to clear the pads, not deleted.
    *
-   * It moves to whichever side of the obstruction is CLOSER to where the body
-   * actually is, which is what keeps the outline honest. On a DIP the pad
-   * columns sit well outside the body, so the sides move inward between them;
-   * the pad rows end barely past the body ends, so the top and bottom move
+   * It moves to whichever side of the obstruction is the SHORTER move from where
+   * the body put the edge, which is what keeps the outline honest. On a DIP the
+   * pad columns sit well outside the body, so the sides move inward between
+   * them; the pad rows end barely past the body ends, so the top and bottom move
    * outward past them. That is the shape the reference draws, and it falls out
    * of one rule rather than two special cases.
+   *
+   * The two candidates are named for the OBSTRUCTION rather than for the board,
+   * because which of them is "inward" depends on the sign of the edge and the
+   * arithmetic does not care: it takes the nearer one either way. They were
+   * called `inward` and `outward`, which read correctly for a negative edge and
+   * backwards for a positive one.
    */
   function clearOf(at: number, blocking: Array<{ lo: number; hi: number }>): number {
     const crossing = blocking.filter((span) => span.lo < at && span.hi > at);
     if (crossing.length === 0) return at;
-    const inward = Math.max(...crossing.map((span) => span.hi));
-    const outward = Math.min(...crossing.map((span) => span.lo));
-    return Math.abs(at - outward) <= Math.abs(at - inward) ? outward : inward;
+    const pastFarEnd = Math.max(...crossing.map((span) => span.hi));
+    const beforeNearEnd = Math.min(...crossing.map((span) => span.lo));
+    return Math.abs(at - beforeNearEnd) <= Math.abs(at - pastFarEnd) ? beforeNearEnd : pastFarEnd;
   }
 
   /**

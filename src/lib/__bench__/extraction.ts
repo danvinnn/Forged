@@ -38,7 +38,7 @@ import { BENCH_CORPUS, type BenchCategory, type BenchPart } from "../retrieval/_
 import { extractPartRecord } from "../datasheet";
 import { makeExtractionModel, runExtraction } from "../extraction";
 import { resolveForExport, type Extracted, type PartRecord } from "../types";
-import { createExportZip, FootprintUnavailableError } from "../exporters";
+import { createExportZip, packageOptions, FootprintUnavailableError } from "../exporters";
 import {
   PINOUT_ORACLE,
   PACKAGE_ORACLE,
@@ -258,44 +258,31 @@ async function shipCheck(
 /**
  * Which of the datasheet's own packages would produce a bundle if named.
  *
- * Mirrors what `/api/export` does with a `packageType` override, including
- * dropping the drawing evidence: the outline code and the drawn pitch were read
- * off the one drawing confirmed to match the EXTRACTED designator, so against a
- * different package they describe the wrong part of the document.
+ * Calls `packageOptions`, which is the function the PRODUCT calls. It used to
+ * re-implement the package switch here, and the two had drifted: this copy
+ * blanked the outline code, the pitch and the lead width, while `asPackage`
+ * blanks every dimension plus the JEDEC outline, the printed land pattern and
+ * the thermal pad. So the bench carried one package's body size and land pattern
+ * over to another and reported packages as one-click that the product refuses.
+ *
+ * A second implementation of a rule is a second answer to the same question, and
+ * the bench is the place that can least afford one: its whole job is to say what
+ * the product does.
  */
 async function oneClickCheck(
   record: PartRecord
 ): Promise<{ oneClickPackages: string[]; oneClickPlusInput: string[] }> {
-  const shipped: string[] = [];
-  const answerable: string[] = [];
+  const choice = packageOptions(record);
+  if (!choice.ok) return { oneClickPackages: [], oneClickPlusInput: [] };
 
-  for (const variant of record.packageVariants) {
-    const resolved = resolveForExport({
-      ...record,
-      packageType: { ...record.packageType, value: variant.designator },
-      packageOutlineCode: { value: null, confidence: null, method: null, citation: null },
-      dimensions: {
-        ...record.dimensions,
-        pitchMm: { value: null, confidence: null, method: null, citation: null },
-        leadWidthMm: { value: null, confidence: null, method: null, citation: null }
-      }
-    });
-    if (!resolved.ok) continue;
-    try {
-      await createExportZip(resolved.part, "kicad");
-      shipped.push(variant.designator);
-    } catch (error) {
-      // Two refusals, and the difference decides whose problem it is. `needs`
-      // populated means the caller can answer it and get their footprint, which
-      // for a ceramic flat pack is the formed lead span their own line trims to.
-      // Empty means the package is not characterised, which is ours to fix.
-      if (error instanceof FootprintUnavailableError && error.needs.length > 0) {
-        answerable.push(`${variant.designator} + ${error.needs.map((need) => need.field).join(",")}`);
-      }
-    }
-  }
-
-  return { oneClickPackages: shipped, oneClickPlusInput: answerable };
+  return {
+    oneClickPackages: choice.options
+      .filter((option) => option.status === "ships")
+      .map((option) => option.designator),
+    oneClickPlusInput: choice.options
+      .filter((option) => option.status === "needs-input")
+      .map((option) => `${option.designator} + ${option.needs.map((need) => need.field).join(",")}`)
+  };
 }
 
 /**

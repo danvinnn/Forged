@@ -100,7 +100,6 @@ const EXTRACTION_AIR_GAP_SAFE = [
   "factory.ts",
   "request.ts",
   // Pure comparison of a deterministic reading against a model one. No I/O.
-  "crosscheck.ts",
   // The pipeline itself: two model passes, no networking of its own.
   "run.ts",
   // Pure string work over document text, no networking.

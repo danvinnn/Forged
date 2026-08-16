@@ -59,15 +59,6 @@ function partWith(partNumber: string): ResolvedPart {
   } as ResolvedPart;
 }
 
-async function fileContents(zipBytes: Uint8Array): Promise<string> {
-  const zip = await JSZip.loadAsync(zipBytes);
-  const parts: string[] = [];
-  for (const name of Object.keys(zip.files)) {
-    if (zip.files[name].dir) continue;
-    parts.push(await zip.files[name].async("string"));
-  }
-  return parts.join("\n---\n");
-}
 
 test("STEP export: a single quote cannot break out of a Part 21 string literal", async () => {
   // In STEP, string literals are single-quoted and a literal quote is escaped by DOUBLING it.

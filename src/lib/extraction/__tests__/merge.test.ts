@@ -6,7 +6,6 @@ import { partSchema, resolveForExport, type PartRecord } from "../../types";
 import { mergeModelValues, unresolvedFields, verifyCitation } from "../merge";
 import { buildExtractionRequest } from "../request";
 import type { ExtractionResult } from "../contracts";
-import { CROSS_CHECKED_FIELDS } from "../crosscheck";
 
 // The merge layer is where the traceability guarantee is actually enforced, so
 // it carries the tests that used to sit on the legacy Gemini record builder:
@@ -192,24 +191,15 @@ test("no request is built when the text pass resolved everything it can", () => 
     full.radiation[key] = { value: "x", confidence: 1, method: "deterministic", citation: null };
   }
 
-  // A fully resolved record STILL asks, and that is the cross-check.
+  // A record with nothing left unresolved asks NOTHING.
   //
-  // This test asserted `null` until 2026-08-11, which encoded the behaviour that
-  // made a confidently wrong deterministic value unfalsifiable: nothing was ever
-  // asked about a field the code had answered, so nothing could ever contradict
-  // it. What must still hold is that the request is narrowed to the fields worth
-  // contradicting rather than becoming a re-ask of the whole contract.
+  // This asserted the cross-check field list until the cross-check was deleted
+  // on 2026-08-16. The list existed so the model could contradict a second
+  // reader; with the deterministic parser gone there is no second reading, and
+  // re-asking a field whose value the USER supplied buys an answer that
+  // `mergeModelValues` will refuse to store.
   const request = buildExtractionRequest(full, doc, "x.pdf");
-  assert.ok(request, "a resolved record is still cross-checked");
-  assert.deepEqual([...request.fields].sort(), [...CROSS_CHECKED_FIELDS].sort());
-  assert.ok(
-    !request.fields.some((field) => field.startsWith("radiation.")),
-    "a radiation rating places no copper, so it is not worth interrupting for"
-  );
-  assert.ok(
-    !request.fields.includes("manufacturer"),
-    "nor is a manufacturer string"
-  );
+  assert.equal(request, null, "nothing is unresolved, so there is nothing to ask");
 });
 
 test("the request carries pages, not a flattened blob", () => {
@@ -545,7 +535,6 @@ test("a rendered record still satisfies the part contract", () => {
 // --- lead span and lead width, the two a land pattern is built from ----------
 
 test("a lead span is accepted as a min/max pair and cited when both ends are on the page", () => {
-  const part = deterministic();
   const spanDoc = datasheetTextFromPages([
     "VORAGO VA10820 32-pin QFN",
     "PACKAGE OUTLINE PW0008A TSSOP C 6.6 TYP SEATING PLANE 6.2 PIN 1 ID"
@@ -591,88 +580,60 @@ test("a malformed range is dropped rather than stored, because it reaches the la
 // guards: a 429 means two different things, and only one of them is worth
 // waiting out.
 
-test("a billing failure is not treated as transient, whatever status it arrives with", async () => {
-  const { GeminiExtractionModel } = await import("../models/gemini");
-  // Exercised through the public surface: a model with no key configured must
-  // report itself unconfigured rather than attempt a call that cannot succeed.
-  const model = new GeminiExtractionModel();
-  const had = process.env.GOOGLE_GEMINI_API_KEY;
-  delete process.env.GOOGLE_GEMINI_API_KEY;
-  assert.equal(model.isConfigured(), false, "no key means no call");
-  if (had !== undefined) process.env.GOOGLE_GEMINI_API_KEY = had;
-});
 
+// ---------------------------------------------------------------------------
+// The one rule that survived the cross-check
+// ---------------------------------------------------------------------------
 
 /**
- * Which reader produced which reading, on a field where the model WON.
+ * The cross-check was deleted on 2026-08-16 because the parser it compared
+ * against was already gone: eleven of its thirteen fields were permanently
+ * null, `valuesAgree` reads a null side as agreement, and the bench reported
+ * "0 disagreements on 0/56 parts" for months, which reads like a pass and means
+ * nothing was examined.
  *
- * Measured on OPA2189, 2026-08-12. Its datasheet documents three devices and
- * page 5 prints `Pin Functions: OPA189` above `Pin Functions: OPA2189`. The
- * model read the first table and returned the SINGLE op-amp's pinout for the
- * dual; the deterministic reader read the right one. The model's claim cited a
- * page that really does contain those names, so it verified and outranked.
- *
- * The bench then printed `code 1:NC vs model 1:OUT A`, which is both sides
- * backwards, because the supersede path wrote the value the RECORD held into
- * the slot named `deterministic`. The review panel did the same thing, so a
- * reviewer settling the disagreement was told the model's reading came from the
- * code and the code's from the model, on precisely the fields where the model
- * had overruled the code. Attribution is the whole point of a conflict, so this
- * pins it in the direction the names promise.
+ * Deleting it was not a pure subtraction. The same code decided whether the
+ * model's value was KEPT, so the precedence had to be carried across on its
+ * own. This is that rule, pinned so it cannot be lost the next time something
+ * around it is removed.
  */
-const twoPackages = datasheetTextFromPages([
-  "ACME1234 precision amplifier\n14-lead CFP package.",
-  "PACKAGE OUTLINE\nSOIC (8) body outline and lead form."
-]);
-
-/** A record already holding a package reading, as a confirmed field would be. */
-function withPackage(part: PartRecord, value: string): PartRecord {
-  return {
-    ...part,
-    packageType: {
-      value,
-      confidence: 0.9,
-      method: "deterministic",
-      citation: { page: 1, snippet: value, region: null }
+test("a value already on the record is not overwritten by the model", () => {
+  const part = deterministic();
+  const result: ExtractionResult = {
+    values: {
+      // Cited to page 1, where this string genuinely appears, so the claim is
+      // verifiable. Even verifiable, it does not get to replace what is there.
+      manufacturer: { value: "NXP", page: 1 }
     }
   };
-}
-
-test("when the model outranks the code, each reading is still attributed to its own reader", () => {
-  // The record already holds a reading, as it does after a person confirms a
-  // field in the review panel. That used to come from the deterministic parser;
-  // with it gone, a confirmed value is what the model can now disagree with, and
-  // the conflict machinery is unchanged.
-  const part = withPackage(buildPartRecord(twoPackages, "ACME1234.pdf"), "14-lead CFP");
-
-  const { part: merged } = mergeModelValues(
-    part,
-    twoPackages,
-    { values: { packageType: { value: "SOIC (8)", page: 2 } } },
-    "test-model"
-  );
-
-  assert.equal(merged.packageType.value, "SOIC (8)", "the model outranks on a cross-checked field");
-
-  const conflict = merged.conflicts.find((entry) => entry.field === "packageType");
-  assert.ok(conflict, "a displaced reading is still a disagreement someone must settle");
-  assert.equal(conflict.deterministic.display, "14-lead CFP", "the CODE's reading, under its own name");
-  assert.equal(conflict.model.display, "SOIC (8)", "the MODEL's reading, under its own name");
-  assert.equal(conflict.holding, "model", "and the record says which one it took");
+  const { part: merged, filled } = mergeModelValues(part, doc, result, "test-model");
+  assert.equal(merged.manufacturer.value, "VORAGO Technologies");
+  assert.ok(!filled.includes("manufacturer"), "and it is not reported as filled");
 });
 
-test("when the code holds its ground, the conflict says so", () => {
-  const part = withPackage(buildPartRecord(twoPackages, "ACME1234.pdf"), "14-lead CFP");
-  // An uncited claim cannot outrank, so the record keeps the reading it had.
-  const { part: merged } = mergeModelValues(
+test("a package the user chose is not replaced by the model's reading of it", () => {
+  const part = deterministic();
+  part.packageType = { value: "SOIC-8", confidence: 1, method: "user", citation: null };
+
+  const result: ExtractionResult = { values: { packageType: { value: "QFN", page: 1 } } };
+  const { part: merged } = mergeModelValues(part, doc, result, "test-model");
+
+  // Under the cross-check this could flip: `packageType` was on the
+  // cross-checked list, so a cited model reading displaced it. The user picked
+  // from a list built out of their own document, so their choice is the more
+  // authoritative of the two.
+  assert.equal(merged.packageType.value, "SOIC-8");
+});
+
+test("a gap is still filled, so the rule blocks overwriting and nothing else", () => {
+  const part = deterministic();
+  assert.equal(part.pins.value, null, "the fixture leaves this open");
+
+  const { filled } = mergeModelValues(
     part,
-    twoPackages,
-    { values: { packageType: { value: "SOIC (8)", page: 2 } } },
+    doc,
+    { values: { manufacturer: { value: "NXP", page: 1 }, jedecOutline: { value: "MO-153", page: 2 } } },
     "test-model"
   );
-  const conflict = merged.conflicts.find((entry) => entry.field === "packageType");
-  assert.ok(conflict);
-  // Whichever way precedence went, the two slots never swap.
-  assert.equal(conflict.deterministic.display, "14-lead CFP");
-  assert.equal(conflict.model.display, "SOIC (8)");
+  assert.ok(filled.includes("jedecOutline"), "an unanswered field is still the model's to answer");
 });

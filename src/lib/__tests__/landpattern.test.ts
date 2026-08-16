@@ -298,8 +298,19 @@ test("a package NAME on its own produces nothing at all", async () => {
   // The property the deleted table violated. `SOIC-8` is a designator; it is not
   // a lead span, a foot, a width or a pitch, and nothing in this repo will treat
   // it as one again.
-  for (const packageType of ["SOIC-8", "TSSOP-16", "LQFP-64", "CFP-14", "VSSOP-8"]) {
-    const error = await refusal(bare({ packageType }));
+  // Each designator gets the pin count it DECLARES. They all ran on the default
+  // eight-pin record, so a "TSSOP-16" carried eight pins and the lead-count
+  // guard refused it before the land-pattern question was ever reached. The
+  // property under test is that a NAME yields no geometry, and it is only
+  // demonstrated on a record that is otherwise coherent.
+  for (const [packageType, pinCount] of [
+    ["SOIC-8", 8],
+    ["TSSOP-16", 16],
+    ["LQFP-64", 64],
+    ["CFP-14", 14],
+    ["VSSOP-8", 8]
+  ] as const) {
+    const error = await refusal(bare({ packageType, pinCount }));
     assert.ok(
       error.needs.length > 0,
       `${packageType} must ask rather than resolve to a characterised family`

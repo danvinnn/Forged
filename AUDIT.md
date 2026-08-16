@@ -592,3 +592,118 @@ often it matters, which is one of the things the hold-out will show.
   the absence of one.
 - **No part-number branches in production code.** Every part number in `src/`
   is in a comment recording evidence, plus one UI placeholder.
+
+# Part five: testing measured, and the defects that found
+
+Run 2026-08-16, after the hold-out. The trigger was a fair complaint: the suite
+is largely tests written alongside the code they test, by the same author, in the
+same sitting, against hand-built fixtures. That guarantees shared blind spots,
+and no amount of care fixes it.
+
+## The measurement: mutation testing
+
+`npm run bench:mutation` breaks the generator in twenty specific, hand-chosen
+ways and reports which the suite notices. Every mutation is a defect somebody
+could plausibly introduce and that would produce a board that does not work: a
+starved toe fillet, a hole too small for its lead, a row numbered backwards, a
+paste layer dropped.
+
+**Result: 17 killed, 3 survived.**
+
+Chosen by reading the geometry code rather than generated. A mutation nobody
+could make by accident does not answer the question being asked.
+
+## The first run reported 20/20, and it was an artifact
+
+The harness did not check that the baseline was green, and the tree was edited
+while it ran, including adding tests for a fix not yet applied. A red baseline
+makes every mutation "killed" and the report reads perfect.
+
+A tool written to stop a green board being mistaken for a working product had
+exactly the defect it was built to find. The baseline is now checked and a red
+one is a hard stop.
+
+## What survived, and what each was worth
+
+**M16, and this one mattered.** Deleting `F.Paste` from the ordinary
+surface-mount pad left all 595 tests passing. No paste aperture means no solder
+is printed for that land: every part placed and none of them soldered. Nothing
+caught it because every paste assertion in the repo was about the THERMAL pad,
+where paste deliberately does not follow copper. The ordinary case, which is
+every land on every part, was covered by nothing.
+
+**M18.** Courtyard line width changed from 0.05 to 0.2 and nothing noticed.
+`library-diff.test.ts` compared WHERE the courtyard sits and never how it is
+drawn, so a footprint that fails KiCad's own library checker would have shipped.
+
+**M17 was a bad mutation, and saying so matters.** It dropped
+`(roundrect_rratio 0.25)` and was described as losing the pin-1 marker. It does
+not: the shape token stays `roundrect` and KiCad's default ratio is 0.25 anyway.
+Reporting it as a hole would have been a false alarm dressed as a finding. It was
+rewritten to be the defect the description names, every through-hole pad round,
+and the suite kills that.
+
+All three are killed now, confirmed by re-running each rather than assumed.
+
+## The defect the read-through found, which mutation testing could not
+
+Mutation testing only asks whether the suite notices a change. It cannot find a
+rule that was never written. Reading did.
+
+**One package's pin table was building another package's footprint.** A family
+datasheet describes several packages and the record carries ONE pin table. Three
+routes relabelled a part as a sibling and kept it: `asPackage` (the chooser and
+`/api/export` with a package override), and the UI, which answered a package
+click with "the pinout was already read, so it was kept".
+
+Measured over the cached hold-out answers: 21 of the 56 cached documents describe
+more than one package with its own pin table, and TEN differ in lead count.
+ADS1256 is an SSOP-20 or an SSOP-28; SN74HC595 a 16-pin SOIC or a 20-pin FK;
+LT1013 an 8, 14 or 16 lead part. Clicking the other one built a footprint with
+the first package's pad count under the second's name. The chooser printed
+"· 28 leads" beside the button while the record held 20.
+
+Fixed in one place, with two things that would have silently defeated it:
+
+- `pinTablesByPackage` was on the TypeScript type but NOT in `partSchema`, and
+  zod strips unknown keys, so `/api/export` would have dropped it on exactly the
+  route that relabels.
+- that field had been asked for in the prompt, parsed and stored since it was
+  added, and consumed by NOTHING. Its own comment said it existed so a package
+  choice would not cost another model call.
+
+## Four test fixtures were incoherent, and passing for the wrong reason
+
+The new lead-count guard refused them: a `VQFN-16` built with 8 pins, an
+`8-pin SOIC` with 9, and `TSSOP-16`/`LQFP-64`/`CFP-14` all carrying the default
+8. The guard was right and the fixtures were wrong.
+
+## Dead code, and why it survived
+
+`tsconfig.json` had `strict` but not `noUnusedLocals`. Turning it on surfaced
+fourteen dead declarations immediately, several left by this session's own
+deletions. All removed.
+
+## The benches were measuring something the product does not do
+
+`holdout.ts` exported the single record and counted a success. The product calls
+`packageOptions`, which runs the real footprint build once per package the
+document offers. On a family datasheet those are different questions: a part
+whose record resolved to one package can still offer a working sibling.
+
+The tuned bench had a third copy of the package switch, blanking three fields
+where `asPackage` blanks every dimension plus the outline code, the JEDEC
+outline, the printed land pattern and the thermal pad. It reported packages as
+one-click that the product refuses. Both now call the product's own function.
+
+Re-measured free from cache: SHIPS 14 to 15 of 56, and the largest refusal bucket
+went from seven questions to four, because the chooser path asks less than the
+single-record path did.
+
+## Still not built, stated rather than hidden
+
+- Confidence checks run on the INPUTS. Nothing checks the generated geometry,
+  which is why both the TO-220 defect and this one passed every check.
+- Single-row packages (TO-220, TO-92, SIP) are not generated.
+- READ 61% remains a FLOOR: eight parts have no answer because the run that
+  produced these answers ran the Google account dry partway.

@@ -32,8 +32,8 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createExportZip, FootprintUnavailableError, packageOptions } from "../exporters";
-import { resolveForExport, type LeadWidth, type PartRecord, type PinRecord, type ResolvedPart } from "../types";
+import { createExportZip, FootprintUnavailableError } from "../exporters";
+import { type LeadWidth, type PinRecord, type ResolvedPart } from "../types";
 
 const CACHE_DIR = join(process.cwd(), ".model-cache");
 
@@ -252,5 +252,3 @@ async function main() {
 if (process.argv[1]?.endsWith("replay.ts")) {
   void main();
 }
-
-export { cachedAnswers, partFrom, packageOptions, resolveForExport, type PartRecord };
