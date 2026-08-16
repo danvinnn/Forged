@@ -440,3 +440,64 @@ test("thermal vias reach the Altium file too", () => {
   };
   assert.notDeepEqual(emitAltiumPcbLib(withVias), emitAltiumPcbLib(geometry));
 });
+
+// ---------------------------------------------------------------------------
+// Plated through holes
+// ---------------------------------------------------------------------------
+
+/**
+ * A through-hole pad, checked against a library Altium's own ecosystem wrote.
+ *
+ * The four things that differ from a surface-mount land were not inferred from
+ * the format's documentation. They were read off Ultra Librarian's
+ * `LM7805CT-NOPB.PcbLib`, checked in under `test-data/`, whose three TO-220 pads
+ * read back as:
+ *
+ *     layer 74 (Multi-Layer)   base shapes 1/1/1 (Round)
+ *     hole 47 mil in a 67 mil pad   plated: true   no parser warnings
+ *
+ * That mattered because none of the eleven reference libraries already in the
+ * tree has a plated hole: they are all BGA, QFN or LFCSP. The existing writer
+ * was built by diffing bytes against files Altium wrote, and for holes there was
+ * nothing to diff against until that file arrived.
+ *
+ * The one remaining difference from it is `stackMode`, which reads 1 there and 0
+ * here. 0 is what the genuine Altium surface-mount libraries in the tree use,
+ * and it is the honest value while all three layer sizes are identical.
+ */
+function throughHoleGeometry(): FootprintGeometry {
+  const geometry = onePadGeometry();
+  return {
+    ...geometry,
+    pads: [
+      { ...geometry.pads[0], number: "1", shape: "roundrect", mounting: "through-hole", drillMm: 0.7, widthMm: 1.5, heightMm: 1.5 },
+      { ...geometry.pads[0], number: "2", centre: { xMm: 2.54, yMm: 0 }, shape: "circle", mounting: "through-hole", drillMm: 0.7, widthMm: 1.5, heightMm: 1.5 }
+    ]
+  };
+}
+
+test("a plated hole is written where Altium expects one", () => {
+  const result = readBack(emitAltiumPcbLib(throughHoleGeometry()));
+  assert.deepEqual(result.diagnostics, [], "an independent reader logs nothing");
+
+  const pads = result.parts[0].records.filter((record) => record.kind === "PcbPad");
+  assert.equal(pads.length, 2);
+  for (const pad of pads) {
+    assert.equal(pad.layer, 74, "a through-hole pad lives on Multi-Layer, not Top Layer");
+    assert.ok(Number(pad.holeSize) > 0, "and it actually carries a hole");
+    assert.equal(pad.isPlated, true, "with copper in the barrel, or the hole is mechanical only");
+  }
+});
+
+test("the hole is the size the geometry asked for, not a default", () => {
+  const result = readBack(emitAltiumPcbLib(throughHoleGeometry()));
+  const pad = result.parts[0].records.find((record) => record.kind === "PcbPad")!;
+  // 0.7 mm expressed in mils, which is the unit the reader reports.
+  assert.ok(Math.abs(Number(pad.holeSize) - 0.7 / 0.0254) < 0.1, `hole came back as ${pad.holeSize} mil`);
+});
+
+test("a through-hole pad with no drill is refused rather than written as solid copper", () => {
+  const geometry = throughHoleGeometry();
+  const broken = { ...geometry, pads: [{ ...geometry.pads[0], drillMm: undefined }] };
+  assert.throws(() => emitAltiumPcbLib(broken), /through-hole with no drill/);
+});

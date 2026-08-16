@@ -728,6 +728,40 @@ const MAX_LEAD_WIDTH_FRACTION_OF_PITCH = 0.75;
  * on an assembled board where the silkscreen is under the part.
  */
 function throughHoleFootprint(part: ResolvedPart, densityLevel: DensityLevel): FootprintGeometry {
+  // HOW MANY ROWS OF PINS, read rather than assumed.
+  //
+  // This path hardcoded `arrangement: "dual"` until an audit on 2026-08-16, and
+  // never looked at `leadSides` at all. So a package with a single line of pins
+  // was built as two opposing rows on a row spacing it does not have: a 3-lead
+  // TO-220 came out with pins 1 and 2 in one column and pin 3 in the other. It
+  // did not refuse, no confidence check covers it (`sides-add-up` reads
+  // `leadsPerSide`, which is usually unread), and the result looks entirely
+  // ordinary in CAD. A silently wrong footprint is the worst thing this product
+  // can emit, and it also inflates SHIPS, which is the number the hold-out
+  // exists to keep honest.
+  //
+  // The surface-mount path has always taken the arrangement from the drawing,
+  // in `datasheetLayout`. The rule is the same on both paths and now each one
+  // states it: the arrangement is read, and where it was not read there is a
+  // question rather than a default.
+  //
+  // `leadSides` admits only 2 or 4, so a one-sided package cannot be REPRESENTED
+  // as one side: the prompt tells the model to answer null for it and the schema
+  // would reject a 1 in any case. Null is therefore the state a TO-220 arrives
+  // in, and it was the exact state that fell through to two rows. The `why` says
+  // plainly that a single line of pins is not built, so someone holding a
+  // three-pin regulator is told where they stand instead of being asked a
+  // question their package has no answer to.
+  if (part.dimensions.leadSides !== 2) {
+    const why =
+      `${part.partNumber} mounts through the board, and how many rows its pins form was not read. ` +
+      `A DIP is two opposing rows, and that is what this builds. A single line of pins (TO-220, TO-92, ` +
+      `SIP) is not generated at all: assuming two rows would place pins where this package has none.`;
+    throw new FootprintUnavailableError(why, [
+      { field: "leadSides", label: "Rows of pins (2 for a DIP)", why, unit: "count", scope: "part" }
+    ]);
+  }
+
   const lead = part.dimensions.leadDiameterMm;
   const pitchMm = part.dimensions.pitchMm;
   const rowSpacingMm = part.dimensions.landSpanMm ?? part.dimensions.leadSpanMm?.minMm ?? null;

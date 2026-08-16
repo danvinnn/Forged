@@ -385,6 +385,61 @@ test("a through-hole part with no lead diameter asks rather than sizing a hole i
 });
 
 // ---------------------------------------------------------------------------
+// How many rows of pins, which is read and never assumed
+// ---------------------------------------------------------------------------
+
+/**
+ * The through-hole path hardcoded two opposing rows and never looked at
+ * `leadSides`. A TO-220 is three pins in ONE line, so it came out with pins 1
+ * and 2 in one column and pin 3 in the other: a wrong footprint, emitted
+ * silently, that looks entirely ordinary in CAD. `leadSides` is null for a
+ * one-sided package by instruction in the prompt, so the common case for a
+ * regulator was precisely the one that fell through to the default.
+ *
+ * These pin the rule on both paths: the arrangement is read, and where it was
+ * not read there is a question rather than a default.
+ */
+test("a through-hole part whose row count was not read asks, rather than assuming two rows", async () => {
+  const error = await refusal(
+    withDimensions({
+      pitchMm: 2.54,
+      leadSides: null,
+      mounting: "through-hole",
+      leadDiameterMm: 0.7,
+      landSpanMm: 5.0
+    }, { partNumber: "ACMEREG", packageType: "TO-220", pinCount: 3 })
+  );
+  assert.ok(
+    error.needs.some((need) => need.field === "leadSides"),
+    "how many rows the pins form is the question, and it names the field that receives it"
+  );
+});
+
+/**
+ * The refusal has to SAY that a single line of pins is not built.
+ *
+ * `leadSides` admits only 2 or 4, so a one-sided package cannot be stated as
+ * one side: it arrives as null, indistinguishable from a DIP nobody read. The
+ * question is therefore the right one to ask, and it is only honest if the
+ * answer "my part has one row" is visibly accounted for. Otherwise this is the
+ * shape of ask that trains someone to type 2 and take the wrong footprint.
+ */
+test("the through-hole question says outright that one row of pins is not built", async () => {
+  const error = await refusal(
+    withDimensions({
+      pitchMm: 2.54,
+      leadSides: null,
+      mounting: "through-hole",
+      leadDiameterMm: 0.7,
+      landSpanMm: 5.0
+    }, { partNumber: "ACMEREG", packageType: "TO-220", pinCount: 3 })
+  );
+  const need = error.needs.find((entry) => entry.field === "leadSides");
+  assert.ok(need, "the row count is what is asked for");
+  assert.match(need.why, /single line of pins/, "and the limit is stated rather than left to be discovered");
+});
+
+// ---------------------------------------------------------------------------
 // Every question carries the page its answer is printed on
 // ---------------------------------------------------------------------------
 
@@ -478,4 +533,46 @@ test("every outstanding value is asked for in one pass, not one round trip each"
   const fields = error.needs.map((need) => need.field);
   assert.ok(fields.some((field) => field.startsWith("land")), "the land pattern is asked for");
   assert.ok(fields.includes("bodyLengthMm"), "and the body, in the same refusal");
+});
+
+test("a through-hole footprint has a silkscreen outline", async () => {
+  // Found on 2026-08-15 by reading a generated DIP back with an independent
+  // Altium parser: it reported four courtyard tracks and ZERO on the silkscreen
+  // layer. The whole outline had been erased.
+  //
+  // The cause was the clipping rule that keeps silk off the pads. On a
+  // surface-mount package the body is bigger than the lead rows in at least one
+  // axis, so clipping leaves corner stubs. On a through-hole package the holes
+  // sit outside the body on one axis and past its ends on the other, so every
+  // edge crosses a pad and clipping removed all four.
+  //
+  // An assembler orients a through-hole part by its outline and its pin-1 mark.
+  // An empty silkscreen layer is not a cosmetic loss.
+  const footprint = await footprintOf(dip8());
+  const silk = [...footprint.matchAll(/\(fp_line \(start (-?[\d.]+) (-?[\d.]+)\) \(end (-?[\d.]+) (-?[\d.]+)\) \(layer "F\.SilkS"\)/g)];
+  assert.equal(silk.length, 4, "all four edges are drawn");
+
+  // And the outline still describes the BODY rather than the pad envelope. The
+  // body is 6.35 x 9.27 mm, so each edge should sit within half a millimetre of
+  // its true half-extent.
+  const xs = silk.flatMap((s) => [Number(s[1]), Number(s[3])]);
+  const ys = silk.flatMap((s) => [Number(s[2]), Number(s[4])]);
+  assert.ok(Math.abs(Math.max(...xs) - 6.35 / 2) < 0.5, `silk half-width ${Math.max(...xs)} against a 3.175 mm body`);
+  assert.ok(Math.abs(Math.max(...ys) - 9.27 / 2) < 0.5, `silk half-height ${Math.max(...ys)} against a 4.635 mm body`);
+});
+
+test("no silkscreen segment crosses a pad", async () => {
+  // The property the clipping exists for, asserted on the case that broke it.
+  const footprint = await footprintOf(dip8());
+  const pads = [...footprint.matchAll(/\(pad "[^"]*" \w+ \w+ \(at (-?[\d.]+) (-?[\d.]+)\) \(size ([\d.]+) ([\d.]+)\)/g)].map((m) => ({
+    x: Number(m[1]), y: Number(m[2]), w: Number(m[3]), h: Number(m[4])
+  }));
+  for (const s of footprint.matchAll(/\(fp_line \(start (-?[\d.]+) (-?[\d.]+)\) \(end (-?[\d.]+) (-?[\d.]+)\) \(layer "F\.SilkS"\)/g)) {
+    const [x1, y1, x2, y2] = [Number(s[1]), Number(s[2]), Number(s[3]), Number(s[4])];
+    for (const pad of pads) {
+      const overlapsX = Math.min(x1, x2) < pad.x + pad.w / 2 && Math.max(x1, x2) > pad.x - pad.w / 2;
+      const overlapsY = Math.min(y1, y2) < pad.y + pad.h / 2 && Math.max(y1, y2) > pad.y - pad.h / 2;
+      assert.ok(!(overlapsX && overlapsY), `a silk segment runs across the pad at ${pad.x},${pad.y}`);
+    }
+  }
 });

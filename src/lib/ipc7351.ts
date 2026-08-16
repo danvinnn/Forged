@@ -88,10 +88,21 @@ export const HOLE_ALLOWANCE: Record<DensityLevel, number> = { A: 0.25, B: 0.2, C
 /**
  * Annular ring around the hole, per density level, in mm.
  *
- * Read off the reference `DIP-8_W7.62mm` in KiCad's official library, which uses
- * a 0.8 mm hole for a 0.5 mm lead and a 1.6 mm pad: 0.4 mm of copper all round
- * at what that library builds to, which is the nominal level. The three levels
- * scale it the way the standard scales every other allowance.
+ * TWO independent published footprints, and they land on two different levels of
+ * this table, which is the strongest evidence available that the ring is a
+ * density choice rather than a single right answer:
+ *
+ *   KiCad `DIP-8_W7.62mm`     1.600 mm pad, 0.800 mm hole  ->  0.400 mm  (B)
+ *   Ultra Librarian TO-220    1.702 mm pad, 1.194 mm hole  ->  0.254 mm  (C)
+ *
+ * The second came from a real Altium library added to `test-data/` on
+ * 2026-08-15. Before it, level B rested on one sample and the other two levels
+ * were reasoning about how the standard scales its other allowances. Now B and C
+ * each have a published file behind them and A is the remaining extrapolation.
+ *
+ * Worth stating plainly because the two disagreeing looked at first like a
+ * contradiction. It is not: they are two vendors building to two different
+ * levels, and both fall inside the table rather than outside it.
  */
 export const ANNULAR_RING: Record<DensityLevel, number> = { A: 0.5, B: 0.4, C: 0.25 };
 

@@ -498,3 +498,97 @@ returning false for every part.
 the real generator per package when a datasheet is read, so the missing numbers
 are known immediately. The UI waited for a failed export to reveal them. Same
 work, one less dead end.
+
+# Part four: the pre-hold-out audit, 2026-08-16
+
+Run before spending money on the hold-out, on the theory that a run measures
+whatever is in the tree at the time and a wrong footprint counted as a SHIP is
+worse than no number at all.
+
+## The green board, first
+
+607 tests, typecheck clean, `next build` clean, `next dev` serves 200, replay
+38/79 SHIPS with 0 REFUSED. All of that was true and none of it caught what
+follows, which is the third time in this project a green board has been mistaken
+for evidence.
+
+## What was found: through-hole assumed two rows of pins
+
+`throughHoleFootprint` hardcoded `arrangement: "dual"` and never read
+`leadSides` at all. The surface-mount path has always taken the arrangement from
+the drawing, in `datasheetLayout`; the through-hole path added on 2026-08-14 did
+not, and nothing compared the two.
+
+Driven through the real generator, a 3-lead TO-220 came out as:
+
+    (pad "1" thru_hole roundrect (at -2.500 -1.270) ...)
+    (pad "2" thru_hole circle    (at -2.500  1.270) ...)
+    (pad "3" thru_hole circle    (at  2.500 -1.270) ...)
+
+Two columns 5 mm apart. The part is three pins in one straight line on a 2.54 mm
+pitch. It did not refuse, and no confidence check covers it: `sides-add-up`
+reads `leadsPerSide`, which is unread on almost every part.
+
+Three things make it worth the audit on its own:
+
+1. It is a **silently wrong footprint**, which is the worst output this product
+   has. It looks entirely ordinary in CAD.
+2. It **inflates SHIPS**, which is the one number the hold-out exists to keep
+   honest.
+3. The reference part is a TO-220 (`test-data/ul_LM7805CT-NOPB/`), supplied to
+   build the Altium through-hole path. The path was built and verified against a
+   DIP-8 the whole time and the reference package was never driven through it.
+
+Underneath: **the through-hole path has never run on a single real model
+answer.** No cached answer carries `mounting` at all, because the field was
+added after the cache was written. Replay therefore cannot reach it, and its
+only evidence is a hand-written DIP-8 fixture. The hold-out will be the first
+real exercise of it.
+
+## The fix, and the half of the finding that was wrong
+
+`throughHoleFootprint` now requires `leadSides === 2` and asks otherwise,
+which is the rule the surface-mount path already applied, written on the path
+that was missing it.
+
+The first version of the fix also refused packages read as 1 or 3 sides, on both
+paths. The typecheck rejected it: `leadSides` is `2 | 4 | null` in the type AND
+in the zod schema, so a model answering 1 is already coerced to null and the
+guard was unreachable. It was deleted rather than kept as insurance, per rule 5.
+
+So the reachable defect is narrower than it first looked, and its shape is worth
+recording: the danger was never a strange value arriving, it was **null being
+treated as a default instead of as a question.** The prompt tells the model to
+answer null for a one-sided package, which means the state a TO-220 arrives in
+is precisely the state that fell through to two rows.
+
+## What is still not built, and is now said out loud
+
+A single line of pins is not generated, in either mounting. `leadSides` cannot
+represent one side, so a TO-220 is indistinguishable on the record from a DIP
+nobody read, and the honest handling is to ask the row count and state the limit
+in the question rather than let someone type 2 and take the wrong footprint.
+The refusal text says so and a test pins that it does.
+
+Building it is a small piece of work. What it needs first is evidence of how
+often it matters, which is one of the things the hold-out will show.
+
+## Everything else checked, and sound
+
+- **Hold-out integrity.** `holdout.ts` is untouched by every commit in this
+  session and is referenced from nothing but itself. No corpus datasheet was
+  opened during this audit; the defect came from the reference file in
+  `test-data/`, which is not in the corpus.
+- **Money.** Cumulative spend ceiling defaults to $10 across all runs, not per
+  run, and throws before the call rather than after. Estimate and offline modes
+  make no network calls.
+- **Crash safety of the run.** The runner catches per part on both the parse and
+  the export, so one bad document cannot end a paid run partway.
+- **The new fields reach the model.** `mounting`, `leadDiameterMm` and
+  `packageOutlineCode` are in `extractionFields`, in the prompt, in the schema,
+  and in `merge.ts`.
+- **Generation constants.** Every constant in `ipc7351.ts`, `kicad.ts` and
+  `pcblib.ts` names its source, including `DEFAULT_MAX_APERTURE_MM`, which names
+  the absence of one.
+- **No part-number branches in production code.** Every part number in `src/`
+  is in a comment recording evidence, plus one UI placeholder.

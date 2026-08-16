@@ -63,7 +63,19 @@ const LAYER = {
    * used to refuse every part that had one.
    */
   topPaste: 35,
-  courtyard: 71
+  courtyard: 71,
+  /**
+   * Multi-Layer, where a plated through hole lives.
+   *
+   * A through-hole pad is not on Top Layer: it passes through the board and
+   * exists on every copper layer at once, which Altium models as its own layer
+   * rather than as a property of a copper one.
+   *
+   * Read off a real library rather than inferred. The vendored reader's own
+   * layer table says `74=MultiLayer`, and Ultra Librarian's LM7805CT-NOPB
+   * `.PcbLib` in `test-data/` puts all three of its TO-220 pads on 74.
+   */
+  multiLayer: 74
 } as const;
 
 /** Record ids, from `pcblib/footprint.py`. */
@@ -168,15 +180,23 @@ interface Point {
 
 /** A pad, as Altium spells it: designator, two identity GUIDs, four blocks and a stack. */
 function padRecord(pad: Pad, seed: string, options: { layer?: number; suppressPaste?: boolean } = {}): Buffer {
-  const layer = options.layer ?? LAYER.topCopper;
-  const mounting: string = pad.mounting;
-  if (mounting !== "smd") {
+  // A PLATED THROUGH HOLE, which is a different primitive from a land.
+  //
+  // Everything this needs was read off a file Altium's own ecosystem wrote:
+  // Ultra Librarian's LM7805CT-NOPB `.PcbLib`, checked in under `test-data/`.
+  // Its three TO-220 pads read back as layer 74, base shapes 1/1/1 (Round),
+  // a 47 mil hole in a 67 mil pad, plated, with no parser warnings. Those are
+  // the four things that differ from a surface-mount land, and nothing here is
+  // inferred from the format's documentation.
+  const throughHole = pad.mounting === "through-hole";
+  if (throughHole && !(pad.drillMm && pad.drillMm > 0)) {
     throw new AltiumEmitError(
-      `Pad ${pad.number} is ${mounting}. This generator writes surface-mount lands only. The hole size is known (the geometry carries it), so this is a gap in the Altium writer rather than in the reading: the KiCad output for this part is complete.`
+      `Pad ${pad.number} is through-hole with no drill size. A hole of zero is not a hole, and writing one would produce unplated pads that look correct on screen.`
     );
   }
+  const layer = options.layer ?? (throughHole ? LAYER.multiLayer : LAYER.topCopper);
   const shape: string = pad.shape;
-  if (shape !== "roundrect") {
+  if (shape !== "roundrect" && shape !== "circle") {
     throw new AltiumEmitError(`Pad ${pad.number} has shape "${shape}", which this generator cannot write.`);
   }
   if (!(pad.widthMm > 0) || !(pad.heightMm > 0)) {
@@ -195,8 +215,18 @@ function padRecord(pad: Pad, seed: string, options: { layer?: number; suppressPa
     main.writeInt32LE(sizeX, offset);
     main.writeInt32LE(sizeY, offset + 4);
   }
-  main.writeInt32LE(0, 45); // no hole: this is a surface-mount land
+  // The hole. Zero for a land, the finished drill for a through-hole pad.
+  main.writeInt32LE(throughHole ? toAltiumUnits(pad.drillMm as number) : 0, 45);
+  // The three base shapes at 49-51. The template ships 1 (Round), which is also
+  // how Altium encodes a ROUNDED RECTANGLE: the base stays round and the real
+  // shape lives in the per-layer stack below. A round through-hole pad wants
+  // Round in both places, which is what the reference file shows.
   main.writeDoubleLE(0, 52); // no rotation: the land pattern is already axis-aligned
+  // PLATED, at offset 60. Derived from the reader's own field order rather than
+  // guessed: 13 common + 8 location + 24 sizes + 4 hole + 3 shapes + 8 rotation.
+  // Without it the hole is written but read back as unplated, which is a hole
+  // with no copper in the barrel: mechanically present, electrically absent.
+  if (throughHole) main[60] = 1;
 
   // The solder mask clearance the DATASHEET stated, where it stated one.
   //
@@ -231,6 +261,12 @@ function padRecord(pad: Pad, seed: string, options: { layer?: number; suppressPa
   // Second block: the per-layer size and shape stack. This is where the rounded
   // rectangle actually lives; the first block's base shape stays "round".
   const stack = Buffer.from(PAD_SIZE_SHAPE_TEMPLATE);
+  // The per-layer shapes ship as 9 (rounded rectangle). A circular pad overrides
+  // them to 1 (Round), matching the reference file, whose pads read back as
+  // 1/1/1 on every layer.
+  if (shape === "circle") {
+    for (let entry = 0; entry < 32; entry += 1) stack[532 + entry] = 1;
+  }
   for (let layer = 0; layer < 29; layer += 1) {
     stack.writeInt32LE(sizeX, layer * 4);
     stack.writeInt32LE(sizeY, 116 + layer * 4);
@@ -319,18 +355,46 @@ function silkscreenTracks(geometry: FootprintGeometry): Buffer[] {
     if (hi < to) draw(Math.max(hi, from), to);
   };
 
-  for (const y of [-halfHeight, halfHeight]) {
+  // An edge the pads ENGULF is moved clear rather than deleted, to whichever
+  // side sits closer to where the body actually is. Without this a through-hole
+  // package gets no outline at all: its holes sit outside the body on one axis
+  // and past its ends on the other, so every edge crosses a pad and clipping
+  // erases all four. The KiCad emitter documents the same rule and the same
+  // reference measurement.
+  const survives = (at: number, from: number, to: number, along: "x" | "y") => {
+    const crossing = blockers
+      .filter((pad) => (along === "x" ? pad.y0 < at && pad.y1 > at : pad.x0 < at && pad.x1 > at))
+      .map((pad) => (along === "x" ? { lo: pad.x0, hi: pad.x1 } : { lo: pad.y0, hi: pad.y1 }));
+    if (crossing.length === 0) return true;
+    return Math.min(...crossing.map((s) => s.lo)) > from || Math.max(...crossing.map((s) => s.hi)) < to;
+  };
+  const clearOf = (at: number, spans: Array<{ lo: number; hi: number }>) => {
+    const crossing = spans.filter((span) => span.lo < at && span.hi > at);
+    if (crossing.length === 0) return at;
+    const inward = Math.max(...crossing.map((span) => span.hi));
+    const outward = Math.min(...crossing.map((span) => span.lo));
+    return Math.abs(at - outward) <= Math.abs(at - inward) ? outward : inward;
+  };
+
+  const spansY = blockers.map((pad) => ({ lo: pad.y0, hi: pad.y1 }));
+  const spansX = blockers.map((pad) => ({ lo: pad.x0, hi: pad.x1 }));
+  const top = survives(-halfHeight, -halfWidth, halfWidth, "x") ? -halfHeight : clearOf(-halfHeight, spansY);
+  const bottom = survives(halfHeight, -halfWidth, halfWidth, "x") ? halfHeight : clearOf(halfHeight, spansY);
+  const left = survives(-halfWidth, -halfHeight, halfHeight, "y") ? -halfWidth : clearOf(-halfWidth, spansX);
+  const right = survives(halfWidth, -halfHeight, halfHeight, "y") ? halfWidth : clearOf(halfWidth, spansX);
+
+  for (const y of [top, bottom]) {
     edge(
-      -halfWidth,
-      halfWidth,
+      left,
+      right,
       blockers.filter((pad) => pad.y0 < y && pad.y1 > y).map((pad) => ({ lo: pad.x0, hi: pad.x1 })),
       (a, b) => tracks.push(trackRecord(LAYER.topOverlay, { xMm: a, yMm: y }, { xMm: b, yMm: y }, SILKSCREEN_WIDTH_MM))
     );
   }
-  for (const x of [-halfWidth, halfWidth]) {
+  for (const x of [left, right]) {
     edge(
-      -halfHeight,
-      halfHeight,
+      top,
+      bottom,
       blockers.filter((pad) => pad.x0 < x && pad.x1 > x).map((pad) => ({ lo: pad.y0, hi: pad.y1 })),
       (a, b) => tracks.push(trackRecord(LAYER.topOverlay, { xMm: x, yMm: a }, { xMm: x, yMm: b }, SILKSCREEN_WIDTH_MM))
     );

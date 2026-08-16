@@ -167,24 +167,83 @@ function silkscreenOutline(geometry: FootprintGeometry): string[] {
    *
    * `crossing` are the pads in the way, projected onto the edge's own axis as
    * one merged span. Two pieces survive at most, one at each end.
+   *
+   * Returns false when nothing survives, which is the caller's signal to MOVE
+   * the edge rather than accept an outline with a side missing.
    */
-  function edge(from: number, to: number, crossing: Array<{ lo: number; hi: number }>, draw: (a: number, b: number) => void) {
+  function edge(from: number, to: number, crossing: Array<{ lo: number; hi: number }>, draw: (a: number, b: number) => void): boolean {
     if (crossing.length === 0) {
       draw(from, to);
-      return;
+      return true;
     }
     const lo = Math.min(...crossing.map((span) => span.lo));
     const hi = Math.max(...crossing.map((span) => span.hi));
-    // Nothing survives when the row runs the whole length of the edge, which is
-    // the normal case for a fine-pitch package's sides.
-    if (lo > from) draw(from, Math.min(lo, to));
-    if (hi < to) draw(Math.max(hi, from), to);
+    let drew = false;
+    if (lo > from) { draw(from, Math.min(lo, to)); drew = true; }
+    if (hi < to) { draw(Math.max(hi, from), to); drew = true; }
+    return drew;
   }
+
+  /**
+   * Where an edge has to sit to clear the pads it would otherwise cross.
+   *
+   * On a surface-mount package the body is larger than the lead rows in at least
+   * one axis, so clipping leaves something and this is never needed. On a
+   * THROUGH-HOLE package it is the normal case: the holes sit outside the body
+   * on one axis and past its ends on the other, so every edge of the body
+   * outline crosses a pad and clipping erases the outline completely.
+   *
+   * A DIP-8 with no silkscreen at all is what that produced. An assembler
+   * orients a through-hole part by its outline and its pin-1 mark, so an empty
+   * silkscreen layer is not a cosmetic loss.
+   *
+   * KiCad's own `DIP-8_W7.62mm` shows the answer: its silk runs from x 1.16 to
+   * 6.46 between two pad columns whose copper ends at 0.8 and starts at 6.82,
+   * and from y -1.33 to 8.95 outside pads that end at -0.8 and 8.42. The
+   * outline is MOVED to clear the pads, not deleted.
+   *
+   * It moves to whichever side of the obstruction is CLOSER to where the body
+   * actually is, which is what keeps the outline honest. On a DIP the pad
+   * columns sit well outside the body, so the sides move inward between them;
+   * the pad rows end barely past the body ends, so the top and bottom move
+   * outward past them. That is the shape the reference draws, and it falls out
+   * of one rule rather than two special cases.
+   */
+  function clearOf(at: number, blocking: Array<{ lo: number; hi: number }>): number {
+    const crossing = blocking.filter((span) => span.lo < at && span.hi > at);
+    if (crossing.length === 0) return at;
+    const inward = Math.max(...crossing.map((span) => span.hi));
+    const outward = Math.min(...crossing.map((span) => span.lo));
+    return Math.abs(at - outward) <= Math.abs(at - inward) ? outward : inward;
+  }
+
+  /**
+   * Whether clipping this edge would leave anything at all.
+   *
+   * Uses the same merged-span rule `edge` uses, so the two cannot disagree about
+   * what survives. An edge only MOVES when the answer is no: on a surface-mount
+   * package the lead rows leave corner stubs and the edge stays where the body
+   * puts it, which is what the reference SOIC-8 draws.
+   */
+  const survives = (at: number, from: number, to: number, along: "x" | "y") => {
+    const crossing = blockers
+      .filter((pad) => (along === "x" ? pad.y0 < at && pad.y1 > at : pad.x0 < at && pad.x1 > at))
+      .map((pad) => (along === "x" ? { lo: pad.x0, hi: pad.x1 } : { lo: pad.y0, hi: pad.y1 }));
+    if (crossing.length === 0) return true;
+    return Math.min(...crossing.map((s) => s.lo)) > from || Math.max(...crossing.map((s) => s.hi)) < to;
+  };
+
+  const spansY = blockers.map((pad) => ({ lo: pad.y0, hi: pad.y1 }));
+  const spansX = blockers.map((pad) => ({ lo: pad.x0, hi: pad.x1 }));
+  const top = survives(-halfHeightMm, -halfWidthMm, halfWidthMm, "x") ? -halfHeightMm : clearOf(-halfHeightMm, spansY);
+  const bottom = survives(halfHeightMm, -halfWidthMm, halfWidthMm, "x") ? halfHeightMm : clearOf(halfHeightMm, spansY);
+  const left = survives(-halfWidthMm, -halfHeightMm, halfHeightMm, "y") ? -halfWidthMm : clearOf(-halfWidthMm, spansX);
+  const right = survives(halfWidthMm, -halfHeightMm, halfHeightMm, "y") ? halfWidthMm : clearOf(halfWidthMm, spansX);
 
   const horizontal = (y: number) =>
     edge(
-      -halfWidthMm,
-      halfWidthMm,
+      left,
+      right,
       blockers.filter((pad) => pad.y0 < y && pad.y1 > y).map((pad) => ({ lo: pad.x0, hi: pad.x1 })),
       (a, b) =>
         lines.push(
@@ -193,8 +252,8 @@ function silkscreenOutline(geometry: FootprintGeometry): string[] {
     );
   const vertical = (x: number) =>
     edge(
-      -halfHeightMm,
-      halfHeightMm,
+      top,
+      bottom,
       blockers.filter((pad) => pad.x0 < x && pad.x1 > x).map((pad) => ({ lo: pad.y0, hi: pad.y1 })),
       (a, b) =>
         lines.push(
@@ -202,10 +261,10 @@ function silkscreenOutline(geometry: FootprintGeometry): string[] {
         )
     );
 
-  horizontal(-halfHeightMm);
-  horizontal(halfHeightMm);
-  vertical(-halfWidthMm);
-  vertical(halfWidthMm);
+  horizontal(top);
+  horizontal(bottom);
+  vertical(left);
+  vertical(right);
   return lines;
 }
 
