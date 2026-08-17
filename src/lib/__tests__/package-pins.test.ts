@@ -332,3 +332,57 @@ test("a designator is matched to its table through the document's own punctuatio
     "neither designator declares a lead count, and both still find their table"
   );
 });
+
+// ---------------------------------------------------------------------------
+// The same defect in the case the lead-count guard above CANNOT reach.
+//
+// That guard compares a declared lead count against the pin table, so it is
+// blind whenever the two packages have the SAME number of leads. Measured
+// 2026-08-17 on the real MAX232 datasheet: asked for `SOIC (D)`, the reader
+// returned outline drawing DW0016A and its dimensions, because the document
+// prints outlines for NS0016A and DW0016A and none at all for the narrow D.
+// Both are 16 lead, nothing fired, and it shipped a 9.3 mm land span where a
+// narrow SOIC-16 is nearer 6 mm. Ordinary-looking copper that no board accepts.
+// ---------------------------------------------------------------------------
+
+/** The 20-pin fixture, relabelled with an outline code from another package. */
+function drawnAs(outlineCode: string, packageName = "SSOP-20 (DW)"): PartRecord {
+  return familyRecord({
+    packageType: cited(packageName),
+    packageOutlineCode: cited(outlineCode)
+  });
+}
+
+test("dimensions read off another package's outline drawing do not build a footprint", async () => {
+  await assert.rejects(
+    () => padNumbers(drawnAs("D0020A", "SSOP-20 (DW)"), "SSOP-20 (DW)"),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError, `unexpected: ${error}`);
+      // Terminal. No number the user types makes one drawing describe another
+      // package, so this must not present as an answerable question.
+      assert.equal(error.needs.length, 0);
+      assert.match(error.reason, /D0020A/, "the refusal names the drawing that was measured");
+      assert.match(error.reason, /DW/, "and the package that was asked for");
+      return true;
+    }
+  );
+});
+
+test("an outline code that agrees with the package name builds normally", async () => {
+  // The control, and the one that matters most: five of the six multi-package
+  // parts measured on 2026-08-17 agree, and a guard that refused them too would
+  // cost more than the defect it prevents.
+  const numbers = await padNumbers(drawnAs("DW0020A", "SSOP-20 (DW)"), "SSOP-20 (DW)");
+  assert.equal(numbers.length, 20);
+});
+
+test("a package name or outline code that carries no designator is not judged", async () => {
+  // The guard may only fire where it can PROVE a disagreement. A JEDEC
+  // registration (`MS-012`) is not a vendor outline code, and a bare family name
+  // states no package code, so neither can settle which drawing was measured.
+  const noCode = await padNumbers(drawnAs("MS-013", "SSOP-20 (DW)"), "SSOP-20 (DW)");
+  assert.equal(noCode.length, 20, "a JEDEC number is not read as a package designator");
+
+  const noToken = await padNumbers(drawnAs("D0020A", "SSOP-20"), "SSOP-20");
+  assert.equal(noToken.length, 20, "a name stating only a family is not judged against a code");
+});

@@ -17,7 +17,8 @@ import {
   cacheCensus,
   preRunProjection,
   chargedSpend,
-  cumulativeSpend
+  cumulativeSpend,
+  SpendLimitReached
 } from "../__bench__/modelcache";
 
 /**
@@ -430,6 +431,41 @@ test("a free local model is never counted against the spend limit", async () => 
   delete process.env.FORGE_SPEND_LIMIT_USD;
   process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
   rmSync(ownFree, { recursive: true, force: true });
+});
+
+test("a cloud provider this file has never heard of is still billed and still capped", async () => {
+  // The Vertex defect, generalised. Billing used to be a list of the providers
+  // that charge, so `vertex:gemini-3.6-flash` — not on the list — was treated as
+  // free: no ledger entry, and the spend ceiling skipped entirely, because the
+  // `SpendLimitReached` throw lives inside the same test. A corpus run would
+  // have gone unbounded and unrecorded on a paid account.
+  //
+  // The name here is deliberately one no code in this repo knows, so the test
+  // fails for the NEXT provider added rather than only for Vertex.
+  const ownNew = mkdtempSync(join(tmpdir(), "forge-newcloud-"));
+  process.env.FORGE_MODEL_CACHE_DIR = ownNew;
+  process.env.FORGE_SPEND_LIMIT_USD = "0.001";
+  const cloud: ExtractionModel = {
+    name: "somecloud:some-model-v9",
+    isConfigured: () => true,
+    extract: async () => ANSWER
+  };
+  const model = cachingModel(cloud, "use", () => "unknown-cloud");
+
+  await assert.rejects(
+    async () => {
+      for (let i = 0; i < 5; i += 1) await model.extract(request({ packageType: `QFN-${i}` }));
+    },
+    (error: unknown) => error instanceof SpendLimitReached,
+    "an unrecognised network model must hit the ceiling, not sail past it"
+  );
+
+  // And it must be on the ledger, or the running total under-reports.
+  assert.ok(chargedSpend().usd > 0, "the calls were recorded as charged");
+
+  delete process.env.FORGE_SPEND_LIMIT_USD;
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(ownNew, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------

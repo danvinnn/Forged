@@ -182,6 +182,94 @@ test("the second pass does not resend the document it already read", async () =>
   );
 });
 
+test("a rendered figure does not overwrite a pin list the first pass already read", async () => {
+  // The precedence rule had no test and was wrong for as long as it existed:
+  // pass 2 won every field unconditionally, including pins.
+  //
+  // Measured on the 2026-08-17 corpus run. RHF1201's pin TABLE is on page 6;
+  // pass 2 was shown pages 5 and 33, read the pinout FIGURE on page 5 instead,
+  // and overwrote a correct `D11(MSB)` with `(MSB)D11` while nulling all 48
+  // electrical types a figure cannot carry. LIS3DH was the same shape, table on
+  // page 9 and figure on page 8, and came out rotated by one position. Both had
+  // been read correctly and thrown away.
+  //
+  // The dimension half is asserted in the same test on purpose. An earlier
+  // attempt at this fix held pass 1 for EVERY field whose page was not rendered,
+  // which sounds more principled and is measurably worse: it also kept
+  // RHF1201's front-page `gullwing` over the `straight` on its package drawing,
+  // and REF5025's page-1 6.9mm over the drawing's 7.035mm. Reading graphics is
+  // the entire reason pass 2 exists, so it has to keep winning those.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { extractDatasheetText } = await import("../../pdftext");
+
+  const path = fileURLToPath(new URL("../../../../test-data/LMP7704-SP.pdf", import.meta.url));
+  const bytes = readFileSync(path);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const real = await extractDatasheetText(buffer);
+  const part = buildPartRecord(real, "LMP7704-SP.pdf");
+  const outline = real.pages.find((page) => /PACKAGE OUTLINE/.test(page.text))!;
+
+  const fromTable = [
+    { number: "1", name: "D11(MSB)", electricalType: "output" as const },
+    { number: "2", name: "D0(LSB)", electricalType: "output" as const }
+  ];
+  const fromFigure = [
+    { number: "1", name: "(MSB)D11", electricalType: "unspecified" as const },
+    { number: "2", name: "(LSB)D0", electricalType: "unspecified" as const }
+  ];
+
+  const model = stub([
+    {
+      values: {
+        pins: { value: fromTable, page: 2 },
+        "dimensions.pitchMm": { value: 1.27, page: 1 }
+      },
+      pagesWorthRendering: [outline.page]
+    },
+    {
+      values: {
+        pins: { value: fromFigure, page: outline.page },
+        "dimensions.pitchMm": { value: 0.65, page: outline.page }
+      }
+    }
+  ]);
+
+  const run = await runExtraction(part, real, buffer, model, "LMP7704-SP.pdf");
+
+  assert.equal(model.seen.length, 2, "the second pass ran");
+  assert.deepEqual(
+    run!.part.pins?.value?.map((pin) => pin.name),
+    ["D11(MSB)", "D0(LSB)"],
+    "the pin table pass one read is not replaced by a figure"
+  );
+  assert.equal(
+    run!.part.dimensions.pitchMm?.value,
+    0.65,
+    "a dimension read off the drawing is still one opinion improved, so pass two wins"
+  );
+
+  // The other half, and the reason this is a page test rather than a blanket
+  // "pass one keeps its pins". Where pass 2 re-reads the SAME page it is looking
+  // at the same evidence with the image, and it is right to win: on RHF310A that
+  // is what corrects `-VCC` to `VCC-`. Blocking it costs that fix.
+  const sameTable = [{ number: "1", name: "VCC-", electricalType: "power" as const }];
+  const rereading = stub([
+    {
+      values: { pins: { value: [{ number: "1", name: "-VCC", electricalType: "power" as const }], page: outline.page } },
+      pagesWorthRendering: [outline.page]
+    },
+    { values: { pins: { value: sameTable, page: outline.page } } }
+  ]);
+
+  const reread = await runExtraction(part, real, buffer, rereading, "LMP7704-SP.pdf");
+  assert.deepEqual(
+    reread!.part.pins?.value?.map((pin) => pin.name),
+    ["VCC-"],
+    "re-reading the same page with the image is an improvement, not a substitution"
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Pass three: the pin table, asked alone on the page the model named.
 //

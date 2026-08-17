@@ -334,6 +334,44 @@ export function declaredLeadCount(designator: string): number | null {
   return counted.length === 1 ? counted[0].leadCount : null;
 }
 
+/**
+ * The vendor's short package code inside a printed package name, or null.
+ *
+ *     "SOIC (DW)"   -> "DW"
+ *     "VSSOP (DGS)" -> "DGS"
+ *     "SOIC"        -> null, the name states a family and no code
+ *
+ * The parenthesised token only, never the family word. A family is shared by
+ * packages of different sizes, so it cannot settle which drawing a set of
+ * dimensions came from, and treating `SOIC` as a code would call `SOIC (D)` and
+ * `SOIC (DW)` the same package, which is precisely the confusion this exists to
+ * catch.
+ */
+export function designatorToken(packageName: string): string | null {
+  const match = /\(([A-Za-z][A-Za-z0-9-]{0,7})\)/.exec(packageName);
+  return match ? match[1].toUpperCase() : null;
+}
+
+/**
+ * The package code a vendor outline-drawing number begins with, or null.
+ *
+ *     "DW0016A"   -> "DW"
+ *     "D0008A"    -> "D"
+ *     "DGS0010A"  -> "DGS"
+ *     "MS-012 AA" -> null, a JEDEC registration and not a vendor outline
+ *
+ * Null wherever the code is not letters-then-digits, which is what keeps this
+ * from judging vendors whose outline numbers carry no designator: it can then
+ * prove nothing and says so, rather than refusing a part it cannot read. The
+ * digits must follow immediately, so a JEDEC number like `MS-012` is rejected by
+ * the hyphen rather than being mistaken for a package called `MS`.
+ */
+export function outlineCodeDesignator(outlineCode: string | null): string | null {
+  if (!outlineCode) return null;
+  const match = /^([A-Za-z]{1,5})\d{2,}[A-Za-z]?$/.exec(outlineCode.trim());
+  return match ? match[1].toUpperCase() : null;
+}
+
 
 
 

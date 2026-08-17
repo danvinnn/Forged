@@ -687,17 +687,44 @@ const USD_PER_M_OUTPUT = 2.5;
  * against Ollama were reported as `~$0.02`. The whole point of the running
  * total is that it matches what the account was charged, so an entry that was
  * never charged must not appear in it.
+ *
+ * FREE IS THE EXCEPTION, NOT THE RULE, and that direction is the whole point.
+ * This asked `startsWith("gemini")` until 2026-08-17, which is a list of the
+ * providers that bill. Adding one that was not on the list therefore made it
+ * free: `vertex:gemini-3.6-flash` does not start with `gemini`, so the Vertex
+ * path arrived reporting `$0.00, this model is local`, wrote nothing to the
+ * ledger, and — because the `SpendLimitReached` throw sits inside this test —
+ * ran with NO CEILING AT ALL. Caught by the projection before the run, not by
+ * anything in the code.
+ *
+ * So the test names the free case instead. A model that runs on this machine is
+ * free; anything reached over the network is assumed to bill until someone says
+ * otherwise. A new provider that is genuinely free is then over-reported, which
+ * is visible and annoying; the other direction is invisible and has now been
+ * the shape of three separate billing defects in this file.
  */
 function wasPaidFor(model: string | undefined, billed?: boolean): boolean {
   // An explicit `false` means the account was on the free tier when this answer
   // was fetched, so it cost nothing however many tokens it burned. Absent means
   // billed, which is right for every entry written before this existed.
   if (billed === false) return false;
-  // Prefix, not equality: the name now carries the model id and thinking budget
-  // when either is overridden, e.g. `gemini:gemini-3.5-flash:think512`. An exact
-  // match would have quietly priced every measurement run at zero, which is the
-  // same class of mistake as pricing free local calls at cloud rates.
-  return model?.startsWith("gemini") ?? false;
+  // Unknown means unknown, not free. An entry with no model recorded is priced,
+  // because every entry on disk without one predates local models entirely.
+  if (model === undefined) return true;
+  return !runsLocally(model);
+}
+
+/**
+ * Whether a model name denotes something running on this machine.
+ *
+ * One function because the answer is needed in two places — what an entry cost,
+ * and what the pre-run projection tells the operator — and the two disagreeing
+ * is exactly how the cost report would come to contradict the ledger. Prefix,
+ * not equality: the name carries the model id, e.g. `local:qwen2.5vl:7b`. Both
+ * local providers are Ollama (`models/local.ts`, `models/local-focused.ts`).
+ */
+function runsLocally(model: string): boolean {
+  return model.startsWith("local");
 }
 
 /**
@@ -858,9 +885,9 @@ export function preRunProjection(options: {
 
   if (!paid) {
     lines.push(
-      freeTier() && model.startsWith("gemini")
-        ? "  cost            $0.00, free tier. Rate limited, not charged."
-        : "  cost            $0.00, this model is local"
+      runsLocally(model)
+        ? "  cost            $0.00, this model is local"
+        : "  cost            $0.00, free tier. Rate limited, not charged."
     );
     return lines.join("\n");
   }

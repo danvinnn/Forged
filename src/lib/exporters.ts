@@ -19,7 +19,7 @@ import {
   type ThermalPadLand
 } from "./ipc7351";
 import { landDisagreements } from "./vendorland";
-import { declaredLeadCount, pinTableFor } from "./packagevariants";
+import { declaredLeadCount, designatorToken, outlineCodeDesignator, pinTableFor } from "./packagevariants";
 import {
   type FootprintGeometry,
   type Pad,
@@ -657,6 +657,40 @@ function buildFootprintGeometry(
         `${part.pinCount} pins, so the two describe different packages. This document covers several, and the ` +
         `pinout on the record belongs to one of the others. Re-read the datasheet for ${part.packageType} to ` +
         `get its own pinout; no footprint is generated from a pin table that is not this package's.`,
+      []
+    );
+  }
+
+  // THE PACKAGE NAME AND THE OUTLINE DRAWING HAVE TO AGREE, for the same reason
+  // and in the case the lead-count check above CANNOT reach.
+  //
+  // That check compares a declared lead count against the pin table, so it is
+  // blind whenever the two packages have the same number of leads. Measured
+  // 2026-08-17: asked for MAX232 in `SOIC (D)`, the reader returned
+  // `packageOutlineCode` DW0016A and the geometry off that drawing, because this
+  // document prints outlines for NS0016A and DW0016A and NONE for the narrow D.
+  // Both are 16 lead, so nothing above fired, and it shipped a land span of
+  // 9.3 mm where a narrow SOIC-16 is nearer 6. That is the failure this product
+  // can least afford: ordinary-looking copper that no board will accept.
+  //
+  // The vendor's outline code CARRIES the designator as its leading letters, so
+  // the record already contains both halves of the contradiction. `DW0016A`
+  // against `SOIC (DW)` agrees; against `SOIC (D)` it does not.
+  //
+  // Only fires when it can PROVE a disagreement. Both parts must parse, so a
+  // code that is not designator-prefixed simply does not reach the comparison
+  // rather than refusing a part it cannot judge. Measured over the six
+  // multi-package parts in the corpus it fires on exactly the one that is wrong
+  // and none of the five that are right.
+  const namedDesignator = designatorToken(part.packageType);
+  const drawnDesignator = outlineCodeDesignator(part.packageOutlineCode);
+  if (namedDesignator !== null && drawnDesignator !== null && namedDesignator !== drawnDesignator) {
+    throw new FootprintUnavailableError(
+      `${part.packageType} was asked for, but the dimensions on the record were read from outline drawing ` +
+        `${part.packageOutlineCode}, which is package ${drawnDesignator} and not ${namedDesignator}. This ` +
+        `datasheet covers several packages, and the one that was measured is not the one named. Re-read the ` +
+        `datasheet for ${part.packageType}; where the document prints no outline for it, its footprint cannot ` +
+        `be built from this document at all.`,
       []
     );
   }

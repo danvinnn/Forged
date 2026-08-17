@@ -82,9 +82,30 @@ fixed, listed because the SHAPE keeps coming back and not as open bugs:
   pinouts sitting on the record
 - `findUnreadableFootprint` written and never called
 - `formedLeadSpanMm` reachable in code and asked for by nothing in the UI
+- pass 1 read the pin TABLE correctly and `combine` let pass 2's pinout FIGURE
+  overwrite it, because pass 2 won every field unconditionally (RHF1201 lost 48
+  electrical types and had `D11(MSB)` broken to `(MSB)D11`; LIS3DH came out
+  rotated one position). Both were the whole of the corpus's pin-name defects
 
 **When coverage looks bad, measure what is already on the record before writing
 a reader.** Every one of these was found by reading, never by a test.
+
+### The bench measures the product WITHOUT the user, so its blocked figures are a floor
+
+`oneClickCheck` calls `packageOptions` on the record as it stands. Naming a
+package in the product does something it cannot: it re-posts to `/api/parse`,
+which sets `packageType` with method `user` and puts it in the model's prompt, so
+the whole document is re-read FOR that package.
+
+Measured 2026-08-17. Six parts the bench reported as reading no geometry at all
+(LM358, ADS1115, OPA2189, MAX232, UCC27524, ISO7741) read completely and ship
+once the package is named, 6 for 6, for about $0.30. Nothing was broken; the
+model had correctly declined to pick among several packages and declined every
+dimension with it.
+
+**Before treating a bench refusal as a defect, check whether the product asks the
+user something the bench never answers.** `src/lib/__bench__/packagehint.ts` is
+the instrument for this and it costs a call per part.
 
 ### Fixed in one place, not the other
 
@@ -97,6 +118,35 @@ and leave the other. Four instances in one session:
 - `local-focused.ts` narrowed the fields and the pages, and not the images
 
 **Ask where else this value lives.**
+
+### An allowlist of the known cases, broken by the next case
+
+A test written as "which things are X" silently answers NO for anything added
+later, and the failure is invisible because nothing is missing, it is just off.
+
+- `wasPaidFor` asked `model.startsWith("gemini")`, a list of the providers that
+  bill. Adding `vertex:gemini-3.6-flash` therefore made it free: no ledger entry,
+  the projection reporting "this model is local", and — because the
+  `SpendLimitReached` throw sits INSIDE that test — no spend ceiling at all on a
+  paid account. Now inverted to name the free case, so a new provider bills by
+  default. Over-reporting a free provider is visible; under-reporting is not, and
+  under-reporting has now been three separate defects in that one file.
+
+**Write the test so the unknown case lands on the SAFE side.** Then ask which
+side that is, and say why in the comment.
+
+### Two readers disagreeing is not the same as one being better
+
+When two passes, or a model and the code, answer the same question, the instinct
+is to rank them. Measured, neither is systematically better, and every rule built
+on "pass N is more reliable" scored worse than the one it replaced. See section 6
+for the two that were measured and rejected.
+
+**The rule that worked names the CONFLICT, not the reader:** prefer the earlier
+reading only where the two actually disagree, and where they agree keep whichever
+one can be cited. On this corpus the override fired on 5 parts when only 2 held a
+real disagreement, and on one of the other three (MSP430F5529) it swapped a
+shipping part for an identical answer that no page could cite.
 
 ### "The model can't read it" is usually a question it cannot answer
 
@@ -166,6 +216,31 @@ symptoms and was false. **Explaining the symptoms is not evidence.**
 Related: refusing is a safety net, not an achievement. The goal is to read more,
 not to refuse more gracefully. Only refuse when the value would be wrong, and say
 plainly what the refusal cost.
+
+### The dangerous defect is the one every input passes
+
+Two guards now exist for one shape: a footprint built from a DIFFERENT package's
+data than the name says. It is the worst failure this product has, because every
+input is individually valid and the result looks entirely ordinary in CAD.
+
+- **Lead count** (2026-08-16): the designator declares a count and the pin table
+  disagrees. Catches an SSOP-20 pinout labelled SSOP-28.
+- **Outline code** (2026-08-17): the vendor's drawing number carries the package
+  designator as its leading letters, so `DW0016A` against `SOIC (D)` is a proven
+  contradiction. Catches what the first one CANNOT, which is two packages with the
+  SAME lead count. MAX232 was asked for the narrow `SOIC (D)`, and since that
+  datasheet prints outlines only for NS0016A and DW0016A it returned the WIDE
+  drawing: a 9.3 mm land span where a narrow SOIC-16 is nearer 6 mm. Both 16 lead,
+  so nothing fired.
+
+**Both fire only where they can PROVE a disagreement.** `declaredLeadCount`
+returns null where a number in a name is not a lead count (SOT-223, TO-220);
+`outlineCodeDesignator` returns null for a JEDEC registration like `MS-013` or
+anything not letters-then-digits. Measured over the six multi-package parts, the
+outline guard fires on the one that is wrong and none of the five that are right.
+
+**When a guard cannot fire, ask what the same defect looks like in that blind
+spot.** The lead-count guard had been shipped for a day and read as covering this.
 
 ### Guard the output, not each input
 
@@ -256,6 +331,15 @@ Re-deriving these costs a day each.
 - **The local model on the production prompt:** qwen2.5vl:7b returns nothing when
   asked 23 fields over the whole document, and reads a pin table 8/8 when asked
   only that over one page. The blocker is context size, not field count.
+- **Holding pass 1 for EVERY field whose page was not rendered:** pin names
+  18/21 to 20/21 and package family 13/14 to 14/14, but fields-complete 53% to
+  **39%**. It sounds more principled than the rule that shipped and is much
+  worse: pass 1 answers dimensions off front-page prose and pass 2 answers them
+  off the drawing, so it re-broke RHF1201's `leadForm` to `gullwing` and took
+  REF5025's page-1 6.9mm over the drawing's 7.035mm.
+- **Always keeping pass 1's pins:** dominated by both alternatives, 18/20 and
+  49%. It discards the case where the rendered figure CORRECTS the table
+  (RHF310A, `-VCC` to `VCC-`).
 
 Two of these actively corrupted parts and were caught by the pinout oracle alone,
 never by the test suite or any bench figure.
