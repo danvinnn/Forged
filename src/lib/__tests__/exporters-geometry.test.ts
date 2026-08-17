@@ -334,12 +334,20 @@ test("a refusal that the user can answer says exactly what it needs", async () =
     () => createExportZip(cfpPart(), "kicad"),
     (error: unknown) => {
       assert.ok(error instanceof FootprintUnavailableError);
-      assert.equal(error.needs.length, 1);
-      const need = error.needs[0];
-      assert.equal(need.field, "formedLeadSpanMm", "names the request field that answers it");
-      assert.equal(need.unit, "mm");
-      assert.equal(need.scope, "install", "an assembler forms to one convention, not one per part");
-      assert.match(need.why, /trims and forms|never bends/, "says why no datasheet has it");
+      // TWO numbers since 2026-08-17, both made by the assembler's forming die:
+      // the seated span and the seated FOOT. The drawing prints neither, and
+      // demanding the foot off the drawing is what made every ceramic flat pack
+      // fail the computed land path. Asked together rather than one per export
+      // attempt.
+      assert.deepEqual(
+        error.needs.map((need) => need.field).sort(),
+        ["formedLeadContactMm", "formedLeadSpanMm"]
+      );
+      for (const need of error.needs) {
+        assert.equal(need.unit, "mm");
+        assert.equal(need.scope, "install", "an assembler forms to one convention, not one per part");
+        assert.match(need.why, /trims and forms|never bends/, "says why no datasheet has it");
+      }
       return true;
     }
   );
@@ -347,8 +355,31 @@ test("a refusal that the user can answer says exactly what it needs", async () =
 
 
 test("answering the need produces the bundle", async () => {
-  const bundle = await createExportZip(cfpPart(), "kicad", { formedLeadSpanMm: 10.16 });
+  // Both formed numbers, because a flat pack's land is sized around a foot the
+  // assembler makes. Supplying only the span used to be enough and produced a
+  // land computed from a contact length read off a drawing that prints none.
+  const bundle = await createExportZip(cfpPart(), "kicad", {
+    formedLeadSpanMm: 10.16,
+    formedLeadContactMm: 0.6
+  });
   assert.ok(bundle.buffer.byteLength > 0);
+});
+
+test("a flat pack still refuses when only the span is answered", async () => {
+  // The half-answered case. The foot is what the land is sized around, so a
+  // pattern built without it would be invented geometry wearing a real number.
+  await assert.rejects(
+    () => createExportZip(cfpPart(), "kicad", { formedLeadSpanMm: 10.16 }),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError);
+      assert.deepEqual(
+        error.needs.map((need) => need.field),
+        ["formedLeadContactMm"],
+        "and asks only for what is still missing"
+      );
+      return true;
+    }
+  );
 });
 
 

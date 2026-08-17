@@ -416,6 +416,36 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
     if (!wanted.has(number)) problems.push(`land "${number}" belongs to no pin of this part (${count} of them)`);
   }
 
+  // AND EVERY PIN THE TABLE LISTS HAS ONE.
+  //
+  // The check above runs against `pinCount`, because that is what the pad placer
+  // numbers from, and its own note explains why: keying off the pins array made
+  // it fire on a record with a known count and an empty table. That is right and
+  // it leaves a hole, because a table can hold a number the count does not reach.
+  //
+  // Measured 2026-08-16 with a pin renamed from 8 to 9 in the record panel,
+  // which the UI allows inline: the footprint came out with pads 1..8 and the
+  // symbol with seven pins, and every check passed. The pads satisfy `wanted`
+  // exactly, so nothing above sees it; pin 9 simply does not exist on the board
+  // and pad 8 connects to nothing in the netlist.
+  //
+  // This is the same defect as a gapped per-package table, arriving by a third
+  // door. `mergeModelValues` guards the model path and `partSchema` guards the
+  // export route, and both are guards on the INPUT, so each new door needs its
+  // own. This one is on the OUTPUT, where there is only ever one door: whatever
+  // produced the record, the footprint and the symbol have to describe the same
+  // set of pins.
+  //
+  // Skipped for an empty table, which is a different and already-reported gap.
+  for (const pin of part.pins) {
+    if (!/^\d+$/.test(pin.number)) continue;
+    if (!seen.has(pin.number)) {
+      problems.push(
+        `the pin table lists pin ${pin.number} and no land was placed for it, so that connection does not exist`
+      );
+    }
+  }
+
   // NO TWO LANDS TOUCH. This is what a wrong pitch, a wrong span or a wrong
   // side-count all produce, whichever of them is at fault.
   for (let left = 0; left < lands.length; left += 1) {

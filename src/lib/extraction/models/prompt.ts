@@ -52,9 +52,15 @@ const FIELD_GUIDE: Record<ExtractionField, string> = {
   "dimensions.landSpanMm":
     "from the same RECOMMENDED FOOTPRINT drawing: the CENTRE-TO-CENTRE distance between two OPPOSING rows of lands, in millimetres. A package with two rows has one such distance. A package with lands on all four sides has two, one per axis; if they differ, report the one measured across the same axis as landPadLengthMm, and if the footprint is square they are the same number. Vendors dimension this three ways: some print the centre-to-centre distance directly, some print the INNER GAP between the two rows and the OUTER extent across them, in which case it is the average of those two, and some print only the outer extent, in which case it is the outer extent minus one land length. Null if the datasheet prints no such drawing.",
   "dimensions.leadSides":
-    "how many SIDES of the package carry leads or pads: 2 for two opposing rows (SOIC, TSSOP, SOT-23, DFN, SON), 4 for leads or pads on all four sides (QFP, QFN, LFCSP). Return the number 2 or 4. THREE separate drawings answer this and any one of them is enough, so check all three before answering null: the package outline, the recommended footprint, and the PINOUT or pin-configuration figure, which shows directly whether the pins run down two sides or around all four. A package with leads on one or three sides is neither; return null for those rather than rounding to 2 or 4.",
+    "how many SIDES of the package carry leads or pads: 1 for a single line of leads along one edge (TO-220, TO-92, SIP, most voltage regulators and transistors), 2 for two opposing rows (SOIC, TSSOP, SOT-23, DFN, SON), 4 for leads or pads on all four sides (QFP, QFN, LFCSP). Return the number 1, 2 or 4. THREE separate drawings answer this and any one of them is enough, so check all three before answering null: the package outline, the recommended footprint, and the PINOUT or pin-configuration figure, which shows directly whether the pins run along one edge, down two sides, or around all four. A package with leads on exactly three sides is none of these; return null for that rather than rounding.",
   "dimensions.leadForm":
-    "how the leads leave the package, from the package outline drawing. Answer exactly 'gullwing' for leads formed out and down onto the board (SOIC, TSSOP, SOT, QFP, SSOP), or 'nolead' for flat pads on the underside of the body with no formed lead (QFN, DFN, SON, LGA). Null if the drawing does not make it clear.",
+    // 'straight' was missing here until 2026-08-17, while the record and the
+    // generator have always accepted it. A ceramic flat pack leaves the factory
+    // with its leads straight and the assembler forms them, and the exporter has
+    // a whole branch for that case, so the model was being asked a question that
+    // could not express the right answer for the packages this product exists to
+    // serve. It answered null, correctly, and that read as a failure to read.
+    "how the leads leave the package, from the package outline drawing. Answer exactly 'gullwing' for leads formed out and down onto the board (SOIC, TSSOP, SOT, QFP, SSOP), 'nolead' for flat pads on the underside of the body with no formed lead (QFN, DFN, SON, LGA), or 'straight' for leads that leave the body flat and unformed, as on a ceramic flat pack (CFP, CDFP, flatpack) where the drawing shows the leads extending straight out in line with the body and the assembler forms them. Null if the drawing does not make it clear.",
   "dimensions.mounting":
     "how THE PACKAGE YOU REPORTED IN packageType attaches to the board, from its own outline drawing. Answer exactly 'smd' if its leads or pads sit on the board surface (SOIC, TSSOP, QFN, QFP, SOT), or 'through-hole' if its leads are straight pins that pass through holes in the board (DIP, PDIP, CDIP, SIP, TO-220, and most axial or radial parts). This is a property of the PACKAGE and not of the part: one datasheet routinely offers the same part as both a DIP and a SOIC, so answer for the one package you chose and not for the document as a whole. A through-hole drawing dimensions the ROW SPACING between the two lines of pins rather than a lead span. Null if the drawing does not make it clear.",
   "dimensions.leadDiameterMm":
@@ -198,7 +204,9 @@ whole document, which you have already read. Use them:
   in "notes". The text layer of a PDF can reverse the order of characters, so a pin printed "VCC-"
   can appear in the text as "-VCC".
 - A dimension printed as a range or with a tolerance (for example "0.40 ± 0.10", or a min/nom/max
-  column) should be reported as its NOMINAL value.
+  column) should be reported as its NOMINAL value, EXCEPT for the fields whose description above
+  asks for {"minMm": <number>, "maxMm": <number>}. Those must keep BOTH endpoints: report
+  {"minMm": 0.30, "maxMm": 0.50} for "0.40 ± 0.10", never 0.40.
 - Report the page number the value was printed on, whether you read it from the image or the text.
 - If a page carries no drawing and no table relevant to a field, that field is simply not on it.
   Do not read a value off a nearby page and attribute it to this one.
@@ -279,6 +287,23 @@ ${DOC_CLOSE}
 Reminder, now that you have read the document: the rules above still apply. Extract only the listed
 fields, return null for anything not stated, cite the page each value appears on, and reply with
 only the JSON object described above.`;
+}
+
+/**
+ * The {minMm, maxMm} pair a drawing prints a lead span or width in.
+ *
+ * One definition, used both to spot a BARE range answer and to accept a wrapped
+ * one. Written twice it would drift, which is the defect shape LEARNINGS.md
+ * names first.
+ */
+function isRangeShape(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as { minMm?: unknown }).minMm === "number" &&
+    typeof (value as { maxMm?: unknown }).maxMm === "number"
+  );
 }
 
 function isExtractionField(value: string): value is ExtractionField {
@@ -404,25 +429,38 @@ export function parseModelResponse(text: string): ExtractionResult {
     pinTablesByPackage?: unknown;
   };
   const values: Partial<Record<ExtractionField, ModelValue>> = {};
+  // Fields the model explicitly answered null on. See `declined` in the
+  // contract: a null is not a reading and must not become one, but losing the
+  // fact that it was ASKED and ANSWERED is what made a prompt bug look for
+  // months like a model that could not read package drawings.
+  const declined: ExtractionField[] = [];
 
   for (const [key, raw] of Object.entries(root.values ?? {})) {
     if (!isExtractionField(key)) continue;
-    if (raw === null || typeof raw !== "object") continue;
 
-    const entry = raw as { value?: unknown; page?: unknown };
+    // A BARE answer, `{"dimensions.pitchMm": 0.65}` instead of the wrapped
+    // `{"value": 0.65, "page": 3}`.
+    //
+    // This used to be dropped on the floor without a trace, which is the same
+    // mistake as an unanswerable question wearing different clothes: the model
+    // read the value, said so, and we discarded it over the shape of the
+    // envelope. The contract still asks for the wrapper, and a bare answer
+    // simply carries no page, which the citation checks downstream already know
+    // how to handle. A bare null is still a refusal and is recorded as one.
+    const bare = raw === null || typeof raw !== "object" || Array.isArray(raw) || isRangeShape(raw);
+    const entry = bare ? { value: raw, page: null } : (raw as { value?: unknown; page?: unknown });
+
     const value = entry.value;
-    if (value === null || value === undefined) continue;
+    if (value === null || value === undefined) {
+      declined.push(key);
+      continue;
+    }
 
     // A range is the shape a drawing prints a lead span or lead width in, so it
     // is accepted as a value. Anything else object-shaped is not: an unknown
     // object here means the model answered in a form we do not understand, and
     // guessing at it is how a wrong number reaches copper.
-    const isRange =
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value) &&
-      typeof (value as { minMm?: unknown }).minMm === "number" &&
-      typeof (value as { maxMm?: unknown }).maxMm === "number";
+    const isRange = isRangeShape(value);
 
     const usable =
       typeof value === "string" || typeof value === "number" || Array.isArray(value) || isRange;
@@ -458,5 +496,5 @@ export function parseModelResponse(text: string): ExtractionResult {
         .filter((entry): entry is { packageType: string; pins: PinRecord[] } => entry !== null)
     : undefined;
 
-  return { values, notes, pagesWorthRendering, pinTablesByPackage };
+  return { values, declined, notes, pagesWorthRendering, pinTablesByPackage };
 }

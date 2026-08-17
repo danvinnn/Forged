@@ -12,11 +12,17 @@
  *
  * Worse than missing, the text layer can be WRONG in a way nothing downstream
  * can detect. An RHF310A prints pin 4 as `VCC-` and hands the extractor `-VCC`,
- * because the glyphs are positioned right to left with a negative advance. The
- * deterministic reader detects that and refuses (see `hasPrintedOrder` in
- * pdftext.ts). A model given the same string cannot: measured on 2026-08-03, the
- * text pass reported `-VCC` with a citation that verified, because the string
- * really is in the text layer. Given the RENDERED page it reads `VCC-`.
+ * because the glyphs are positioned right to left with a negative advance. A
+ * model given that string cannot tell: measured on 2026-08-03, the text pass
+ * reported `-VCC` with a citation that VERIFIED, because the string really is in
+ * the text layer. Given the RENDERED page it reads `VCC-`.
+ *
+ * There used to be a second line of defence here, `hasPrintedOrder` in
+ * pdftext.ts, which flagged a run whose glyph advance was negative so the
+ * deterministic reader could refuse it. That reader was deleted on 2026-08-14
+ * and the flag went with it on 2026-08-16, having had no caller in between. So
+ * rendering the page is not a belt-and-braces improvement on a check that still
+ * runs: it is the only thing standing between a reversed pin name and a netlist.
  *
  * So this is not an optimisation. For an entire class of values the render is
  * the only faithful view of the document.

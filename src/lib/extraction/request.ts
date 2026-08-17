@@ -7,11 +7,22 @@ import { unresolvedFields } from "./merge";
 /**
  * The packages this document names, as the record already recorded them.
  *
- * `packageVariants` is used rather than a fresh scan because it is already
- * narrowed to the variants that FIT this part: a variant declaring a lead count
- * the part does not have is dropped upstream, so an OPA2277's document does not
- * offer the quad's 14-pin SOIC here. Offering a package the part does not come
- * in is offering a wrong answer dressed as a choice.
+ * `packageVariants` is used rather than a fresh scan because the scan has
+ * already happened: `buildPartRecord` runs it once, preferring the vendor's own
+ * ordering table where the document has one, which is the only source here that
+ * can tell this part's packages from its siblings'.
+ *
+ * NOT narrowed to the packages that fit this part. This said it was, and nothing
+ * has narrowed it since the deterministic parser was deleted on 2026-08-14; the
+ * claim was a leftover describing a filter that used to exist. It cannot be true
+ * at this point in any case: the narrowing it described needs a pin count, and
+ * the whole reason this request is being built is that the pin count is one of
+ * the things nobody has read yet.
+ *
+ * So this is the list of packages the document NAMES, and that is all it claims
+ * to be. The model is told they are candidates from the document rather than
+ * answers, and is told to refuse where the part number does not decide between
+ * them.
  *
  * Capped, because this is prompt text and a family datasheet can name a dozen.
  * The front-matter ones come first: a package printed on page 1 is the one the

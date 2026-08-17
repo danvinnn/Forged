@@ -65,8 +65,22 @@ function setFieldAt(part: PartRecord, field: ExtractionField, value: Extracted<u
     case "jedecOutline":
       part.jedecOutline = value as Extracted<string>;
       return;
+    case "packageOutlineCode":
+      part.packageOutlineCode = value as Extracted<string>;
+      return;
     default: {
+      // The SAME guard `fieldAt` carries, and it was missing here until
+      // 2026-08-17 while `fieldAt` had it. `packageOutlineCode` was the field
+      // that fell through: it split to ["packageOutlineCode"], key came out
+      // undefined, and the value was written to a property literally named
+      // "undefined" on the Extracted object. The record kept value: null, the
+      // model's answer was lost on every part, and the notes still reported the
+      // field as filled.
+      //
+      // Silent and total, exactly as the note in `fieldAt` predicted, and it
+      // survived because that fix was applied to one of the two functions.
       const [group, key] = field.split(".") as ["dimensions" | "radiation", string];
+      if (key === undefined) throw new Error(`extraction field "${field}" has no case in setFieldAt`);
       (part[group] as Record<string, Extracted<unknown>>)[key] = value;
     }
   }
@@ -104,6 +118,9 @@ function normalizeModelPins(
 
   const pins: PinRecord[] = [];
   let exposedPad = false;
+  // The designators that were NOT pin numbers, kept so a table with none can say
+  // what it actually contained instead of blaming the document.
+  const skipped: string[] = [];
   for (const row of rows) {
     if (row === null || typeof row !== "object") {
       return { ok: false, reason: "a row was not an object" };
@@ -136,6 +153,7 @@ function normalizeModelPins(
     // review panel no longer die with it.
     if (!/^\d+$/.test(raw)) {
       exposedPad = true;
+      skipped.push(raw);
       continue;
     }
     const number = raw;
@@ -156,9 +174,38 @@ function normalizeModelPins(
     pins.push({ number, name, electricalType, ...(description ? { description } : {}) });
   }
 
-  // Dropping the pad row must not leave an empty table: a model that answered
-  // with nothing but terminals has not read a pinout.
-  if (pins.length === 0) return { ok: false, reason: "the pin table had no numbered rows" };
+  // Dropping the pad row must not leave an empty table.
+  //
+  // But "no numbered rows" is not always a failure to READ, and saying so blamed
+  // the document for our own scope. A ball- or land-grid array addresses every
+  // terminal by grid position, `A1`, `B2`, `C3`, so a perfectly read BGA pinout
+  // arrives here with every row skipped and used to be reported as an unreadable
+  // pin table. TXB0104 in the corpus is one.
+  //
+  // Stated as the SHAPE of the designators rather than as a package name, so it
+  // covers any grid-addressed part rather than the one that prompted it: a row
+  // letter followed by a column number is the addressing scheme, whatever the
+  // vendor calls the package.
+  if (pins.length === 0) {
+    const grid = skipped.length > 0 && skipped.every((designator) => /^[A-Za-z]{1,2}\d{1,3}$/.test(designator));
+    if (grid) {
+      return {
+        ok: false,
+        reason:
+          `the pinout was read correctly, but every terminal is addressed by grid position ` +
+          `(${skipped.slice(0, 3).join(", ")}), which is a ball- or land-grid array. Forge builds ` +
+          `packages with leads on two or four sides and has no grid arrangement, so this pinout ` +
+          `cannot be turned into a footprint`
+      };
+    }
+    return {
+      ok: false,
+      reason:
+        skipped.length > 0
+          ? `the pin table had no numbered rows, only ${skipped.slice(0, 4).join(", ")}`
+          : "the pin table had no numbered rows"
+    };
+  }
 
   return { ok: true, pins, exposedPad };
 }
@@ -372,6 +419,26 @@ export function citeRenderedPage(
   if (!sentPages.includes(claimed.page)) return null;
   const page = doc.pages.find((candidate) => candidate.page === claimed.page);
   if (!page) return null;
+
+  // A PAGE CARRYING AN INJECTION IS NOT EVIDENCE, WHOLE.
+  //
+  // The text path cuts the quarantined region out and matches against what is
+  // left, which is right there: the real occurrence of a value survives the cut
+  // and the planted one contributes nothing. That is not available here. A value
+  // read off an IMAGE cannot be attributed to a region of it, so there is no way
+  // to say the model looked at the drawing rather than at the injected sentence
+  // rendered three inches below it. Pixels cannot be cut the way text can.
+  //
+  // So the whole page is refused. Found by audit on 2026-08-17: this function
+  // consulted the quarantine not at all, and `untrusted.ts` claimed that even a
+  // fully successful injection "cannot become a citation, so it cannot become
+  // geometry". That was true of the text path and false of this one, which is
+  // the newer of the two and the one drawings actually go through.
+  //
+  // The cost is a page with a false positive in it losing its drawing citation.
+  // The value is kept and marked untraceable rather than lost, which is the
+  // right side to fail on.
+  if (quarantinedRegions(page.text).length > 0) return null;
 
   const marker = DRAWING_CONTEXT.map((pattern) => pattern.exec(page.text)?.[0]).find(Boolean);
   return {
@@ -620,6 +687,24 @@ export function mergeModelValues(
       )
     ];
   }
+  // What the model LOOKED FOR and did not find, as one line rather than one per
+  // field. The distinction it preserves is the whole point: a field the document
+  // is silent about is a different situation from a field nobody asked about,
+  // and for months those were indistinguishable on this record. `leadForm` came
+  // back null for 37 of 81 parts because the prompt offered two of the three
+  // values it accepts, and there was no way to see that from here.
+  //
+  // Summarised, not enumerated per field, because the honest declines are
+  // routine: a package with no exposed pad declines both thermal pad dimensions
+  // every time, and a note each would bury the interesting ones.
+  const declined = result.declined ?? [];
+  if (declined.length > 0) {
+    merged.notes = [
+      ...merged.notes,
+      `${modelName} looked for ${declined.length} field(s) and reported the document does not state them: ${declined.join(", ")}.`
+    ];
+  }
+
   for (const note of result.notes ?? []) merged.notes.push(`${modelName}: ${note}`);
 
   // A document that addresses the reader as an agent is reported, whether or not

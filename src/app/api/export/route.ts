@@ -130,6 +130,22 @@ export async function POST(request: Request) {
     );
   }
 
+  // The seated FOOT, from the same forming operation and for the same reason: an
+  // unformed lead has none until the assembler's die makes one, so no datasheet
+  // prints it. Bounded far tighter than the span because a foot is a feature of
+  // one lead rather than a distance across the package; anything above a few
+  // millimetres is a typo or a different dimension.
+  const formedContact = payload.formedLeadContactMm;
+  if (
+    formedContact !== undefined &&
+    (typeof formedContact !== "number" || !Number.isFinite(formedContact) || formedContact <= 0 || formedContact > 5)
+  ) {
+    return NextResponse.json(
+      { error: "formedLeadContactMm must be a positive number of millimetres, no greater than 5." },
+      { status: 400 }
+    );
+  }
+
   // The land pattern the user typed, when their datasheet did not print one.
   //
   // Validated exactly as strictly as the span above: these become copper. A
@@ -206,6 +222,7 @@ export async function POST(request: Request) {
   try {
     bundle = await createExportZip(part, format, {
       formedLeadSpanMm: formedSpan,
+      formedLeadContactMm: formedContact,
       supplied: suppliedNumbers as SuppliedDimensions
     });
   } catch (error) {

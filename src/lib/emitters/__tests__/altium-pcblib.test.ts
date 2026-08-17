@@ -432,13 +432,42 @@ test("an exposed thermal pad is written, not refused", () => {
   assert.notDeepEqual(bytes, emitAltiumPcbLib(geometry), "and the pad reached the file");
 });
 
-test("thermal vias reach the Altium file too", () => {
+test("a thermal via is a HOLE, not a disc of copper", () => {
+  // ## What this replaces
+  //
+  // `assert.notDeepEqual(emitAltiumPcbLib(withVias), emitAltiumPcbLib(geometry))`
+  // and nothing else: the bytes differ from a footprint with no vias. That is
+  // satisfied by writing anything at all, and what was written was
+  // `mounting: "smd"` with the drill discarded, so `padRecord` stored a hole
+  // size of ZERO and left the plated flag clear. Every via came out a solid disc
+  // of copper on the top layer.
+  //
+  // A via with no barrel conducts no heat into the board, which is the entire
+  // reason the datasheet dimensions them. The KiCad emitter has always written
+  // these as plated holes on every copper layer, so the two formats disagreed
+  // about the same footprint and only one of them was checked.
+  //
+  // Asserted through the ORACLE rather than against our own bytes, and on the
+  // properties that make it a via: it is on Multi-Layer, it has a hole of the
+  // size the datasheet gave, and the hole is plated.
   const geometry = onePadGeometry();
   const withVias = {
     ...geometry,
     thermalVias: [{ centre: { xMm: 0, yMm: 0 }, drillMm: 0.35, padMm: 0.7 }]
   };
-  assert.notDeepEqual(emitAltiumPcbLib(withVias), emitAltiumPcbLib(geometry));
+
+  const read = readBack(emitAltiumPcbLib(withVias));
+  const pads = read.parts[0].records.filter((record) => record.kind === "PcbPad") as unknown as OraclePad[];
+  const vias = pads.filter((pad) => pad.designator === "");
+  assert.equal(vias.length, 1, "one via reached the file");
+
+  const via = vias[0];
+  assert.equal(via.layer, 74, "a via passes through the board, so it is Multi-Layer and not Top Layer");
+  assert.ok(via.holeSize > 0, "a via with no hole is a disc of copper, which moves no heat");
+  assert.ok(
+    Math.abs(via.holeSize - 0.35 / 0.0254) < 1,
+    `the hole is the drill the datasheet gave, in mils; got ${via.holeSize}`
+  );
 });
 
 // ---------------------------------------------------------------------------

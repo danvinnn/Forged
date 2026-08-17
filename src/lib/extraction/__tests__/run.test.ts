@@ -139,12 +139,11 @@ test("on a REAL pdf the second pass happens, and carries the pages the model ask
   assert.equal(model.seen.length, 2, "both passes ran");
   assert.equal(model.seen[0].images.length, 0, "first pass: text only");
   assert.ok(model.seen[1].images.length > 0, "second pass: the page was rendered and attached");
-  assert.deepEqual(
-    model.seen[1].images.map((image) => image.page),
-    [outline.page],
-    "and it is the page the MODEL asked for, not one we chose"
+  assert.ok(
+    model.seen[1].images.map((image) => image.page).includes(outline.page),
+    "and the page the MODEL asked for is among them: nothing may drop its choice"
   );
-  assert.deepEqual(outcome.renderedPages, [outline.page]);
+  assert.ok(outcome.renderedPages.includes(outline.page));
   assert.equal(outcome.lookedAtPages, true);
 });
 
@@ -169,10 +168,13 @@ test("the second pass does not resend the document it already read", async () =>
 
   assert.equal(model.seen.length, 2);
   assert.equal(model.seen[0].pages.length, real.pages.length, "pass one is the whole document");
-  assert.deepEqual(
-    model.seen[1].pages.map((page) => page.page),
-    [outline.page],
-    "pass two carries only the page it is looking at"
+  assert.ok(
+    model.seen[1].pages.map((page) => page.page).includes(outline.page),
+    "pass two carries the page it is looking at"
+  );
+  assert.ok(
+    model.seen[1].pages.length < real.pages.length,
+    "pass two carries only the pages being looked at, never the document again"
   );
   assert.ok(
     model.seen[1].pages.length < model.seen[0].pages.length / 5,
@@ -285,4 +287,82 @@ test("the pipeline makes at most two model calls", async () => {
   const part = buildPartRecord(doc, "ACME555.pdf");
   await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
   assert.ok(model.seen.length <= 2, `expected at most 2 calls, saw ${model.seen.length}`);
+});
+
+test("the prompt offers every leadForm value the record accepts", async () => {
+  // The defect this locks out, found 2026-08-17: the record and the generator
+  // accept gullwing, nolead and straight, and the prompt offered only the first
+  // two. A ceramic flat pack therefore had no valid answer and the model
+  // returned null, correctly, for 37 of 81 parts. It read as a model that could
+  // not read package drawings, and it was a question that could not express the
+  // answer.
+  //
+  // Generalised rather than pinned to leadForm: any field the record constrains
+  // to a set must offer that whole set, or the same failure returns elsewhere.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const guide = readFileSync(fileURLToPath(new URL("../models/prompt.ts", import.meta.url)), "utf8");
+  const types = readFileSync(fileURLToPath(new URL("../../types.ts", import.meta.url)), "utf8");
+
+  for (const [field, line] of [
+    ["leadForm", /leadForm: extracted\(z\.enum\(\[([^\]]+)\]/],
+    ["mounting", /mounting: extracted\(z\.enum\(\[([^\]]+)\]/],
+    ["solderMaskDefined", /solderMaskDefined: extracted\(z\.enum\(\[([^\]]+)\]/]
+  ] as const) {
+    const declared = types.match(line);
+    assert.ok(declared, `${field} must still be a zod enum for this test to mean anything`);
+    const allowed = [...declared[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(allowed.length > 0);
+
+    const start = guide.indexOf(`"dimensions.${field}":`);
+    assert.ok(start > 0, `${field} must be described to the model`);
+    const description = guide.slice(start, start + 1600);
+    for (const value of allowed) {
+      assert.ok(
+        description.includes(`'${value}'`),
+        `the prompt never offers ${field} = '${value}', so the model cannot return it`
+      );
+    }
+  }
+});
+
+test("every field merge requires as a min/max pair is asked for that way, and no other is", async () => {
+  // The contradiction this locks out, found 2026-08-17. `merge.ts` DROPS
+  // leadWidthMm, leadSpanMm and leadContactMm unless they arrive as a positive
+  // min/max pair, and the image-pass guidance told the model to report any
+  // dimension printed as a range "as its NOMINAL value". On the pass that reads
+  // drawings, obeying one instruction meant losing the value to the other.
+  // leadSpanMm was missing on 6 of 12 blocked parts and leadContactMm on 4.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const guide = readFileSync(fileURLToPath(new URL("../models/prompt.ts", import.meta.url)), "utf8");
+  const merge = readFileSync(fileURLToPath(new URL("../merge.ts", import.meta.url)), "utf8");
+
+  // The fields merge insists on as ranges, read out of the guard itself so this
+  // cannot fall behind a fourth one being added.
+  const guard = merge.slice(merge.indexOf("const range = asRange(value);") - 400, merge.indexOf("const range = asRange(value);"));
+  const required = [...guard.matchAll(/field === "(dimensions\.\w+)"/g)].map((m) => m[1]);
+  assert.ok(required.length >= 3, "expected merge to require several range fields");
+
+  for (const field of required) {
+    const start = guide.indexOf(`"${field}":`);
+    assert.ok(start > 0, `${field} must be described to the model`);
+    const description = guide.slice(start, start + 900);
+    // Bare substrings: the guide escapes its quotes in source, so it reads
+    // \"minMm\" on disk rather than "minMm".
+    assert.ok(
+      description.includes("minMm") && description.includes("maxMm"),
+      `${field} is dropped unless it is a min/max pair, so the guide must ask for one`
+    );
+  }
+
+  // And the nominal-value instruction must carve them out, or the image pass
+  // asks for the one shape the merge refuses.
+  const nominal = guide.indexOf("NOMINAL value");
+  assert.ok(nominal > 0, "the image guidance still mentions nominal values");
+  const clause = guide.slice(nominal, nominal + 400);
+  assert.ok(
+    /minMm/.test(clause) && /EXCEPT|except/.test(clause),
+    "the nominal-value rule must exempt the min/max fields"
+  );
 });

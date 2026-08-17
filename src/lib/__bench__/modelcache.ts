@@ -669,6 +669,12 @@ export function cacheSize(): number {
  * Here so a run can print what it spent instead of leaving it to be discovered
  * on a billing page. Wrong the moment Google changes it, which is why nothing
  * depends on it being right: it is a number in a report, not a decision input.
+ *
+ * ONE RATE FOR BOTH PROVIDERS. The Vertex path added on 2026-08-17 calls the
+ * same model id, `gemini-3.6-flash`, so the same per-token rate applies to
+ * both. That is still an assumption about Vertex's price list rather than a
+ * checked fact: spend has already been under-reported to the user twice, so
+ * check the published Vertex rate before trusting a Vertex cost figure.
  */
 const USD_PER_M_INPUT = 0.3;
 const USD_PER_M_OUTPUT = 2.5;

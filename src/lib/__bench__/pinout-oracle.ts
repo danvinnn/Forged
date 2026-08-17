@@ -388,9 +388,10 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
     //
     // Pin 4 is printed `VCC-`. The text layer hands the run over as `"-VCC"`
     // with a NEGATIVE advance, meaning the glyphs were positioned right to left
-    // and the string is not the printed order, so the deterministic reader
-    // refuses it rather than emit a pin nobody can connect. See `hasPrintedOrder`
-    // in pdftext.ts. That refusal was right, and it was never the whole story:
+    // and the string is not the printed order. A deterministic reader used to
+    // detect that and refuse rather than emit a pin nobody can connect; both it
+    // and the flag it used are gone. That refusal was right, and it was never
+    // the whole story:
     // the PAGE shows `VCC-` perfectly plainly, and a model reading the render
     // returns it. The information was in the document the entire time and the
     // text layer was the only thing that could not see it.

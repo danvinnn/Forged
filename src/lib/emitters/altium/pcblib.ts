@@ -179,7 +179,11 @@ interface Point {
 }
 
 /** A pad, as Altium spells it: designator, two identity GUIDs, four blocks and a stack. */
-function padRecord(pad: Pad, seed: string, options: { layer?: number; suppressPaste?: boolean } = {}): Buffer {
+function padRecord(
+  pad: Pad,
+  seed: string,
+  options: { layer?: number; suppressPaste?: boolean; suppressMask?: boolean } = {}
+): Buffer {
   // A PLATED THROUGH HOLE, which is a different primitive from a land.
   //
   // Everything this needs was read off a file Altium's own ecosystem wrote:
@@ -253,6 +257,20 @@ function padRecord(pad: Pad, seed: string, options: { layer?: number; suppressPa
   if (options.suppressPaste) {
     main.writeInt32LE(-toAltiumUnits(10), 90);
     main[105] = 1;
+  }
+
+  // TENTED, for a thermal via. Same mechanism as the paste suppression above,
+  // one field over: the value at 94 with the manual flag at 106, which this
+  // writer already uses for the datasheet's own mask clearance.
+  //
+  // A via inside a solder land must be covered. An open barrel wicks paste down
+  // during reflow, starving the joint and leaving voids under the pad that is
+  // there to move heat. The KiCad emitter says the same thing and expresses it
+  // by writing the via on copper layers with no mask layer at all; Altium has no
+  // per-pad layer list, so the opening is closed instead.
+  if (options.suppressMask) {
+    main.writeInt32LE(-toAltiumUnits(10), 94);
+    main[106] = 1;
   }
   main.writeUInt32LE(v7LayerId(layer), 114);
   identityGuid(`${seed}:pad:${pad.number}`).copy(main, 126);
@@ -771,6 +789,21 @@ export function emitAltiumPcbLib(geometry: FootprintGeometry, extras: AltiumFoot
       )
     ),
     // Thermal vias, where the datasheet dimensioned them.
+    //
+    // A VIA IS A HOLE. This wrote them as `mounting: "smd"` with no drill, so
+    // `padRecord` stored a hole size of zero and left the plated flag clear:
+    // every via came out a solid disc of copper on the top layer. A via with no
+    // barrel conducts no heat into the board, which is the entire reason the
+    // datasheet dimensions them, and it is invisible on screen because the pad
+    // is there and the right size.
+    //
+    // The KiCad emitter has always written these as plated holes on every copper
+    // layer. This is the same via, spelled the way Altium spells it: Multi-Layer
+    // by `padRecord`, round like the drill, and tented so the barrel does not
+    // wick paste out of the joint above it.
+    //
+    // The test that covered this asserted only that the bytes differed from a
+    // footprint with no vias, which a solid copper disc satisfies perfectly.
     ...geometry.thermalVias.map((via, index) =>
       padRecord(
         {
@@ -778,10 +811,12 @@ export function emitAltiumPcbLib(geometry: FootprintGeometry, extras: AltiumFoot
           centre: via.centre,
           widthMm: via.padMm,
           heightMm: via.padMm,
-          shape: "roundrect",
-          mounting: "smd"
+          shape: "circle",
+          mounting: "through-hole",
+          drillMm: via.drillMm
         },
-        `${seed}:via:${index}`
+        `${seed}:via:${index}`,
+        { suppressMask: true }
       )
     ),
     ...silkscreenTracks(geometry),
@@ -821,7 +856,15 @@ export function emitAltiumPcbLib(geometry: FootprintGeometry, extras: AltiumFoot
   const parameters = new ByteWriter()
     .parameterBlock([
       ["PATTERN", footprintName],
-      ["HEIGHT", "0mil"],
+      // The real height, in the SECOND place the format stores it.
+      //
+      // `componentParamsTocStream` carries the same number and its own note
+      // records why: hardcoded to zero, the panel reports every part as flat and
+      // any height-clearance rule against a mechanical keep-out passes
+      // everything. That was found and fixed there, and this copy was left at
+      // `0mil`, so the defect survived in one of the two places the format asks
+      // for it. Altium reads this one as the footprint's own property.
+      ["HEIGHT", `${Number(((model?.heightMm ?? 0) / MM_PER_MIL).toFixed(4))}mil`],
       ["DESCRIPTION", description],
       ["ITEMGUID", ""],
       ["REVISIONGUID", ""]

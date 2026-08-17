@@ -23,6 +23,20 @@
 // returned exactly what the attacker asked for, the claim cannot become a
 // citation, so it cannot become geometry.
 //
+// THAT CLAIM COVERS BOTH CITATION PATHS, and it did not until 2026-08-17. A
+// value can be cited from the page TEXT or from a RENDERED page, and only the
+// first consulted this module. An audit found that a page carrying an injected
+// instruction was refused by `verifyCitation` and then cited anyway by
+// `citeRenderedPage`, which is the newer path and the one every drawing read
+// goes through.
+//
+// The two paths cannot defend themselves the same way, and the difference is
+// worth understanding before changing either. Text can be CUT: the quarantined
+// region is removed and the value matched against what remains, so a real
+// occurrence still counts and the planted one contributes nothing. An image
+// cannot, because a value read off a page cannot be attributed to a region of
+// it. So the render path refuses a page with any quarantined region, whole.
+//
 // It also does not try to stop an attacker who writes a plausible WRONG
 // datasheet. A document that quietly says a 16-pin part has 14 pins, in ordinary
 // datasheet prose, is indistinguishable from a document with a typo, and no

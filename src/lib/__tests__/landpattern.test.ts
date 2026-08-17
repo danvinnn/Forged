@@ -266,15 +266,29 @@ test("an untrimmed flat pack asks for the formed span, once per assembler", asyn
   //
   // A family table used to know this, and it knew it by name. The drawing shows
   // it, so it is read off the drawing.
+  // TWO numbers since 2026-08-17, both made by the same forming die. Hand-read
+  // evidence: TI's PW0008A prints the seated foot on Detail A because a gull-wing
+  // lead arrives formed, and the HBH0014A ceramic flat pack prints no such
+  // dimension at all. So a straight lead has no foot to read either, and taking
+  // one off the drawing would size the land around a number describing the
+  // UNFORMED part.
+  //
+  // This fixture is a SOIC-8 drawing with the lead form flipped, so it still
+  // carries a printed contact length that a real flat pack would not.
   const error = await refusal(withDimensions({ ...DRAWN_SOIC8, leadForm: "straight" }));
 
-  assert.deepEqual(error.needs.map((need) => need.field), ["formedLeadSpanMm"]);
-  assert.equal(error.needs[0].scope, "install", "an assembler forms to one convention, not per part");
+  assert.deepEqual(
+    error.needs.map((need) => need.field).sort(),
+    ["formedLeadContactMm", "formedLeadSpanMm"]
+  );
+  for (const need of error.needs) {
+    assert.equal(need.scope, "install", "an assembler forms to one convention, not per part");
+  }
 });
 
 test("and builds from it, taking the figure as given rather than widening it", async () => {
   const part = withDimensions({ ...DRAWN_SOIC8, leadForm: "straight" });
-  const bundle = await createExportZip(part, "kicad", { formedLeadSpanMm: 10.16 });
+  const bundle = await createExportZip(part, "kicad", { formedLeadSpanMm: 10.16, formedLeadContactMm: 0.6 });
   const zip = await JSZip.loadAsync(bundle.buffer);
   const name = Object.keys(zip.files).find((file) => file.endsWith(".kicad_mod"))!;
   const footprint = await zip.files[name].async("string");
@@ -435,7 +449,16 @@ test("a through-hole part whose row count was not read asks, rather than assumin
  * answer "my part has one row" is visibly accounted for. Otherwise this is the
  * shape of ask that trains someone to type 2 and take the wrong footprint.
  */
-test("the through-hole question says outright that one row of pins is not built", async () => {
+test("the through-hole question asks which row count it is, now that BOTH are built", async () => {
+  // This test asserted the opposite until 2026-08-17: that a single line of pins
+  // "is not built", which was true and was a limit of the RECORD rather than of
+  // the reading. `leadSides` was typed `2 | 4`, so a TO-220 could not be
+  // represented however well its datasheet was read.
+  //
+  // Widening the type is what made the honest answer sayable. What has NOT
+  // changed, and is the half worth protecting, is that an unread row count still
+  // refuses: null is not a default, and null is the state that once shipped a
+  // 3-lead regulator as two columns 5 mm apart.
   const error = await refusal(
     withDimensions({
       pitchMm: 2.54,
@@ -447,7 +470,8 @@ test("the through-hole question says outright that one row of pins is not built"
   );
   const need = error.needs.find((entry) => entry.field === "leadSides");
   assert.ok(need, "the row count is what is asked for");
-  assert.match(need.why, /single line of pins/, "and the limit is stated rather than left to be discovered");
+  assert.match(need.why, /single line/, "and both shapes are named, so the answer is obvious");
+  assert.match(need.label, /1 for a TO-220/, "the label says what a 1 means");
 });
 
 // ---------------------------------------------------------------------------
@@ -478,8 +502,16 @@ test("the one question no datasheet can answer carries no page", async () => {
   // look, and the UI renders the absence as its own sentence.
   const error = await refusal(withDimensions({ ...DRAWN_SOIC8, leadForm: "straight" }));
 
-  assert.deepEqual(error.needs.map((need) => need.field), ["formedLeadSpanMm"]);
-  assert.ok(!error.needs[0].page, "no page, because no datasheet has one");
+  // Both formed numbers are exceptions, for the same reason: the manufacturer
+  // ships the leads straight and never bends them, so no page of any datasheet
+  // carries the seated span OR the foot it produces.
+  assert.deepEqual(
+    error.needs.map((need) => need.field).sort(),
+    ["formedLeadContactMm", "formedLeadSpanMm"]
+  );
+  for (const need of error.needs) {
+    assert.ok(!need.page, `${need.field} claims a page, but no datasheet has one`);
+  }
 });
 
 test("a question about a document that prints no footprint has no page either", async () => {

@@ -20,9 +20,15 @@
  */
 
 /**
- * Held back for the work after the model returns: the land-pattern cross-check,
- * the drawing lookup, and serialising the response. All local and all fast, but
- * not free, and the deadline that matters is the platform's rather than ours.
+ * Held back for the work after the model returns, which is `buildReadout`: the
+ * drawing lookup, the printed-footprint lookup, one footprint build per offered
+ * package, the confidence checks, and rasterising the pages the panel shows. All
+ * local, none of it free, and the deadline that matters is the platform's rather
+ * than ours.
+ *
+ * This named the land-pattern cross-check first. That ran here until the printed
+ * pattern became the pads directly and there was no computed substitute left to
+ * compare against it; the margin is still needed, for the work listed above.
  */
 export const RESPONSE_MARGIN_MS = 3_000;
 

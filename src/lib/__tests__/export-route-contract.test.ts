@@ -126,7 +126,14 @@ test("a refusal the user can answer arrives as INPUT_REQUIRED with the field nam
 
 test("supplying the value over the wire produces the bundle", async () => {
   const response = await POST(
-    post({ part: exportablePart("14-lead CFP", 14, "straight"), format: "kicad", formedLeadSpanMm: 10.16 })
+    // BOTH formed numbers. A flat pack's land is sized around a foot the
+    // assembler makes, and the drawing prints neither that nor the seated span.
+    post({
+      part: exportablePart("14-lead CFP", 14, "straight"),
+      format: "kicad",
+      formedLeadSpanMm: 10.16,
+      formedLeadContactMm: 0.6
+    })
   );
 
   assert.equal(response.status, 200, "the same request that 422'd now succeeds");
@@ -210,6 +217,11 @@ const ASKABLE: Array<{ field: string; good: unknown; bad: unknown }> = [
   { field: "leadDiameterMm", good: 0.5, bad: 0 },
   { field: "pitchMm", good: 2.54, bad: -2 },
   { field: "formedLeadSpanMm", good: 10.16, bad: -1 },
+  // The seated foot, asked for alongside the span since 2026-08-17. An unformed
+  // lead has none until the assembler's die makes one, so no datasheet prints
+  // it. Bounded at 5 mm: a foot is a feature of one lead, not a distance across
+  // the package, so 500 is a typo or a different dimension.
+  { field: "formedLeadContactMm", good: 0.6, bad: 500 },
   { field: "landPadLengthMm", good: 1.5, bad: 0 },
   { field: "landPadWidthMm", good: 0.6, bad: 500 },
   { field: "landSpanMm", good: 5.4, bad: "1.2" },

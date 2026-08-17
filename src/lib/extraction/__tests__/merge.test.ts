@@ -730,3 +730,181 @@ test("a value read off a RENDERED page is held to the same rule", () => {
   const result = resolveForExport(record);
   assert.equal(result.ok, false, "an uncited drawing read is not evidence either");
 });
+
+test("a BARE answer is kept, not discarded over the shape of its envelope", async () => {
+  // Found in the manual audit of 2026-08-17. The contract asks for
+  // {"value": 0.65, "page": 3}. A model that answers {"dimensions.pitchMm":
+  // 0.65} had its answer dropped on the floor with no trace: not stored, not
+  // recorded as declined, not in notes. That is the same failure as an
+  // unanswerable question, just one layer further on. It read the value, said
+  // so, and we threw it away over the wrapper.
+  const { parseModelResponse } = await import("../models/prompt");
+
+  const result = parseModelResponse(
+    JSON.stringify({
+      values: {
+        "dimensions.pitchMm": 0.65,
+        "dimensions.leadSpanMm": { minMm: 4.75, maxMm: 5.05 },
+        "dimensions.leadForm": "straight"
+      }
+    })
+  );
+
+  assert.equal(result.values["dimensions.pitchMm"]?.value, 0.65);
+  assert.equal(result.values["dimensions.pitchMm"]?.page, null, "a bare answer carries no page");
+  assert.deepEqual(result.values["dimensions.leadSpanMm"]?.value, { minMm: 4.75, maxMm: 5.05 });
+  assert.equal(result.values["dimensions.leadForm"]?.value, "straight");
+});
+
+test("a bare null is recorded as declined, not lost", async () => {
+  // "I looked and the document does not state this" must stay distinguishable
+  // from "I never answered", in both the wrapped and the bare shape. Losing
+  // that distinction is what hid the leadForm defect for months.
+  const { parseModelResponse } = await import("../models/prompt");
+
+  const result = parseModelResponse(
+    JSON.stringify({
+      values: {
+        "dimensions.pitchMm": null,
+        "dimensions.leadForm": { value: null, page: null }
+      }
+    })
+  );
+
+  assert.equal(result.values["dimensions.pitchMm"], undefined, "a null is never a value");
+  assert.deepEqual(
+    [...(result.declined ?? [])].sort(),
+    ["dimensions.leadForm", "dimensions.pitchMm"],
+    "both shapes of refusal are recorded"
+  );
+});
+
+test("EVERY extraction field can actually be stored on the record", async () => {
+  // Found in the manual audit of 2026-08-17, and it had been true for every part
+  // ever processed. `fieldAt` carried a guard against a top-level field with no
+  // case; `setFieldAt` did not, and `packageOutlineCode` fell through it. The
+  // model's answer was written to a property named "undefined" on the Extracted
+  // object, the record kept value: null, and the notes reported the field as
+  // filled. Silent and total.
+  //
+  // A round trip over EVERY field rather than a case for the one that broke: the
+  // guard is only worth anything if nothing can slip past it again.
+  const { extractionFields } = await import("../contracts");
+  const { datasheetTextFromPages } = await import("../../pdftext");
+  const { buildPartRecord } = await import("../../datasheet");
+
+  const doc = datasheetTextFromPages(["ACME555 Timer. ACME Semiconductor.", "PACKAGE OUTLINE"]);
+
+  // A value each field's own contract accepts, so nothing is rejected upstream
+  // of the thing being tested.
+  const sample = (field: string): unknown => {
+    if (field === "pins") return [{ number: "1", name: "OUT", electricalType: "output", description: "" }];
+    if (field === "dimensions.leadWidthMm" || field === "dimensions.leadSpanMm" || field === "dimensions.leadContactMm")
+      return { minMm: 0.3, maxMm: 0.5 };
+    if (field === "dimensions.leadSides") return 2;
+    if (field === "dimensions.leadForm") return "gullwing";
+    if (field === "dimensions.mounting") return "smd";
+    if (field === "dimensions.solderMaskDefined") return "non-solder-mask-defined";
+    if (field === "dimensions.leadsPerSide") return "4,4";
+    if (field.endsWith("Mm") || field === "pinCount" || field === "dimensions.leadCount") return 1.5;
+    if (field === "dimensions.vacantLeadSlot") return 3;
+    return "X";
+  };
+
+  for (const field of extractionFields) {
+    const part = buildPartRecord(doc, "ACME555.pdf");
+    const outcome = mergeModelValues(
+      part,
+      doc,
+      { values: { [field]: { value: sample(field) as never, page: 1 } } },
+      "test",
+      []
+    );
+
+    const stored = field.includes(".")
+      ? (outcome.part as unknown as Record<string, Record<string, { value: unknown }>>)[field.split(".")[0]][field.split(".")[1]]
+      : (outcome.part as unknown as Record<string, { value: unknown }>)[field];
+
+    assert.notEqual(stored.value, null, `${field} was reported as merged but nothing reached the record`);
+    const holder = stored as unknown as Record<string, unknown>;
+    assert.ok(!("undefined" in holder), `${field} wrote to a property named "undefined"`);
+  }
+});
+
+test("a grid-addressed pinout is refused for being out of scope, not for being unreadable", async () => {
+  // TXB0104 in the corpus is a 12-ball DSBGA. Every terminal is addressed by
+  // grid position, so every row hits the exposed-pad branch, the table empties,
+  // and the user used to be told "the pin table had no numbered rows". We had
+  // read it perfectly. The refusal blamed the document for our own scope.
+  //
+  // Forge is blocked on grid arrays in three independent places: this check,
+  // leadSides being 2 | 4, and arrangement being "dual" | "quad". That is a
+  // deliberate limit, and the refusal should say so rather than imply a failure
+  // to read.
+  const { datasheetTextFromPages } = await import("../../pdftext");
+  const { buildPartRecord } = await import("../../datasheet");
+
+  const doc = datasheetTextFromPages(["TXB0104. Texas Instruments. 12-ball DSBGA."]);
+  const part = buildPartRecord(doc, "TXB0104.pdf");
+
+  const outcome = mergeModelValues(
+    part,
+    doc,
+    {
+      values: {
+        pins: {
+          value: [
+            { number: "A1", name: "VCCA", electricalType: "power_in" },
+            { number: "A2", name: "GND", electricalType: "power_in" },
+            { number: "B1", name: "OE", electricalType: "input" }
+          ] as never,
+          page: 1
+        }
+      }
+    },
+    "test",
+    []
+  );
+
+  const note = outcome.part.notes.find((entry) => /grid position/.test(entry));
+  assert.ok(note, "the refusal must name the real reason");
+  assert.match(note, /read correctly/, "and must not imply the pinout was unreadable");
+  assert.doesNotMatch(
+    outcome.part.notes.join(" "),
+    /had no numbered rows/,
+    "the old message blamed the document"
+  );
+});
+
+test("an exposed-pad row still leaves the numbered pins intact", async () => {
+  // The behaviour the grid case must not disturb. A QFN table is 1..N plus one
+  // row called EP or PAD; skipping that row and flagging it recovered three
+  // hold-out parts whose pinouts used to be thrown away whole.
+  const { datasheetTextFromPages } = await import("../../pdftext");
+  const { buildPartRecord } = await import("../../datasheet");
+
+  const doc = datasheetTextFromPages(["ST1S10. 8-lead with epad. OUT VIN GND FB EN SYNC NC PGND epad"]);
+  const part = buildPartRecord(doc, "ST1S10.pdf");
+
+  const outcome = mergeModelValues(
+    part,
+    doc,
+    {
+      values: {
+        pins: {
+          value: [
+            { number: "1", name: "OUT", electricalType: "output" },
+            { number: "2", name: "VIN", electricalType: "power_in" },
+            { number: "epad", name: "GND", electricalType: "power_in" }
+          ] as never,
+          page: 1
+        }
+      }
+    },
+    "test",
+    []
+  );
+
+  assert.equal(outcome.part.pins.value?.length, 2, "the numbered rows survive");
+  assert.equal(outcome.part.exposedPad, true, "and the pad is recorded rather than lost");
+});

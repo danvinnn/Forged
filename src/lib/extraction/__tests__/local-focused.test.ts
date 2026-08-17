@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupsFor, pagesFor, FIELD_GROUPS } from "../models/local-focused";
+import { groupsFor, pagesFor, imagesFor, FIELD_GROUPS } from "../models/local-focused";
 import { extractionFields } from "../contracts";
+import type { RenderedPage } from "../../pagerender";
 
 /**
  * Splitting one wide question into several narrow ones, for a small local model.
@@ -80,4 +81,44 @@ test("a question whose section is not found still gets a BOUNDED slice", () => {
   const group = FIELD_GROUPS.find((g) => g.fields.includes("pins"))!;
 
   assert.ok(pagesFor(group, pages).length <= 3, "a miss must not send 40 pages");
+});
+
+/**
+ * Narrowing the RENDERS too.
+ *
+ * The second pass carries an image of every page the model asked to see. Those
+ * are 150 DPI pages, far more context than the page text they accompany, so
+ * sending all of them to all seven groups undoes the narrowing entirely and
+ * hands a 7B model more than the single wide call this model replaces.
+ */
+function render(page: number): RenderedPage {
+  return { page, mimeType: "image/png", base64: "", widthPx: 1275, heightPx: 1650 };
+}
+
+test("a question is given the renders of its own pages and no others", () => {
+  const pages = [
+    { page: 1, text: "Features. Low offset." },
+    { page: 3, text: "Table 6-1. Pin Functions: INA240" },
+    { page: 34, text: "LAND PATTERN EXAMPLE 8X (1.5)" }
+  ];
+  const images = [render(1), render(3), render(34)];
+
+  const pinGroup = FIELD_GROUPS.find((group) => group.fields.includes("pins"))!;
+  const chosen = pagesFor(pinGroup, pages);
+
+  assert.deepEqual(
+    imagesFor(chosen, images).map((image) => image.page),
+    [3],
+    "the pin table question must not carry the land pattern drawing"
+  );
+});
+
+test("a question whose page was never rendered carries no image at all", () => {
+  // Correct rather than a shortfall: that group answers from text, which is what
+  // it did on the first pass anyway. Substituting some OTHER page's picture is
+  // how a model gets shown one drawing and asked about another.
+  const pages = [{ page: 3, text: "Table 6-1. Pin Functions: INA240" }];
+  const pinGroup = FIELD_GROUPS.find((group) => group.fields.includes("pins"))!;
+
+  assert.deepEqual(imagesFor(pagesFor(pinGroup, pages), [render(34)]), []);
 });

@@ -77,6 +77,29 @@ function requestedPages(result: ExtractionResult, doc: DatasheetText): number[] 
   return clean.slice(0, MAX_RENDERED_PAGES);
 }
 
+// TWO WAYS OF CHOOSING PAGES FOR THE MODEL WERE MEASURED AND REJECTED, both on
+// 2026-08-17, both aimed at the datasheet's printed land pattern. Recorded so
+// neither is rebuilt on the same reasoning.
+//
+// The premise was that the model names the package OUTLINE page while the
+// printed footprint sits one page later, so the three land values were being
+// asked for and never shown. The number that killed it: of 53 cached answers
+// carrying both a land page and a page request, the land page was ALREADY among
+// the pages the model asked for in 49.
+//
+//   ADDING THE PAGE AFTER each page the model named. Covered 4 of those 53 while
+//   roughly doubling render cost on the 18 of 46 documents with no heading.
+//
+//   ADDING ANY PAGE WHOSE TEXT ANNOUNCES A LAND PATTERN. Cheaper, but measurably
+//   tailored to one vendor: over 46 documents the heading pattern finds 20 of 21
+//   Texas Instruments and 0 of 6 Analog Devices. Its wording names no vendor and
+//   its behaviour does, which is the test RULES.md rule 4 actually applies.
+//
+// The heading pattern itself survives in `sections.ts`, where the focused local
+// model uses it to pick the page for ONE narrow question. That is a different
+// job: there it selects among pages already being sent, rather than adding cost
+// to every part on a yield nobody has demonstrated.
+
 /**
  * Runs extraction end to end and returns the merged record.
  *

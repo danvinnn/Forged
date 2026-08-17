@@ -209,6 +209,26 @@ export interface ExtractionRequest {
 export interface ExtractionResult {
   /** Values the model produced, keyed by field. Absent means "no answer". */
   values: Partial<Record<ExtractionField, ModelValue>>;
+  /**
+   * Fields the model answered EXPLICITLY NULL: it looked and the document does
+   * not state this.
+   *
+   * A null is dropped from `values`, correctly, because a null is not a reading.
+   * But dropping it also erased the difference between "the model looked and
+   * said no" and "the model never mentioned this field", and those call for
+   * opposite responses: the first means the document is silent, the second means
+   * our question was wrong.
+   *
+   * That gap cost a whole investigation on 2026-08-17. `leadForm` came back
+   * empty for 37 of 81 parts and looked like a model that could not read
+   * drawings. The real cause was that the prompt offered only two of the three
+   * values the record accepts, so every ceramic flat pack, the packages this
+   * product exists for, had no way to answer except null. The model was right
+   * every time and there was no way to see it.
+   *
+   * Diagnostic only. Nothing downstream may treat this as a value.
+   */
+  declined?: ExtractionField[];
   /** Free-form observations to surface as record notes. */
   notes?: string[];
   /**

@@ -341,11 +341,17 @@ export const packageDimensionsSchema = z.object({
    * in full. The package's own drawing shows how many sides have leads; nothing
    * about that needs a standard or a vendor convention.
    *
-   * Constrained to 2 or 4 because those are the arrangements the pad placement
-   * can build. A part with leads on one or three sides is refused rather than
-   * approximated.
+   * 1, 2 or 4, because those are the arrangements the pad placement can build.
+   * A part with leads on THREE sides is still refused rather than approximated.
+   *
+   * `1` was added on 2026-08-17. Before that a single line of pins could not be
+   * REPRESENTED, so TO-220, TO-92 and SIP were permanently unbuildable however
+   * well their datasheets were read: the schema rejected a 1, the prompt told
+   * the model to answer null, and null was the exact state that once fell
+   * through to two rows and shipped a 3-lead regulator as two columns 5 mm
+   * apart. Widening the type is what makes the honest answer sayable.
    */
-  leadSides: extracted(z.union([z.literal(2), z.literal(4)])).default({
+  leadSides: extracted(z.union([z.literal(1), z.literal(2), z.literal(4)])).default({
     value: null,
     confidence: null,
     method: null,
@@ -562,7 +568,7 @@ export type PackageDimensions = {
   /** Centre to centre between opposing rows of lands. */
   landSpanMm: Extracted<number>;
   /** Sides of the package carrying leads: 2 for dual, 4 for quad. Read off the drawing. */
-  leadSides: Extracted<2 | 4>;
+  leadSides: Extracted<1 | 2 | 4>;
   /** How the leads leave the package. Decides which land-pattern model applies. */
   leadForm: Extracted<"gullwing" | "nolead" | "straight">;
   /** Lands on the surface, or leads through plated holes. Read off the drawing. */
@@ -686,7 +692,7 @@ export interface ResolvedPart {
     landPadLengthMm: number | null;
     landPadWidthMm: number | null;
     landSpanMm: number | null;
-    leadSides: 2 | 4 | null;
+    leadSides: 1 | 2 | 4 | null;
     leadForm: "gullwing" | "nolead" | "straight" | null;
     mounting: "smd" | "through-hole" | null;
     leadDiameterMm: number | null;

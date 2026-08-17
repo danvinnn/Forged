@@ -104,6 +104,9 @@ const EXTRACTION_AIR_GAP_SAFE = [
   "run.ts",
   // Pure string work over document text, no networking.
   "untrusted.ts",
+  // Locates a section by the heading printed above it. Regex over text the
+  // caller already has; it opens nothing and reads no value off a page.
+  "sections.ts",
   // Timers and arithmetic over the calling route's budget. It decides whether a
   // model is worth asking; it never reaches one.
   "budget.ts",
@@ -153,18 +156,42 @@ test("the extraction factory reaches models only through dynamic imports", () =>
   assert.match(factory, /mode\s*===\s*["']commercial["']/, "the cloud model must be gated on commercial mode");
 });
 
-test("the cloud model is unreachable from the air-gapped branch of the factory", () => {
+test("EVERY networked model is unreachable from the air-gapped branch of the factory", () => {
   const factory = extractionCode("factory.ts");
   // Everything before the commercial branch returns is the commercial path; the
-  // gemini import must not appear after it, which is the air-gapped fall-through.
+  // air-gapped fall-through follows it.
   const commercialBranch = factory.indexOf('mode === "commercial"');
-  const geminiImport = factory.indexOf("./models/gemini");
   const branchEnd = factory.indexOf("return null;", commercialBranch);
+  assert.ok(commercialBranch >= 0 && branchEnd >= 0, "the commercial branch must still be recognisable");
 
-  assert.ok(commercialBranch >= 0 && geminiImport >= 0 && branchEnd >= 0);
-  assert.ok(
-    geminiImport > commercialBranch && geminiImport < branchEnd,
-    "the gemini import must sit inside the commercial branch"
+  // Read out of the file rather than named here. This test used to check the
+  // gemini import ALONE, so adding the Vertex provider on 2026-08-17 introduced
+  // a second networked model that nothing verified. A guard that names one
+  // instance is the failure shape it exists to prevent.
+  const imported = [...factory.matchAll(/await import\(\s*["']\.\/models\/([\w-]+)["']\s*\)/g)].map(
+    (match) => ({ model: match[1], at: match.index ?? -1 })
+  );
+  assert.ok(imported.length >= 2, `expected several model imports, found ${imported.length}`);
+
+  for (const { model, at } of imported) {
+    // `local` is the ONLY model permitted on both paths: it is the air-gapped
+    // one, and its endpoint must resolve to a private address (see models/local.ts).
+    if (model === "local" || model === "local-focused") continue;
+    assert.ok(
+      at > commercialBranch && at < branchEnd,
+      `the ${model} import must sit inside the commercial branch, or an air-gapped process can load it`
+    );
+  }
+});
+
+test("every module under models/ that talks to a network is reached only by dynamic import", () => {
+  // The other half: a STATIC import anywhere in the extraction root would pull a
+  // networked model into an air-gapped process regardless of which branch runs.
+  const factory = extractionCode("factory.ts");
+  assert.doesNotMatch(
+    factory,
+    /^\s*import\s+[^;]*from\s+["']\.\/models/m,
+    "factory must not statically import any concrete model"
   );
 });
 

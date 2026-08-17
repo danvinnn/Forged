@@ -134,6 +134,22 @@ const REVIEWABLE: Array<{ field: string; label: string; consequence: string }> =
     consequence: "Decides whether the pads are laid out in two rows or four. The wrong answer is a completely different footprint."
   },
   {
+    // Added 2026-08-17. Both of these place copper and neither was ever put in
+    // front of a person: `mounting` decides holes versus lands, which is not a
+    // detail a reviewer can spot afterwards, and the hole is sized from
+    // `leadDiameterMm` and nothing else.
+    field: "dimensions.mounting",
+    label: "How it mounts (surface or through-hole)",
+    consequence:
+      "Decides whether the footprint is lands on the surface or plated holes through the board. Wrong here and the part cannot be fitted at all."
+  },
+  {
+    field: "dimensions.leadDiameterMm",
+    label: "Lead diameter (through-hole)",
+    consequence:
+      "IPC-7251 sizes the hole from this and nothing else. Too small and the lead will not go in; too large and the joint has no barrel to wet."
+  },
+  {
     field: "dimensions.leadForm",
     label: "Lead form",
     consequence: "Decides which land-pattern model applies. A no-lead package computed as gull-wing looks correct in CAD and is not."
@@ -164,6 +180,9 @@ const REVIEWABLE: Array<{ field: string; label: string; consequence: string }> =
     consequence: "Drives the courtyard and the silkscreen outline rather than the copper."
   }
 ];
+
+/** Every field the panel can ask about, for tests that check nothing is missed. */
+export const REVIEWABLE_FIELDS: readonly string[] = REVIEWABLE.map((entry) => entry.field);
 
 function fieldAt(part: PartRecord, path: string): Extracted<unknown> | null {
   if (!path.includes(".")) {
@@ -245,13 +264,15 @@ export function collectReviewItems(part: PartRecord): ReviewItem[] {
     });
   }
 
-  // Disagreements lead, then blocking items, then the declared order of
-  // REVIEWABLE, which is written most-consequential first.
+  // Blocking items lead, then the declared order of REVIEWABLE, which is written
+  // most-consequential first.
   //
-  // Above blocking on purpose. A blocking item is a value nobody has checked; a
-  // disagreement is a value two readers checked and answered differently. The
-  // second is rarer and more likely to be a real defect, and it is also the
-  // cheapest to settle, because both pages are named.
+  // There used to be a third rank above blocking, for DISAGREEMENTS: a value two
+  // readers had answered differently. Comparing two readers needs two readers,
+  // and the deterministic one was deleted on 2026-08-14, so no disagreement has
+  // been produced since. The rank was removed with the cross-check; this comment
+  // went on describing it, which is how a reader of this file would conclude the
+  // panel surfaces contradictions it has no way to find.
   const order = REVIEWABLE.map((entry) => entry.field);
   const rank = (item: ReviewItem) => (item.blocking ? 0 : 1);
   return items.sort((left, right) => {
@@ -264,8 +285,10 @@ export function collectReviewItems(part: PartRecord): ReviewItem[] {
 export function reviewPages(items: readonly ReviewItem[], limit = 3): number[] {
   const counts = new Map<number, number>();
   for (const item of items) {
-    // A disagreement is only settleable with BOTH pages, so both are counted.
-    // Rendering one side of a contradiction is worse than rendering neither.
+    // One page per item, counted so the most-cited pages win the limit. This
+    // said it was counting both sides of a disagreement; there are no
+    // disagreements to have sides, and a `ReviewItem` has only ever carried one
+    // page.
     if (item.page === null) continue;
     counts.set(item.page, (counts.get(item.page) ?? 0) + 1);
   }

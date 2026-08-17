@@ -393,7 +393,16 @@ export function emitAltiumSchLib(geometry: SymbolGeometry, links: AltiumSymbolLi
       ["Display_Unit", "0"],
       ["CompCount", "1"],
       ["LibRef0", name],
-      ["CompDescr0", partNumber],
+      // The description again, in the SECOND place the format stores it.
+      //
+      // `ComponentDescription` on the component record carries it and its own
+      // note says why: set to the part number, which every other field already
+      // holds, a search for "op-amp SOIC-8" matched nothing in a library full of
+      // them. That was fixed there and this copy was left as the part number, so
+      // the library INDEX still describes every component by a string that
+      // identifies it and says nothing about it. Altium reads this one when it
+      // lists a library's contents without opening each component.
+      ["CompDescr0", parameterSafe(geometry.description ?? partNumber)],
       ["PartCount0", "1"]
     ])
     .toBuffer();

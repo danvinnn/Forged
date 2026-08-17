@@ -33,8 +33,15 @@
  * the land pattern still arrives.
  */
 
-import type { ExtractionField, ExtractionModel, ExtractionRequest, ExtractionResult } from "../contracts";
+import {
+  ExtractionModelError,
+  type ExtractionField,
+  type ExtractionModel,
+  type ExtractionRequest,
+  type ExtractionResult
+} from "../contracts";
 import { callLocalModel, endpoint, modelName } from "./local";
+import { LAND_PATTERN_HEADING } from "../sections";
 
 /**
  * Fields grouped by the question a person would ask to find them.
@@ -84,7 +91,10 @@ export const FIELD_GROUPS: readonly FieldGroup[] = [
   },
   {
     fields: ["dimensions.landPadLengthMm", "dimensions.landPadWidthMm", "dimensions.landSpanMm"],
-    locate: /land\s+pattern|recommended\s+(?:pcb\s+)?(?:land|footprint|pad)|footprint\s+example/i
+    // Shared with the page selector in `run.ts` rather than written twice. The
+    // same heading pattern in two files is the defect shape LEARNINGS.md names
+    // first: fixed in one place, not the other.
+    locate: LAND_PATTERN_HEADING
   },
   {
     fields: ["dimensions.thermalPadLengthMm", "dimensions.thermalPadWidthMm"],
@@ -154,6 +164,41 @@ export function pagesFor(
   return chosen.slice(0, MAX_PAGES_PER_QUESTION);
 }
 
+/**
+ * The RENDERS for the pages a group was given, and no others.
+ *
+ * Narrowing the fields and the pages while sending every image is not narrowing
+ * the question. On the second pass the request carries a render of each page the
+ * model asked to see, and a 150 DPI page is far more context than the page's
+ * text; passing all of them to all seven groups hands a 7B model more to hold
+ * than the one wide call this model exists to replace, seven times over.
+ *
+ * A group whose page was never rendered gets no image and answers from text,
+ * which is what it did on the first pass anyway.
+ */
+export function imagesFor(
+  pages: ExtractionRequest["pages"],
+  images: ExtractionRequest["images"]
+): ExtractionRequest["images"] {
+  const wanted = new Set(pages.map((page) => page.page));
+  return images.filter((image) => wanted.has(image.page));
+}
+
+/**
+ * The one kind every group failed with, or null when they disagreed.
+ *
+ * Reporting a kind the failures did not share would be inventing a diagnosis,
+ * so a mixed run falls back to the honest general answer: we did not get one.
+ */
+function sharedKind(errors: readonly unknown[]): ExtractionModelError["kind"] | null {
+  const kinds = new Set(
+    errors.map((error) => (error instanceof ExtractionModelError ? error.kind : "unknown"))
+  );
+  if (kinds.size !== 1) return null;
+  const only = [...kinds][0];
+  return only === "unknown" ? null : only;
+}
+
 export class FocusedLocalExtractionModel implements ExtractionModel {
   readonly name = `local-focused:${modelName()}`;
 
@@ -168,16 +213,19 @@ export class FocusedLocalExtractionModel implements ExtractionModel {
     let outputTokens = 0;
     let answered = 0;
     const failed: string[] = [];
+    const errors: unknown[] = [];
 
     for (const group of groups) {
       const fields = group.fields;
       try {
-        // Narrow the PAGES as well as the fields. One without the other is the
-        // failure this model was built to fix.
+        // Narrow the PAGES and their RENDERS as well as the fields. Any one of
+        // the three left wide is the failure this model was built to fix.
+        const pages = pagesFor(group, request.pages);
         const result = await callLocalModel({
           ...request,
           fields: [...fields],
-          pages: pagesFor(group, request.pages)
+          pages,
+          images: imagesFor(pages, request.images)
         });
         // Later groups never overwrite earlier ones. A group is asked only about
         // its own fields, so an answer outside them is the model volunteering
@@ -195,11 +243,18 @@ export class FocusedLocalExtractionModel implements ExtractionModel {
         // Recorded rather than swallowed, so a run cannot look complete when it
         // is not.
         failed.push(`${fields.join(",")}: ${error instanceof Error ? error.message : "failed"}`);
+        errors.push(error);
       }
     }
 
     if (answered === 0) {
-      throw new Error(
+      // An `ExtractionModelError` and its kind, like every other throw in this
+      // layer. A bare Error here made total failure the one model failure a
+      // caller could not classify, and the kind that matters most is `config`:
+      // a public or unresolvable endpoint fails every group identically and is
+      // the user's to fix, not something to report as the network being down.
+      throw new ExtractionModelError(
+        sharedKind(errors) ?? "transport",
         `Every focused question failed against ${this.name}. ${failed.slice(0, 3).join(" | ")}`
       );
     }

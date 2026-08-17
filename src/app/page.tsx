@@ -112,8 +112,25 @@ function userEdited<T>(value: T | null): Extracted<T> {
   return { value, confidence: value === null ? null : 1, method: value === null ? null : "user", citation: null };
 }
 
-/** Where an `install`-scoped answer is remembered. Survives the session deliberately. */
-const INSTALL_LEAD_SPAN_KEY = "forge.install.formedLeadSpanMm";
+/**
+ * Where an `install`-scoped answer is remembered. Survives the session deliberately.
+ *
+ * A PREFIX rather than one key per field. There are two of these now, the formed
+ * lead span and the formed foot, both made by the same forming die, and the
+ * single-key version silently overwrote one with the other. Keying by field name
+ * also means a third install-scoped question needs no change here, which is the
+ * "fixed in one place, not the other" trap this codebase has hit repeatedly.
+ */
+const INSTALL_KEY_PREFIX = "forge.install.";
+
+/** Field names whose answers belong to the assembly line rather than the part. */
+const INSTALL_FIELDS = ["formedLeadSpanMm", "formedLeadContactMm"] as const;
+
+/** Human labels for the remembered-value notice. */
+const INSTALL_LABELS: Record<string, string> = {
+  formedLeadSpanMm: "Formed lead span",
+  formedLeadContactMm: "Formed foot length"
+};
 
 /** Largest span the export route accepts, mirrored so the UI refuses it first. */
 const MAX_LEAD_SPAN_MM = 200;
@@ -299,13 +316,17 @@ export default function HomePage() {
   // An `install`-scoped answer belongs to the assembly line rather than the part,
   // so it is asked once and remembered. A `part`-scoped answer is never stored,
   // because reusing one across parts would be a guess.
-  const [installLeadSpan, setInstallLeadSpan] = useState<number | null>(null);
+  const [installAnswers, setInstallAnswers] = useState<Record<string, number>>({});
 
   useEffect(() => {
     try {
-      const saved = window.localStorage.getItem(INSTALL_LEAD_SPAN_KEY);
-      const parsed = saved === null ? NaN : Number(saved);
-      if (Number.isFinite(parsed) && parsed > 0) setInstallLeadSpan(parsed);
+      const restored: Record<string, number> = {};
+      for (const field of INSTALL_FIELDS) {
+        const saved = window.localStorage.getItem(`${INSTALL_KEY_PREFIX}${field}`);
+        const parsed = saved === null ? NaN : Number(saved);
+        if (Number.isFinite(parsed) && parsed > 0) restored[field] = parsed;
+      }
+      if (Object.keys(restored).length > 0) setInstallAnswers(restored);
     } catch {
       // A blocked localStorage costs one re-entry, not the export.
     }
@@ -527,7 +548,10 @@ export default function HomePage() {
    * reason `formedLeadSpan` is: a React state update is not visible to the
    * handler that queued it, and the whole point is to answer and retry at once.
    */
-  async function handleExport(formedLeadSpan?: number, answers: Record<string, number | string> = supplied) {
+  async function handleExport(
+    install: Record<string, number> = installAnswers,
+    answers: Record<string, number | string> = supplied
+  ) {
     setBusy(true);
     setStatus(`Building ${selectedFormat.toUpperCase()}…`);
 
@@ -540,7 +564,9 @@ export default function HomePage() {
           format: selectedFormat,
           // Every answered question, under the field name the refusal used.
           ...answers,
-          ...(formedLeadSpan !== undefined ? { formedLeadSpanMm: formedLeadSpan } : {})
+          // Install-scoped answers last, so a remembered value is sent even on
+          // an export the user started without answering anything this time.
+          ...install
         })
       });
 
@@ -669,10 +695,17 @@ export default function HomePage() {
       value = parsed;
     }
 
-    if (need.scope === "install" && typeof value === "number") {
-      setInstallLeadSpan(value);
+    // Remembered UNDER ITS OWN FIELD NAME. The single-value version stored any
+    // install answer as the lead span, so answering the foot overwrote the span
+    // with it and the next flat pack was built from the wrong number.
+    const nextInstall =
+      need.scope === "install" && typeof value === "number"
+        ? { ...installAnswers, [need.field]: value }
+        : installAnswers;
+    if (nextInstall !== installAnswers) {
+      setInstallAnswers(nextInstall);
       try {
-        window.localStorage.setItem(INSTALL_LEAD_SPAN_KEY, String(value));
+        window.localStorage.setItem(`${INSTALL_KEY_PREFIX}${need.field}`, String(value));
       } catch {
         // Remembering is a convenience; failing to remember must not block.
       }
@@ -684,10 +717,9 @@ export default function HomePage() {
     // Cleared optimistically. The retry repopulates it with whatever is STILL
     // missing, so a part needing three numbers walks down to none.
     setPendingNeeds([]);
-    await handleExport(
-      need.field === "formedLeadSpanMm" && typeof value === "number" ? value : installLeadSpan ?? undefined,
-      answers
-    );
+    // The freshly typed answer is passed alongside the remembered ones, because
+    // a React state update is not visible to the handler that queued it.
+    await handleExport(nextInstall, answers);
   }
 
   // ---------------------------------------------------------------------------
@@ -984,21 +1016,25 @@ export default function HomePage() {
                 <button
                   type="button"
                   className="btn btn-primary btn-lg"
-                  onClick={() => handleExport(installLeadSpan ?? undefined)}
+                  onClick={() => handleExport()}
                   disabled={busy || !part.partNumber.value}
                 >
                   Build library
                 </button>
-                {installLeadSpan !== null && (
-                  <span className="remembered">
-                    Formed lead span {installLeadSpan} mm, remembered.{" "}
+                {Object.entries(installAnswers).map(([field, value]) => (
+                  <span className="remembered" key={field}>
+                    {INSTALL_LABELS[field] ?? field} {value} mm, remembered.{" "}
                     <button
                       type="button"
                       className="linkish"
                       onClick={() => {
-                        setInstallLeadSpan(null);
+                        setInstallAnswers((current) => {
+                          const next = { ...current };
+                          delete next[field];
+                          return next;
+                        });
                         try {
-                          window.localStorage.removeItem(INSTALL_LEAD_SPAN_KEY);
+                          window.localStorage.removeItem(`${INSTALL_KEY_PREFIX}${field}`);
                         } catch {
                           // The in-memory value is already gone.
                         }
@@ -1007,7 +1043,7 @@ export default function HomePage() {
                       change
                     </button>
                   </span>
-                )}
+                ))}
               </div>
 
               {/* Each question, beside the page its answer is printed on. */}

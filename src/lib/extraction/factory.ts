@@ -13,6 +13,22 @@ import type { ExtractionModel } from "./contracts";
  */
 export async function makeExtractionModel(mode: DeploymentMode): Promise<ExtractionModel | null> {
   if (mode === "commercial") {
+    // VERTEX FIRST, where it is configured.
+    //
+    // Not a quality judgement: it is the same models through a different door.
+    // It leads because configuring it is deliberate. `GOOGLE_APPLICATION_CREDENTIALS`
+    // plus a project ID is something a person set up on purpose, whereas an API
+    // key often lingers in an env file after the balance behind it is spent, and
+    // silently preferring the dead one is a confusing failure.
+    //
+    // Both are dynamic imports on this branch only, which is what keeps them out
+    // of an air-gapped process. Enforced by the air-gap guard test, not by care.
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS && process.env.FORGE_VERTEX_PROJECT) {
+      const { VertexExtractionModel } = await import("./models/vertex");
+      const model = new VertexExtractionModel();
+      if (model.isConfigured()) return model;
+    }
+
     // Cloud model. Only ever loaded on the commercial path.
     if (process.env.GOOGLE_GEMINI_API_KEY) {
       const { GeminiExtractionModel } = await import("./models/gemini");

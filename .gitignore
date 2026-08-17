@@ -51,3 +51,5 @@ yarn-error.log*
 # copy would be stale for anyone whose tree differs by one prompt character, and
 # the entries quote datasheet content back.
 .model-cache
+
+gcp-key.json
