@@ -282,9 +282,31 @@ export interface ExtractionModel {
 export class ExtractionModelError extends Error {
   readonly kind: "config" | "transport" | "bad_response";
 
-  constructor(kind: "config" | "transport" | "bad_response", message: string) {
+  /**
+   * How many times the provider was called before giving up. EVERY ONE IS
+   * BILLED.
+   *
+   * `ExtractionResult.attempts` carries this on the way out when a call
+   * eventually succeeds, and the failure path had no equivalent, so a caller
+   * counting spend recorded one charge for a call that was retried three times
+   * and never returned. That is the same 40% under-report the success path was
+   * fixed for on 2026-08-14, left on the branch where retries are MOST likely:
+   * a call fails precisely because the provider is refusing, which is when the
+   * retry loop runs to its end.
+   *
+   * Undefined where the failure happened before any request went out, e.g. a
+   * missing key, which is genuinely zero charges rather than one.
+   */
+  readonly attempts?: number;
+
+  constructor(
+    kind: "config" | "transport" | "bad_response",
+    message: string,
+    attempts?: number
+  ) {
     super(message);
     this.name = "ExtractionModelError";
     this.kind = kind;
+    this.attempts = attempts;
   }
 }

@@ -358,3 +358,19 @@ test("the drawn lines are the widths the reference uses", async () => {
   for (const width of courtyard) near(width, REFERENCE_WIDTHS.courtyard, "courtyard width");
   for (const width of fab) near(width, REFERENCE_WIDTHS.fab, "fabrication width");
 });
+
+test("the courtyard still matches the reference now that it is sized from the lands", async () => {
+  // The courtyard height used to come from the BODY on a dual package, which
+  // does not guarantee it contains the lands: a lead row longer than its body
+  // puts the end lands outside their own keep-out. It is now the larger of the
+  // two, which is also what IPC-7351B means by a courtyard.
+  //
+  // This is the guard against fixing that by making every courtyard bigger.
+  // KiCad's SOIC-8 is the case where the BODY is the wider bound, so the value
+  // must not move at all.
+  const { footprint } = await bundle();
+  const rect = /\(fp_rect \(start (-?[\d.]+) (-?[\d.]+)\) \(end (-?[\d.]+) (-?[\d.]+)\) \(layer "F\.CrtYd"\)/.exec(footprint);
+  assert.ok(rect, "a courtyard is emitted");
+  near(Math.abs(Number(rect[3])), REFERENCE_COURTYARD[0], "courtyard half width");
+  near(Math.abs(Number(rect[4])), REFERENCE_COURTYARD[1], "courtyard half height");
+});

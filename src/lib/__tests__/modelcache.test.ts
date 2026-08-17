@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ExtractionModelError } from "../extraction/contracts";
 import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "../extraction/contracts";
 import {
   cachingModel,
@@ -613,6 +614,59 @@ test("the ceiling stops on what was CHARGED, not on what was stored", async () =
   );
 
   delete process.env.FORGE_SPEND_LIMIT_USD;
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+test("a call that FAILED after retries is billed for every attempt, not one", async () => {
+  // The success path has read `result.attempts` since 2026-08-14. The failure
+  // path recorded a flat 1, which is the same undercount on the branch where
+  // retries are MOST likely: a call fails because the provider is refusing,
+  // which is exactly when the retry loop runs to its end.
+  //
+  // Three attempts, all billed, nothing returned, and nothing written to the
+  // cache directory to remember them by. Without this the ledger is the only
+  // record and it was wrong by 3x.
+  const own = mkdtempSync(join(tmpdir(), "forge-failed-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+
+  const failing: ExtractionModel = {
+    name: "gemini",
+    isConfigured: () => true,
+    extract: async () => {
+      throw new ExtractionModelError("transport", "[503] overloaded", 3);
+    }
+  };
+
+  await assert.rejects(() => cachingModel(failing, "use", () => "doomed").extract(request({ packageType: "SOIC-8" })));
+
+  const charged = chargedSpend();
+  assert.equal(charged.calls, 3, "three attempts reached the provider and three were billed");
+  assert.equal(cumulativeSpend().calls, 0, "and nothing was stored, because nothing came back");
+
+  process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
+  rmSync(own, { recursive: true, force: true });
+});
+
+test("a failure that never reached the provider is not billed for three", async () => {
+  // The other half, and the reason `attempts` is optional rather than defaulted
+  // to the retry count: a missing key fails before any request goes out, which
+  // is genuinely zero charges. Booking three would overstate spend in the
+  // opposite direction, and an inflated ledger stops a run that had budget left.
+  const own = mkdtempSync(join(tmpdir(), "forge-noreach-"));
+  process.env.FORGE_MODEL_CACHE_DIR = own;
+
+  const misconfigured: ExtractionModel = {
+    name: "gemini",
+    isConfigured: () => true,
+    extract: async () => {
+      throw new ExtractionModelError("config", "GOOGLE_GEMINI_API_KEY is not set.");
+    }
+  };
+
+  await assert.rejects(() => cachingModel(misconfigured, "use", () => "unconfigured").extract(request({ packageType: "SOIC-8" })));
+  assert.equal(chargedSpend().calls, 1, "one, the conservative floor, rather than a retry count it never made");
+
   process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
   rmSync(own, { recursive: true, force: true });
 });

@@ -333,3 +333,72 @@ test("commercial upload without a Gemini key falls back to the local parser", as
     restoreEnv();
   }
 });
+
+/**
+ * Both routes read a datasheet and answer about it, so both must answer with
+ * the same thing.
+ *
+ * ## The defect
+ *
+ * Past the point where the PDF bytes are in hand, an upload and a part-number
+ * lookup are the same operation. `/api/parse` did the whole job; `/api/lookup`
+ * returned the bare record and stopped. No package chooser, no confidence
+ * checks, no review panel, no rendered pages, and no repair of
+ * `vendorLandPattern`, which is what `contradictsPrintedLand` needs to catch a
+ * correct-inputs-wrong-lead-form footprint.
+ *
+ * The UI's `absorb` reads those keys off the payload and blanks whatever is
+ * absent, so a looked-up part reached the user with the questions answered and
+ * none of the answers shown.
+ *
+ * The worst of it is not cosmetic. `resolveForExport` refuses a model value
+ * carrying no citation, and confirming one in the REVIEW PANEL is the only
+ * thing that clears it. No panel means no way to confirm, so a looked-up part
+ * with an uncited geometry value could not be exported by any route the user
+ * has.
+ *
+ * Asserted as a SHAPE COMPARISON rather than a checklist of keys, because the
+ * failure was never a specific missing field. It was two copies of one job
+ * drifting apart, and the next field added to one of them would drift the same
+ * way. Both now call `buildReadout`, and this fails if either stops.
+ */
+test("lookup answers with the same shape as parse, not a bare record", async () => {
+  const restoreEnv = setEnv({ FORGE_DEPLOYMENT_MODE: "commercial", FORGE_LOG_LEVEL: "error" });
+  const url = "https://www.ti.com/lit/ds/symlink/lmp7704-sp.pdf";
+  const restoreFetch = mockVendorFetch({ datasheetUrl: url, pdfBytes: new Uint8Array(REAL_PDF) });
+  try {
+    const looked = await lookupPOST(jsonRequest({ partNumber: "LMP7704-SP", manufacturer: "Texas Instruments" }));
+    assert.equal(looked.status, 200, "the fixture must resolve, or this test proves nothing");
+    const lookedBody = await looked.json();
+
+    const form = new FormData();
+    form.set("file", new File([new Uint8Array(REAL_PDF)], "LMP7704-SP.pdf", { type: "application/pdf" }));
+    const parsed = await parsePOST(new Request("http://test/api/parse", { method: "POST", body: form }));
+    assert.equal(parsed.status, 200);
+    const parsedBody = await parsed.json();
+
+    // Everything the panel is built from. A key present on one and absent on the
+    // other is the drift this exists to catch.
+    for (const key of ["packageChoice", "checks", "review", "reviewPages", "packageDrawing"]) {
+      assert.ok(key in lookedBody, `lookup must answer with ${key}, as parse does`);
+      assert.ok(key in parsedBody, `parse must answer with ${key}`);
+    }
+
+    // And the same document read two ways must reach the same verdict about
+    // which packages it offers. This is the assertion that would fail if one
+    // route were quietly given a different pipeline.
+    assert.equal(
+      lookedBody.packageChoice?.ok,
+      parsedBody.packageChoice?.ok,
+      "the same document must offer the same chooser whichever route read it"
+    );
+    assert.equal(
+      Array.isArray(lookedBody.review),
+      true,
+      "the review panel is what makes an uncited value confirmable, so it cannot be absent"
+    );
+  } finally {
+    restoreFetch();
+    restoreEnv();
+  }
+});

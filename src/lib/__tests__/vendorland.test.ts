@@ -1,38 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { datasheetTextFromPages } from "../pdftext";
-import { findVendorLandPattern, crossCheckLandPattern } from "../vendorland";
-import { computeLandPattern, type LeadDimensions } from "../ipc7351";
+import { findVendorLandPattern, findUnreadableFootprint } from "../vendorland";
 
-/**
- * Lead dimensions read off the drawings named beside them.
- *
- * These arrived here as `findPackageDefinition("TSSOP-8", 8)` calls against a
- * hand-typed family table. The table is gone; these tests were never about it,
- * they are about reading a printed land pattern off a document and comparing it,
- * so the numbers the lookup would have returned are inlined with their source.
- */
-const TSSOP_8: LeadDimensions = {
-  // TI PW0008A in the INA240 datasheet, JEDEC MO-153 AA.
-  form: "gullwing",
-  span: { minMm: 6.2, maxMm: 6.6 },
-  contact: { minMm: 0.5, maxMm: 0.6 },
-  width: { minMm: 0.19, maxMm: 0.3 }
-};
-const SOIC_8: LeadDimensions = {
-  // TI D0008A in the UCC27524 datasheet, JEDEC MS-012.
-  form: "gullwing",
-  span: { minMm: 5.8, maxMm: 6.2 },
-  contact: { minMm: 0.4, maxMm: 0.625 },
-  width: { minMm: 0.31, maxMm: 0.51 }
-};
-const LQFP_64: LeadDimensions = {
-  // JEDEC MS-026, span 12.00 BSC, from Table 84 of the STM32G071RB datasheet.
-  form: "gullwing",
-  span: { minMm: 11.8, maxMm: 12.2 },
-  contact: { minMm: 0.45, maxMm: 0.6 },
-  width: { minMm: 0.17, maxMm: 0.27 }
-};
 
 // The vendor prints its own recommended land pattern. Reading it gives a second,
 // independent opinion on the footprint we compute, which is worth having because
@@ -79,68 +49,49 @@ test("the land pattern for the requested family is the one that is read", () => 
   );
 });
 
-test("a computed TSSOP land agrees with the pattern TI prints", () => {
-  const land = computeLandPattern(TSSOP_8);
-  const check = crossCheckLandPattern(twoPackages, land, "TSSOP");
-
-  assert.equal(check.agreement, "agrees", check.detail);
-  assert.match(check.detail, /page 3/, "the comparison cites the page it read");
+test("a package designator carrying regex metacharacters does not crash the reader", () => {
+  // The designator arrives from a form field on `/api/parse` and from the
+  // model's own answer, and lands inside `new RegExp`. `SOIC[` builds
+  // `\bSOIC[\b`, an unterminated character class: the constructor throws, the
+  // throw escapes the route handler, and an anonymous caller gets a 500 for a
+  // string. The route bounds the designator's LENGTH and names regex
+  // construction as the reason, which guards the wrong property.
+  const doc = datasheetTextFromPages([
+    "EXAMPLE BOARD LAYOUT\nD0008A SOIC\nLAND PATTERN EXAMPLE\n8X (1.5)\n8X (0.45)\n(5.8)"
+  ]);
+  for (const hostile of ["SOIC[", "SOIC(", "SOIC*", "SOIC+", "SOIC\\", "SOIC{2,}", "(?:)"]) {
+    assert.doesNotThrow(
+      () => findVendorLandPattern(doc, hostile),
+      `a designator of "${hostile}" must not throw`
+    );
+  }
+  // And escaping must not have broken the ordinary case, which is the half a
+  // sanitiser usually gets wrong.
+  assert.ok(findVendorLandPattern(doc, "SOIC"), "a real designator still finds its drawing");
 });
 
-test("a datasheet with no printed land pattern is unavailable, not a disagreement", () => {
-  const bare = datasheetTextFromPages([["ACME1 Amplifier", "No drawings here."].join("\n")]);
-  const check = crossCheckLandPattern(bare, computeLandPattern(SOIC_8), "SOIC narrow");
-  assert.equal(check.agreement, "unavailable");
-});
-
-test("a real disagreement is reported rather than hidden", () => {
-  // Same drawing, but our computed land is deliberately nothing like it.
-  const wrong = { ...computeLandPattern(TSSOP_8), padCentreMm: 12, padLengthMm: 9 };
-  const check = crossCheckLandPattern(twoPackages, wrong, "TSSOP");
-
-  assert.equal(check.agreement, "differs");
-  assert.match(check.detail, /land length/, "the report names which dimension disagrees");
-});
-
-test("a footprint drawing that cannot be parsed is reported as present, not absent", () => {
+test("a footprint drawing the text layer cannot parse still yields its page", () => {
   // ST prints `Figure 48. LQFP64 - Footprint example` with bare numbers, which
-  // the callout reader cannot parse; it is built on TI's parenthesised form.
-  // Saying the datasheet "does not print a land pattern" about a document that
-  // prints one on a numbered page sends the user looking for something that is
-  // in front of them.
+  // the callout reader above cannot parse: it is built on TI's `LAND PATTERN
+  // EXAMPLE` heading and parenthesised reference dimensions.
+  //
+  // `findUnreadableFootprint` exists so the user is never told a datasheet
+  // prints no footprint when it prints one on a numbered page. Its only caller
+  // was `crossCheckLandPattern`, which nothing in production has called since
+  // the family table was deleted, so the promise was never kept: the refusal in
+  // `askForLandPattern` says verbatim "This datasheet does not print a
+  // recommended footprint for X", which is the exact sentence this prevents.
+  //
+  // `buildReadout` now calls it, and records the page with NO values, which is
+  // what we actually know. Everything reading the callouts guards on a non-empty
+  // list, so nothing is vetoed by a drawing we could not read; everything
+  // wanting the page gets it.
   const doc = datasheetTextFromPages([
-    ["ACME071 Microcontroller"].join("\n"),
-    ["Figure 48. LQFP64 - Footprint example", "12.70", "10.30", "1.20", "0.30"].join("\n")
+    "Contents\nFigure 48. LQFP64 - Footprint example . . . . . . . . . 71",
+    "Some other page of prose about the device.",
+    "Figure 48. LQFP64 - Footprint example\n0.30 1.50 0.50 12.00 10.00"
   ]);
-  const check = crossCheckLandPattern(doc, computeLandPattern(LQFP_64), "LQFP-64");
 
-  assert.equal(check.agreement, "unavailable", "unreadable is not a disagreement");
-  assert.equal(check.page, 2, "the page is where the drawing is");
-  assert.match(check.detail, /prints a LQFP-64 footprint example on page 2/);
-  assert.doesNotMatch(check.detail, /does not print/, "the false claim must be gone");
-});
-
-test("a contents entry is not mistaken for the drawing it lists", () => {
-  // A datasheet names every figure in its contents before drawing any of them,
-  // so the first match is routinely a contents line pointing elsewhere. Dotted
-  // leaders are what tell the two apart.
-  const doc = datasheetTextFromPages([
-    ["Contents", "Figure 48. LQFP64 - Footprint example . . . . . . . . . . . . . 132"].join("\n"),
-    ["filler"].join("\n"),
-    ["Figure 48. LQFP64 - Footprint example", "12.70", "10.30"].join("\n")
-  ]);
-  const check = crossCheckLandPattern(doc, computeLandPattern(LQFP_64), "LQFP-64");
-
-  assert.equal(check.page, 3, "the contents entry on page 1 is not the drawing");
-});
-
-test("a footprint example for ANOTHER package is not offered as this one's", () => {
-  const doc = datasheetTextFromPages([
-    ["ACME071 Microcontroller"].join("\n"),
-    ["Figure 40. LQFP32 - Footprint example", "8.70", "6.30"].join("\n")
-  ]);
-  const check = crossCheckLandPattern(doc, computeLandPattern(LQFP_64), "LQFP-64");
-
-  assert.equal(check.agreement, "unavailable");
-  assert.match(check.detail, /does not print/, "a different package's drawing is not this one's");
+  assert.equal(findVendorLandPattern(doc, "LQFP64"), null, "the callout reader cannot read it");
+  assert.equal(findUnreadableFootprint(doc, "LQFP64"), 3, "but the page is known, and it is not the contents page");
 });

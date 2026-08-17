@@ -17,11 +17,18 @@
 // the default a mitigation, not a guarantee. Per-process still stops the single-client hammering
 // case, which is the common one.
 //
-// Closing that gap is now a store swap rather than surgery: `RateLimiter` talks to a
-// `RateLimitStore`, and `check` is async so a shared backend (Redis, Vercel KV, or the platform's
-// own edge limiter) can be dropped in without touching a single route. The concrete shared store
-// must live OUTSIDE this module, because everything here is reachable in air-gapped mode and may
-// not contain networking code; inject it at construction instead.
+// Closing that gap is a store swap rather than surgery: `RateLimiter` talks to a `RateLimitStore`
+// and `check` is async, so a shared backend (Redis, Vercel KV, or the platform's own edge limiter)
+// drops in without touching a route. It would have to live OUTSIDE this module, because everything
+// here is reachable in air-gapped mode and may not contain networking code.
+//
+// NO SUCH STORE EXISTS TODAY, and that is stated rather than implied. One was written on
+// 2026-08-15 against a Redis-compatible client interface, carried 9 tests, and nothing in the
+// product could construct it: no code read a connection string, so no deployment could ever have
+// used it. Deleted on 2026-08-16 for the reason the audit that found it gives: a tested,
+// unreachable component reads as protection and is not, which is worse than an absence somebody
+// can see. The seam stays because it costs three lines and it is what keeps the sentence above
+// true; the implementation gets written against whatever database a real deployment actually has.
 
 export interface RateLimitResult {
   allowed: boolean;

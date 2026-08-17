@@ -5,9 +5,7 @@ import {
   pinTableFor,
   findOrderablePackages,
   findPackageVariants,
-  namesPackageFamily,
-  selectSinglePackage,
-  soleDeclaredLeadCount
+  namesPackageFamily
 } from "../packagevariants";
 
 /**
@@ -105,29 +103,6 @@ test("the lone-count form rejects what is not a lead count", () => {
   assert.equal(all("VA41630-CQ176F0EBA 176 CQFP")[0].leadCount, 176);
 });
 
-test("one family at one count is a single package", () => {
-  // The qualified reading wins over the bare one printed later in the same
-  // document, because it carries strictly more of what the vendor wrote.
-  const variants = all("Ceramic SO48 package. The SO48 outline is shown in Figure 26.");
-  assert.equal(selectSinglePackage(variants)?.designator, "Ceramic SO48");
-});
-
-test("one family at several counts is not", () => {
-  // An RTAX2000S is sold as a 208, a 256 and a 352 pin CQFP. Answering with any
-  // one of them picks a package for a caller who never said which they had.
-  const variants = all("208-Pin CQFP 256-Pin CQFP 352-Pin CQFP");
-  assert.equal(variants.length, 3);
-  assert.equal(selectSinglePackage(variants), null);
-});
-
-test("two families at the same count is not either", () => {
-  // ADG5412 is both a 16-Lead TSSOP and a 16-Lead LFCSP. The count cannot
-  // choose, and this is the case the caller is asked to resolve with one click.
-  const variants = all("16-Lead TSSOP (4-Layer Board) 16-Lead LFCSP (4-Layer Board)");
-  assert.equal(selectSinglePackage(variants), null);
-  assert.deepEqual(new Set(variants.map((variant) => variant.family)), new Set(["TSSOP", "LFCSP"]));
-});
-
 test("a designator has to name a family", () => {
   // `80-pin target development board` became an MSP430F5529's package and
   // `MIL-STD-883B` an RTAX2000S's. Both are shaped like designators.
@@ -144,28 +119,6 @@ test("the lead count a designator declares can be checked against the pins", () 
   assert.equal(declaredLeadCount("12-Pin BGA"), 12);
   // No count to check, so nothing to contradict.
   assert.equal(declaredLeadCount("SOT-23"), null);
-});
-
-test("one lead count across every package named is a corroboration", () => {
-  // The front-matter pattern that reads a declared pin count requires a word
-  // boundary after the count, so `FLAT-16P` declares nothing to it and an
-  // RHFL4913 read a complete sixteen-pin table beside a package called FLAT-16P
-  // and still reported an unknown pin count.
-  assert.equal(soleDeclaredLeadCount(all("FLAT-16P and TO-257 packages")), 16);
-  // Two packages, one count: ADG5412 is a 16-lead TSSOP and a 16-lead LFCSP.
-  assert.equal(soleDeclaredLeadCount(all("16-Lead TSSOP 16-Lead LFCSP")), 16);
-});
-
-test("several lead counts corroborate nothing", () => {
-  // RTAX2000S names 208, 256 and 352; TSV911 names 8 and 14.
-  assert.equal(soleDeclaredLeadCount(all("208-Pin CQFP 256-Pin CQFP 352-Pin CQFP")), null);
-  assert.equal(soleDeclaredLeadCount(all("SO-8 and TSSOP-14 packages")), null);
-});
-
-test("and a package that declares no count is no obstacle", () => {
-  // An LD1117's TO-220 is an outline code, not a count, so it rules nothing out.
-  assert.equal(soleDeclaredLeadCount(all("TO-220 and SO-8 packages")), 8);
-  assert.equal(soleDeclaredLeadCount([]), null);
 });
 
 test("a material qualifier printed ahead of a glued designator is kept", () => {

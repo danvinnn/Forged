@@ -707,3 +707,146 @@ single-record path did.
 - Single-row packages (TO-220, TO-92, SIP) are not generated.
 - READ 61% remains a FLOOR: eight parts have no answer because the run that
   produced these answers ran the Google account dry partway.
+
+# Part six: checks on the OUTPUT, 2026-08-16
+
+Every check before this ran on the RECORD. Both wrong footprints this product has
+produced passed all of them, because in both cases the inputs were individually
+fine and the ARRANGEMENT was wrong. A reviewer cannot see that in a record and
+can see it immediately in the pads.
+
+`validateGeometry` now runs on the built footprint before any file is written,
+and it THROWS rather than warns. A footprint whose lands overlap is a short
+circuit, not a footprint with a caveat.
+
+What it checks: one land per pin and no others, no two lands overlapping, the
+courtyard containing every land, paste inside its own copper, a plated hole never
+pasted and never without a drill, the pin-1 marker nearest pin 1, and every
+dimension finite.
+
+What it deliberately does NOT check: whether an ordinary land carries paste at
+all. That lives in the emitter's layer list, not in this geometry, and pretending
+to check it here would be worse than not checking it. It is covered where it
+lives, by an invariant over the emitted file.
+
+## It found two things on its first run
+
+**The courtyard did not have to contain the lands.** On a dual package its height
+came from the BODY, so a lead row longer than its body puts the end lands outside
+their own keep-out. The comment beside it said exactly why that is wrong on a
+quad without noticing it was the same mistake on a dual. It is now the larger of
+the body and the actual land extent, in both axes, which is also closer to what
+IPC-7351B means by a courtyard. `library-diff.test.ts` guards against fixing it
+by inflating every courtyard: KiCad's SOIC-8 is the case where the body is the
+wider bound and its value must not move.
+
+**Two quad packages were shipping with all four CORNER lands overlapping.**
+Replay went from 43 ships to 41, and those two are a correction rather than a
+regression: pins 1/24, 6/7, 12/13 and 18/19 on a 24-pin part, shorted. Neither
+input check could see it. `lands-fit-pitch` compares a land width against the
+pitch and `lands-clear-centre` compares opposing rows; a corner clash is between
+two lands on DIFFERENT sides and is invisible to both.
+
+Checked against KiCad's own QFN proportions there is no clash, so the likely
+cause is a centre span read too small rather than anything in the placement. The
+error says both possibilities rather than asserting one: overlapping lands come
+from a generator bug or from a misread dimension, and the geometry cannot tell
+them apart. It points at the values a user can correct.
+
+## What the packages are actually refusing, measured
+
+Asked because "why are we refusing on packages" deserved a number rather than an
+argument. Over the 51 hold-out parts with a reading:
+
+```
+28   record blocked, no chooser at all   (no pins or no pin count)
+46   package options that ASK for a land pattern
+ 6   package options refused
+ 1   package option that ships outright
+```
+
+So the dominant refusal is not about packages at all: 28 of 51 parts never reach
+a chooser because the reading is incomplete. Of the options that ARE offered, 46
+of 53 are questions rather than refusals. The 6 refusals are all the new
+lead-count guard, and each one was previously a silently wrong footprint. In the
+product they are not dead ends either: clicking one re-reads the datasheet for
+that package.
+
+# Part seven: the answer to "why does this keep happening"
+
+Asked after the package refusal numbers in part six. The answer is not that the
+model cannot read these documents. It is that we collect the answer, pay for it,
+store it, and never use it.
+
+## Measured
+
+Of the 51 hold-out parts with a reading, 28 never reached the package chooser.
+The breakdown was NOT what part six implied:
+
+```
+12   have a pinout PER PACKAGE on the record, and were reported as "no pins"
+ 8   have a complete pin table and are blocked on a body dimension
+ 4   have pins that were read but could not be cited
+ 4   genuinely have no pinout at all
+```
+
+Twelve of the twenty-eight were never unreadable. A family datasheet whose part
+number does not name a package gets `pins` null, correctly: the model is told not
+to pick among several pinouts because guessing one becomes a footprint. It
+returns them all, labelled, in `pinTablesByPackage`.
+
+`resolveForExport` refused the record for having no pins, `packageOptions`
+returned `ok: false`, and the user was told the reading was missing pins for a
+document whose pinouts were on the record.
+
+## The part worth keeping
+
+`types.ts` describes this exact deadlock in a comment, in the past tense:
+
+> "Before this, a part whose number did not name its package produced no pins at
+> all, the record was therefore unreadable, and the package chooser refused to
+> offer the very choice that would have unblocked it. The product deadlocked on
+> its own question."
+
+The field was designed, the data was collected on every call, the comment says it
+works, and the last connecting step was never made. Nothing measured whether it
+worked, so the comment stood in for the behaviour.
+
+That is the recurring shape, and it is the same one as the pinouts discarded for
+want of a citation, the thermal-pad discard, and this field going unconsumed
+until part five. Not "the model cannot read it". "We had it and threw it away."
+
+## Fixed
+
+Each table is LOCATED on a real page by `mergeModelValues` before it is stored,
+using the same check the main pin table passes and cutting quarantined regions
+first. Every table in the corpus located successfully. A table matching no page
+keeps a null citation, and `resolveForExport` refuses it exactly as it refuses
+any uncited value, so nothing unverifiable is smuggled through.
+
+`packageOptions` then offers one option per package, each carrying its own
+pinout, but only when the pinout is the ONLY thing missing. A record also short
+of a body size has a different problem and still gets the plain refusal.
+
+Matching a designator to its table is done on the DESIGNATOR first and the lead
+count second. Both sides render the same printed string and differ only in
+punctuation: a TCA9548A's variants read `VQFN (RGE)` where its tables read
+`VQFNRGE`. Lead count alone was the first attempt and matched two of twelve.
+
+```
+12/12 parts now reach a chooser        (was zero)
+29/41 package options usable           (was zero)
+READ  61% -> 82%
+SHIPS 27%, unchanged
+```
+
+SHIPS not moving is the honest signal: this unlocked the pinout, not the whole
+footprint. Those parts still need a land pattern.
+
+## What is still missing
+
+Nothing tests that data on the record reaches the product. All four instances of
+this failure were found by reading, and the only reason this one became visible
+is that the bench's own diagnosis was wrong in a way worth chasing. The bench now
+distinguishes "we could not read it" from "we read it and did not use it", which
+is the closest thing to a guard that currently exists.

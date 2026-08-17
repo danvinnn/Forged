@@ -450,7 +450,53 @@ export const partSchema = z.object({
    * pinout, which is a different statement from an empty list.
    */
   pinTablesByPackage: z
-    .array(z.object({ packageType: z.string().min(1).max(64), pins: z.array(pinSchema) }))
+    .array(
+      z
+        .object({
+        packageType: z.string().min(1).max(64),
+        pins: z.array(pinSchema),
+        /**
+         * Whether THIS package has an exposed thermal pad.
+         *
+         * Per table rather than per record, because a pad belongs to one package
+         * of a family and not to its siblings: the same part is routinely an
+         * SOIC without one and a QFN with one. A single flag on the record has to
+         * be wrong for one of them, and it was: `asPackage` set it to false on
+         * every relabel, which emits a footprint missing a mandatory soldered
+         * feature, and the comment there said so while doing it.
+         *
+         * Optional so a record written before this existed still validates.
+         */
+        exposedPad: z.boolean().optional(),
+        // The page this table was FOUND on, filled by the merge rather than
+        // claimed by the model. Nullable, and a null one is what keeps an
+        // unlocatable table out of a footprint.
+        citation: citationSchema.nullable().optional()
+        })
+        /**
+         * THE SAME PROOF `pins` HAS TO PASS: rows number 1..N, no gaps, no
+         * repeats.
+         *
+         * `mergeModelValues` enforces this when a model answer enters the
+         * record, and that is one door of two. `/api/export` accepts a POSTED
+         * record, and a table with a gap in it reaches `asPackage` there without
+         * passing through merge at all. Both doors have to ask, or the guard is
+         * a suggestion.
+         *
+         * A gap is not cosmetic. Measured 2026-08-16: rows numbered 1-7,9 build
+         * EIGHT pads, one of them numbered 8 which the document never mentions,
+         * against SEVEN symbol pins. `validateGeometry` cannot catch it, because
+         * the pads run 1..pinCount exactly as it expects.
+         */
+        .refine(
+          (table) => {
+            const numbers = table.pins.map((pin) => Number(pin.number));
+            if (numbers.some((value) => !Number.isInteger(value) || value < 1)) return false;
+            return new Set(numbers).size === numbers.length && Math.max(...numbers) === numbers.length;
+          },
+          { message: "a per-package pin table must number 1..N with no gaps or repeats" }
+        )
+    )
     .max(16)
     .optional(),
   /**
@@ -562,7 +608,7 @@ export type PartRecord = {
    * the package chooser refused to offer the very choice that would have
    * unblocked it. The product deadlocked on its own question.
    */
-  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[] }>;
+  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[]; exposedPad?: boolean; citation?: Citation | null }>;
   /** JEDEC outline registration, e.g. `MO-153 AA`. Vendor-independent package identity. */
   jedecOutline: Extracted<string>;
   packageVariants: PackageVariantRecord[];
@@ -622,7 +668,7 @@ export interface ResolvedPart {
    * because they describe a different package; the pin table is the same kind
    * of value and was the one thing carried across unchanged.
    */
-  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[] }>;
+  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[]; exposedPad?: boolean; citation?: Citation | null }>;
   /** True when the part has an exposed thermal pad; `buildFootprintGeometry` refuses. */
   exposedPad: boolean;
   dimensions: {
@@ -680,20 +726,47 @@ export type ResolveResult =
  * came from a model, and cannot be found in the datasheet.
  */
 const GEOMETRY_FIELDS = ["pinCount", "pins"] as const;
-const GEOMETRY_DIMENSIONS = [
-  "bodyLengthMm",
-  "bodyWidthMm",
-  "bodyHeightMm",
-  "pitchMm",
-  "leadLengthMm",
-  "leadCount",
-  "leadWidthMm",
-  // Gated like every other dimension, and these matter more than most: they are
-  // the numbers a drawing-derived land pattern is built from, so an uncited one
-  // would put pads on the board from a value nobody can check.
-  "leadSpanMm",
-  "leadContactMm"
-] as const;
+
+/**
+ * EVERY DIMENSION, rather than a list of names.
+ *
+ * ## Why this stopped being a list
+ *
+ * It was one: nine field names, correct the day they were written. Then the land
+ * pattern's SOURCE moved. Until 2026-08-12 the pads were computed from
+ * `leadSpanMm` and `leadContactMm`, which is why those two are singled out in
+ * the note this replaces as "the numbers a drawing-derived land pattern is built
+ * from". Since then the pads are `landPadLengthMm`, `landPadWidthMm` and
+ * `landSpanMm` read straight off the datasheet's own printed footprint, and none
+ * of the three was ever added here.
+ *
+ * So for four months the gate named the fields that USED to place copper and not
+ * the ones that did. Nothing noticed, because a hardcoded list cannot report
+ * that it has fallen behind. Nor could `leadSides` (two rows or four),
+ * `mounting` (holes or lands), `leadDiameterMm` (the drill), the thermal pad or
+ * the vacant slot, every one of which changes the physical output.
+ *
+ * Enumerating the dimension object is the same rule with no list to maintain. A
+ * field added to `packageDimensionsSchema` next month is gated the day it is
+ * added, without anyone remembering, and the mistake runs in the safe direction:
+ * a new field is protected by default, and exempting one takes a deliberate act.
+ * That is the reasoning `asPackage` already uses for its whitelist of what
+ * survives a relabel.
+ *
+ * ## What it costs
+ *
+ * Measured 2026-08-16 by running the real merge over the tuned corpus, PDFs off
+ * disk with cached model answers and the same citation verification production
+ * does, drawing citations included: of 25 parts, 16 resolve today and 16 resolve
+ * after. **Nothing is newly blocked.** A value read off a page we sent earns a
+ * citation, so the widening catches the case nobody has hit yet rather than
+ * taking parts away.
+ */
+function untraceableDimensions(dimensions: PartRecord["dimensions"]): string[] {
+  return Object.entries(dimensions)
+    .filter(([, field]) => isUntraceable(field as Extracted<unknown>))
+    .map(([name]) => `dimensions.${name}`);
+}
 
 export interface ResolveOptions {
   /**
@@ -733,9 +806,7 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
   if (requireTraceable) {
     const untraceable = [
       ...GEOMETRY_FIELDS.filter((field) => isUntraceable(part[field])),
-      ...GEOMETRY_DIMENSIONS.filter((field) => isUntraceable(part.dimensions[field])).map(
-        (field) => `dimensions.${field}`
-      )
+      ...untraceableDimensions(part.dimensions)
     ];
     if (untraceable.length > 0) return { ok: false, missing: [], untraceable };
   }

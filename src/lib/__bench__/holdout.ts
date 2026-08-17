@@ -236,6 +236,23 @@ function classify(record: PartRecord): string {
   const pins = record.pins.value ?? [];
   const count = record.pinCount.value;
 
+  // A PINOUT PER PACKAGE IS A PINOUT.
+  //
+  // A family datasheet whose part number does not name a package gets `pins`
+  // null, correctly: the model is told not to pick among several pinouts. It
+  // returns them all, labelled, and each is located on a page before it is
+  // stored. Counting that as "no pins, no count" is what made twelve of the
+  // fifty-one parts with a reading look unreadable when the document had been
+  // read fine and the answer was on the record. The package chooser offers
+  // exactly these, one option per table.
+  //
+  // Only tables that were LOCATED count. An entry that matched no page in the
+  // document is not evidence, and `resolveForExport` refuses it downstream.
+  const located = (record.pinTablesByPackage ?? []).filter((table) => table.citation).length;
+  if (pins.length === 0 && count === null && located > 0) {
+    return "read (one pinout per package, user picks)";
+  }
+
   if (pins.length === 0 && count === null) return "no pins, no count";
   if (pins.length === 0) return "count but no pins";
   if (count === null) return "pins but no count (nothing corroborates them)";
@@ -427,7 +444,7 @@ async function main(): Promise<void> {
 
     const reason = classify(record);
     reasons.set(reason, [...(reasons.get(reason) ?? []), part.partNumber]);
-    if (reason === "read") {
+    if (reason.startsWith("read")) {
       read += 1;
       kind.read += 1;
       const outcome = await shipOutcome(record);

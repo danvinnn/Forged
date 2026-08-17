@@ -637,3 +637,96 @@ test("a gap is still filled, so the rule blocks overwriting and nothing else", (
   );
   assert.ok(filled.includes("jedecOutline"), "an unanswered field is still the model's to answer");
 });
+
+/**
+ * EVERY dimension is gated, including ones added after this test was written.
+ *
+ * The gate was a hardcoded list of nine field names. It was correct the day it
+ * was written and then the pads changed source: until 2026-08-12 they were
+ * computed from `leadSpanMm` and `leadContactMm`, and since then they are
+ * `landPadLengthMm`, `landPadWidthMm` and `landSpanMm` read off the datasheet's
+ * own printed footprint. None of the three was ever added, so for four months
+ * the gate named the fields that USED to place copper and not the ones that did.
+ *
+ * A list cannot report that it has fallen behind, so this asserts the PROPERTY
+ * instead: enumerate the record's dimensions, make each one an uncited model
+ * value in turn, and require the export to refuse it. A field added to the
+ * schema next month is covered the day it is added, and this test fails if
+ * anyone reintroduces a list that does not cover it.
+ */
+test("an uncited model value in ANY dimension blocks the export, field list or not", () => {
+  const base = buildPartRecord(doc, "VA10820.pdf");
+  const complete: PartRecord = {
+    ...base,
+    partNumber: { value: "VA10820", confidence: 1, method: "user", citation: null },
+    pinCount: { value: 4, confidence: 1, method: "user", citation: null },
+    pins: {
+      value: [
+        { number: "1", name: "A", electricalType: "passive" },
+        { number: "2", name: "B", electricalType: "passive" },
+        { number: "3", name: "C", electricalType: "passive" },
+        { number: "4", name: "D", electricalType: "passive" }
+      ],
+      confidence: 1,
+      method: "user",
+      citation: null
+    }
+  };
+
+  assert.ok(resolveForExport(complete).ok, "the fixture must resolve, or this proves nothing");
+
+  const names = Object.keys(complete.dimensions);
+  assert.ok(names.length >= 20, `expected the full dimension set, saw ${names.length}`);
+
+  for (const name of names) {
+    // A value a model produced and nobody can find on a page. The one route by
+    // which a crafted datasheet could reach a manufactured part.
+    const tainted: PartRecord = {
+      ...complete,
+      dimensions: {
+        ...complete.dimensions,
+        [name]: { value: 1, confidence: null, method: "vlm", citation: null }
+      }
+    };
+
+    const result = resolveForExport(tainted);
+    assert.equal(result.ok, false, `an uncited ${name} must not reach geometry`);
+    if (result.ok) continue;
+    assert.ok(
+      (result.untraceable ?? []).includes(`dimensions.${name}`),
+      `${name} must be NAMED in the refusal, so the user knows what to confirm`
+    );
+  }
+});
+
+test("a value read off a RENDERED page is held to the same rule", () => {
+  // `vlm-drawing` was left out of `isUntraceable`. Harmless today, because a
+  // drawing citation is produced whenever the page was one we sent, so the case
+  // cannot arise. Named anyway: the rule is "a model answer nobody can locate is
+  // not evidence", and it does not care which of the two model paths produced
+  // it. The path that was exempt is the one that reads mechanical drawings.
+  const base = buildPartRecord(doc, "VA10820.pdf");
+  const record: PartRecord = {
+    ...base,
+    partNumber: { value: "VA10820", confidence: 1, method: "user", citation: null },
+    pinCount: { value: 4, confidence: 1, method: "user", citation: null },
+    pins: {
+      value: [
+        { number: "1", name: "A", electricalType: "passive" },
+        { number: "2", name: "B", electricalType: "passive" },
+        { number: "3", name: "C", electricalType: "passive" },
+        { number: "4", name: "D", electricalType: "passive" }
+      ],
+      confidence: 1,
+      method: "user",
+      citation: null
+    },
+    dimensions: {
+      ...base.dimensions,
+      landSpanMm: { value: 5.8, confidence: 0.4, method: "vlm-drawing", citation: null }
+    }
+  };
+
+  const result = resolveForExport(record);
+  assert.equal(result.ok, false, "an uncited drawing read is not evidence either");
+});

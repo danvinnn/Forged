@@ -26,10 +26,19 @@ const FIELD_GUIDE: Record<ExtractionField, string> = {
     "lead contact length in millimetres, drawing dimension L, the length of the foot that sits on the pad (NOT the whole lead), as {\"minMm\": <number>, \"maxMm\": <number>}",
   "dimensions.leadSpanMm":
     "lead span in millimetres, tip to tip across the package including the leads (NOT the body), as printed on the package drawing, as {\"minMm\": <number>, \"maxMm\": <number>}",
+  // The AXIS is stated, on both, and it is not a pedantic detail. These two were
+  // asked for as "D2 or E2" and as a bare "width", which names no axis at all,
+  // so nothing downstream could know which way round the answers came and the
+  // generator picked the opposite convention from `bodyLengthMm`. An exposed pad
+  // turned ninety degrees still fits between the lead rows, so it shipped.
+  //
+  // Tied to `bodyLengthMm` rather than to a drawing letter because that is the
+  // comparison that has to hold: the pad is on the underside of the body, and
+  // the two describe the same object from the same side.
   "dimensions.thermalPadLengthMm":
-    "length of the EXPOSED THERMAL PAD on the underside of the package (drawing dimension D2 or E2, sometimes labelled 'exposed pad' or 'thermal pad'), in millimetres, as a number. Null if the package has no exposed pad.",
+    "length of the EXPOSED THERMAL PAD on the underside of the package (drawing dimension D2, sometimes labelled 'exposed pad' or 'thermal pad'), in millimetres, as a number. Measure it along the SAME AXIS as dimensions.bodyLengthMm, i.e. parallel to the body's length D, so that the pad and the body describe the same orientation. Null if the package has no exposed pad.",
   "dimensions.thermalPadWidthMm":
-    "width of the EXPOSED THERMAL PAD on the underside of the package, in millimetres, as a number. Null if the package has no exposed pad.",
+    "width of the EXPOSED THERMAL PAD on the underside of the package (drawing dimension E2), in millimetres, as a number. Measure it along the SAME AXIS as dimensions.bodyWidthMm, i.e. across the body. On a rectangular pad this is the dimension perpendicular to thermalPadLengthMm; on a square pad the two are equal. Null if the package has no exposed pad.",
   // The three below come off the datasheet's OWN recommended footprint drawing,
   // which is a different page from the package outline: the outline dimensions
   // the PART, this dimensions the COPPER the part is soldered to. Vendors

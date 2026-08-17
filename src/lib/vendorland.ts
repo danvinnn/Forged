@@ -51,6 +51,26 @@ export interface VendorLandPattern {
 }
 
 const LAND_PATTERN_HEADING = /LAND PATTERN EXAMPLE/i;
+
+/**
+ * Makes a package designator safe to put inside a regular expression.
+ *
+ * The designator reaches here from a form field on `/api/parse` and from the
+ * model's own answer, so it is not ours. `SOIC[` builds `\bSOIC[\b`, which is an
+ * unterminated character class: the constructor throws, the throw leaves the
+ * route handler, and the caller gets a 500 for a string.
+ *
+ * The route bounds the designator's LENGTH and cites regex construction as the
+ * reason, which addresses a different hazard: length was never the problem, the
+ * metacharacters were.
+ *
+ * Escaping rather than stripping, because the word boundaries around this are
+ * load-bearing. `\bSO\b` must not match `SOIC`, and removing the punctuation to
+ * sanitise it would remove the boundary with it.
+ */
+function forRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+}
 /** "8X (1.5)" or a bare "(5.8)". Values are reference dimensions in millimetres. */
 const DIMENSION = /(?:(\d{1,3})X\s*)?\((\d{1,3}(?:\.\d{1,3})?)\)/g;
 
@@ -88,7 +108,7 @@ export function findVendorLandPattern(doc: DatasheetText, family?: string): Vend
       // other family named there means this drawing is for a different package.
       const header = /EXAMPLE BOARD LAYOUT\s*\n\s*(\S+)\s+([A-Z0-9-]+)/i.exec(block);
       if (header && header[2].toUpperCase() !== wanted) continue;
-      if (!header && !new RegExp(`\\b${wanted}\\b`, "i").test(block)) continue;
+      if (!header && !new RegExp(`\\b${forRegex(wanted)}\\b`, "i").test(block)) continue;
     }
 
     const dimensions: VendorLandDimension[] = [];
@@ -166,32 +186,29 @@ export function findUnreadableFootprint(doc: DatasheetText, family?: string): nu
   return null;
 }
 
-export type LandAgreement = "agrees" | "differs" | "unavailable";
-
-export interface LandCrossCheck {
-  agreement: LandAgreement;
-  /** Human-readable summary, written into the export manifest. */
-  detail: string;
-  page?: number;
-}
-
 /** Whether any vendor dimension sits within tolerance of a computed value. */
 function matched(values: readonly number[], value: number, toleranceMm: number): boolean {
   return values.some((printed) => Math.abs(printed - value) <= toleranceMm);
 }
 
-/** How far a computed land may sit from the vendor's printed one, in mm. */
-export const LAND_AGREEMENT_TOLERANCE_MM = 0.12;
+/**
+ * How far a computed land may sit from the vendor's printed one, in mm.
+ *
+ * No longer exported. `crossCheckLandPattern` was the only caller outside this
+ * file, and it was deleted on 2026-08-16: it had no production caller at all,
+ * and had not had one since the hand-typed family table went, while carrying 7
+ * tests that read as coverage of a live comparison.
+ */
+const LAND_AGREEMENT_TOLERANCE_MM = 0.12;
 
 /**
  * The three numbers a printed land pattern has to account for, unmatched ones
  * first. Empty means the computed land agrees with the page.
  *
- * Doc-free on purpose. `crossCheckLandPattern` below uses it to write a note
- * while the document is still open; `packages.ts` uses it at EXPORT time, from
- * values carried on the record, to refuse a land pattern derived from a drawing
- * that the vendor's own page contradicts. Both must ask the same question, so
- * they ask the same function.
+ * Used by `contradictsPrintedLand` in the generator, at EXPORT time, to refuse a
+ * land pattern derived from a package drawing that the vendor's own printed page
+ * contradicts. That is the check which caught the ADS1115 with correct inputs
+ * and the wrong lead form.
  */
 export function landDisagreements(
   printedMm: readonly number[],
@@ -206,63 +223,4 @@ export function landDisagreements(
   return checks
     .filter((check) => !matched(printedMm, check.value, toleranceMm))
     .map((check) => `${check.what} ${check.value.toFixed(3)} mm`);
-}
-
-/**
- * Compares a computed land pattern against the vendor's printed one.
- *
- * "differs" is a finding, not a failure. IPC-7351B density B and a vendor's house
- * rule are both legitimate and they genuinely disagree: TI's printed TSSOP land
- * is about 0.08 mm wider than density B, because its side fillet goal is larger.
- * Surfacing that lets an engineer choose; hiding it does not.
- */
-export function crossCheckLandPattern(
-  doc: DatasheetText,
-  computed: LandPattern,
-  family?: string,
-  toleranceMm = LAND_AGREEMENT_TOLERANCE_MM
-): LandCrossCheck {
-  const vendor = findVendorLandPattern(doc, family);
-  if (!vendor) {
-    // A drawing that is present but unparseable is a different answer from no
-    // drawing at all, and the user can act on it: the page number is where to
-    // check this footprint by hand.
-    const unreadable = findUnreadableFootprint(doc, family);
-    if (unreadable !== null) {
-      return {
-        agreement: "unavailable",
-        page: unreadable,
-        detail: `This datasheet prints a ${family ?? "package"} footprint example on page ${unreadable}, but its dimensions are not in a form this check can read, so no comparison was made. The generated land pattern follows IPC-7351B; compare it against that page before committing to fabrication.`
-      };
-    }
-    return {
-      agreement: "unavailable",
-      detail: family
-        ? `This datasheet does not print a ${family} land pattern to compare against.`
-        : "This datasheet does not print a land pattern to compare against."
-    };
-  }
-
-  const missing = landDisagreements(
-    vendor.dimensions.map((dimension) => dimension.valueMm),
-    computed,
-    toleranceMm
-  );
-  const printed = vendor.dimensions
-    .map((dimension) => `${dimension.repeat ? `${dimension.repeat}X ` : ""}${dimension.valueMm}`)
-    .join(", ");
-
-  if (missing.length === 0) {
-    return {
-      agreement: "agrees",
-      page: vendor.page,
-      detail: `Matches the land pattern printed on page ${vendor.page} (${printed}) within ${toleranceMm} mm.`
-    };
-  }
-
-  return {
-    agreement: "differs",
-    page: vendor.page,
-    detail: `Differs from the land pattern printed on page ${vendor.page} (${printed}) in: ${missing.join(", ")}. IPC-7351B and a vendor house rule can both be correct and still disagree; check which your process requires.`
-  };
 }

@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 import {
   resolveForExport,
+  type Citation,
   type ExportFormat,
   type PartRecord,
   type PinRecord,
@@ -26,7 +27,7 @@ import {
   type SymbolPin,
   type ThermalVia
 } from "./geometry";
-import { confidenceChecks, summariseChecks } from "./confidence";
+import { confidenceChecks, summariseChecks, validateGeometry } from "./confidence";
 import { emitKicadFootprint, emitKicadSymbol } from "./emitters/kicad";
 import { emitAltiumPcbLib, emitAltiumSchLib } from "./emitters/altium";
 
@@ -116,6 +117,28 @@ export interface RequiredInput {
  */
 
 /**
+ * A check that threw DATA AWAY, recorded so it can be seen.
+ *
+ * ## Why a discard has to name itself
+ *
+ * Nearly every check below returns null rather than refusing, and the caller
+ * then tells the user "no land pattern could be read for this package from this
+ * datasheet". That sentence is true when the document is silent and FALSE when
+ * the document printed a footprint and a check here rejected it, and until
+ * 2026-08-16 the two were indistinguishable: to the user, to the bench, and to
+ * anyone asking whether a given check still earns its place.
+ *
+ * That is the same shape as every other defect this product has had. An answer
+ * arrives, something discards it, and the discard leaves no trace, so the
+ * measurement blames the datasheet and the effort goes to reading harder.
+ *
+ * So a rejection is appended here, in the user's language, and the refusal
+ * quotes it. Absence is NOT a discard: a document that never stated a land width
+ * has nothing to throw away, and recording that would drown the signal.
+ */
+type Discards = string[];
+
+/**
  * The land pattern the datasheet PRINTS, turned into the shape the emitters use.
  *
  * Three numbers off the vendor's own recommended-footprint drawing: one land's
@@ -127,7 +150,7 @@ export interface RequiredInput {
  * PARTIAL printed pattern is not a pattern: filling the gaps from a computed
  * one would mix two sources into a footprint that claims to be the vendor's.
  */
-function printedLand(part: ResolvedPart, densityLevel: DensityLevel): LandPattern | null {
+function printedLand(part: ResolvedPart, densityLevel: DensityLevel, discards: Discards = []): LandPattern | null {
   const padLengthMm = part.dimensions.landPadLengthMm;
   const padWidthMm = part.dimensions.landPadWidthMm;
   const centreSpan = part.dimensions.landSpanMm;
@@ -138,7 +161,13 @@ function printedLand(part: ResolvedPart, densityLevel: DensityLevel): LandPatter
   // numbers describes something other than this footprint, and the drawing has
   // been misread rather than the package being strange.
   const gMinMm = centreSpan - padLengthMm;
-  if (gMinMm <= 0) return null;
+  if (gMinMm <= 0) {
+    discards.push(
+      `the printed footprint was rejected: a ${padLengthMm} mm land on a ${centreSpan} mm centre span puts the ` +
+        `two rows into each other, so one of the three was misread`
+    );
+    return null;
+  }
 
   // Two checks against the package's OWN dimensions, because nothing else looks
   // at these numbers any more.
@@ -155,12 +184,24 @@ function printedLand(part: ResolvedPart, densityLevel: DensityLevel): LandPatter
   // supersedes the two invented ones below, which stay as a floor for documents
   // that print a footprint but no lead dimensions.
   const band = withinIpcBand(part, padLengthMm, centreSpan);
-  if (band === false) return null;
+  if (band === false) {
+    discards.push(
+      `the printed footprint was rejected: it reaches ${(centreSpan + padLengthMm).toFixed(2)} mm toe to toe, ` +
+        `outside what IPC-7351B's density levels would produce for the leads this drawing states`
+    );
+    return null;
+  }
 
   const pitchMm = part.dimensions.pitchMm;
   // Neighbouring lands in one row sit a pitch apart, so a land WIDER than the
   // pitch would merge with the one beside it. No footprint does this.
-  if (pitchMm && pitchMm > 0 && padWidthMm >= pitchMm) return null;
+  if (pitchMm && pitchMm > 0 && padWidthMm >= pitchMm) {
+    discards.push(
+      `the printed footprint was rejected: a ${padWidthMm} mm land on a ${pitchMm} mm pitch would touch its ` +
+        `neighbour, so the land width or the pitch was misread`
+    );
+    return null;
+  }
 
 
   const zMaxMm = centreSpan + padLengthMm;
@@ -681,8 +722,13 @@ function buildFootprintGeometry(
   // carry leads, nothing is left for anything else to contribute. IPC-7351B
   // still computes the courtyard, which is arithmetic applied to these numbers
   // rather than a claim about this part.
+  // What was THROWN AWAY on the way to a refusal, so the refusal can say so.
+  // See `Discards`: a check that rejects a printed footprint and returns null is
+  // reported to the user as a datasheet that printed none.
+  const discards: Discards = [];
+
   const layout = datasheetLayout(part);
-  const printed = printedLand(part, densityLevel);
+  const printed = printedLand(part, densityLevel, discards);
 
   if (printed && layout) {
     return assemble(part, densityLevel, printed, layout);
@@ -699,11 +745,16 @@ function buildFootprintGeometry(
   // Every input is from this datasheet. IPC-7351B supplies the arithmetic, not
   // a claim about the part, which is the line that separates it from the family
   // table this replaced: the table asserted lead spans it had invented.
-  const drawnLead = leadFromDrawing(part, formedLeadSpanMm);
+  const drawnLead = leadFromDrawing(part, formedLeadSpanMm, discards);
   if (drawnLead && layout) {
     try {
       const derived = computeLandPattern(drawnLead, { densityLevel });
-      if (!contradictsPrintedLand(part, derived)) {
+      if (contradictsPrintedLand(part, derived)) {
+        discards.push(
+          `a land pattern computed from the package drawing was rejected because the footprint printed on ` +
+            `page ${part.vendorLandPattern?.page} disagrees with it`
+        );
+      } else {
         return assemble(part, densityLevel, derived, {
           ...layout,
           source: `IPC-7351B density ${densityLevel}, computed from this datasheet's own package drawing`
@@ -711,6 +762,7 @@ function buildFootprintGeometry(
       }
     } catch (error) {
       if (!(error instanceof LandPatternError)) throw error;
+      discards.push(`a land pattern could not be computed from the package drawing: ${error.message}`);
       // Fall through to the questions below. A pattern that cannot be computed
       // from what was read is not a dead end: the user can read the land off a
       // vendor application note, and we cannot invent it.
@@ -725,8 +777,34 @@ function buildFootprintGeometry(
   // from the tuned corpus were fed by it, and it refused SOT-23, SOT-10, TSOT
   // and LFCSP outright. TLV9061 prints its whole footprint and was refused for
   // having a package name the table had never heard of.
+  // THE REASON HAS TO MATCH WHAT ACTUALLY HAPPENED, and there are three cases.
+  //
+  // "No land pattern could be read" is true only of the third. Saying it about
+  // either of the others sends the user looking for a page they already have,
+  // and hides a check from anyone asking whether it still earns its place.
+  //
+  // 1. A CHECK REJECTED what the document printed. Named, from `discards`.
+  //
+  // 2. The pattern was read and the LAYOUT was not. Measured on the tuned corpus
+  //    2026-08-16: an ADS1115 carries its whole printed footprint (1.45 x 0.3 mm
+  //    lands on a 4.4 mm span) and is missing only `leadSides`, so
+  //    `datasheetLayout` returns null and the part was refused with the sentence
+  //    below. The datasheet printed the footprint. Telling its reader it did not,
+  //    and then asking an apparently unrelated question, is the same defect as a
+  //    silent discard wearing different clothes.
+  //
+  // 3. The document genuinely did not say. The original sentence, unchanged.
+  const readPattern = printed !== null;
   throw new FootprintUnavailableError(
-    `No land pattern could be read for ${part.packageType} from this datasheet, and none is derived from anything outside it. Supply the land pattern and it will be built from your numbers.`,
+    discards.length > 0
+      ? `${part.packageType}: ${discards.join("; ")}. Nothing else in this datasheet supplies a land pattern, ` +
+          `and none is derived from anything outside it. Supply it and it will be built from your numbers.`
+      : readPattern
+        ? `This datasheet's own recommended footprint for ${part.packageType} was read (${part.dimensions.landPadLengthMm} x ` +
+          `${part.dimensions.landPadWidthMm} mm lands on a ${part.dimensions.landSpanMm} mm centre span), but how the pads are ` +
+          `ARRANGED was not: that comes from the pitch and how many sides carry leads. Answer what is missing and the ` +
+          `footprint is built from the numbers already read off the page.`
+        : `No land pattern could be read for ${part.packageType} from this datasheet, and none is derived from anything outside it. Supply the land pattern and it will be built from your numbers.`,
     askForLandPattern(part, formedLeadSpanMm)
   );
 }
@@ -878,7 +956,7 @@ function throughHoleFootprint(part: ResolvedPart, densityLevel: DensityLevel): F
  * computes a fillet around a lead that does not exist, and the result looks
  * entirely plausible in CAD.
  */
-function leadFromDrawing(part: ResolvedPart, formedLeadSpanMm?: number): LeadDimensions | null {
+function leadFromDrawing(part: ResolvedPart, formedLeadSpanMm?: number, discards: Discards = []): LeadDimensions | null {
   const form = part.dimensions.leadForm;
   const width = part.dimensions.leadWidthMm;
   const contact = part.dimensions.leadContactMm;
@@ -898,7 +976,13 @@ function leadFromDrawing(part: ResolvedPart, formedLeadSpanMm?: number): LeadDim
   // A lead cannot occupy most of the pitch that separates it from its
   // neighbour. See MAX_LEAD_WIDTH_FRACTION_OF_PITCH.
   const pitchMm = part.dimensions.pitchMm;
-  if (pitchMm && pitchMm > 0 && width.maxMm > MAX_LEAD_WIDTH_FRACTION_OF_PITCH * pitchMm) return null;
+  if (pitchMm && pitchMm > 0 && width.maxMm > MAX_LEAD_WIDTH_FRACTION_OF_PITCH * pitchMm) {
+    discards.push(
+      `the package drawing's lead dimensions were rejected: a ${width.maxMm} mm lead on a ${pitchMm} mm pitch ` +
+        `leaves almost no gap to its neighbour, so one of the two was misread`
+    );
+    return null;
+  }
 
   return {
     form: "gullwing",
@@ -1279,7 +1363,30 @@ function assemble(
       // The datasheet's own mask clearance, when it printed one. Undefined and
       // not zero when it did not: "not stated" and "zero clearance" are
       // different instructions to a fabricator.
-      ...(part.dimensions.solderMaskExpansionMm === null
+      //
+      // ONLY FOR THE VARIANT WE ACTUALLY EMIT, which is the non-solder-mask-
+      // defined one: copper defines the land and the mask opening is larger, so
+      // the figure is a positive expansion and `solderMaskMarginMm` means what
+      // the fabricator will read.
+      //
+      // A solder-mask-defined land is the other way round. The mask opening is
+      // SMALLER than the copper and defines the pad, so the printed figure is an
+      // overlap rather than an expansion. Writing it as a positive margin opens
+      // the mask wider exactly where it should be narrower.
+      //
+      // Both figures are printed side by side on the same drawing, and the
+      // prompt asks the model to report the pair together for this reason. Until
+      // 2026-08-16 `solderMaskDefined` was read, stored, projected through
+      // `resolveForExport` and consumed by NOTHING, so whichever variant the
+      // model chose was applied as an expansion regardless. That is the fifth
+      // instance of collecting an answer and not using it, and the only one so
+      // far where not using it produced a wrong number rather than a gap.
+      //
+      // No mask-defined land is emitted instead of approximating one: expressing
+      // it needs a mask aperture smaller than the copper, which neither emitter
+      // writes today, and a note says so rather than silently dropping it.
+      ...(part.dimensions.solderMaskExpansionMm === null ||
+      part.dimensions.solderMaskDefined === "solder-mask-defined"
         ? {}
         : { solderMaskMarginMm: part.dimensions.solderMaskExpansionMm }),
       // A PLATED HOLE, which overrides the three above rather than adding to
@@ -1313,7 +1420,36 @@ function assemble(
 
     let thermal: ThermalPadLand;
     try {
-      thermal = thermalPadLand(length, width);
+      // LENGTH ALONG THE BODY'S LENGTH, which on both arrangements this builds
+      // is Y: a dual package runs its lead rows down the left and right, so the
+      // body's long axis is vertical, and `bodyLengthMm` becomes the courtyard's
+      // and the outline's Y half-extent.
+      //
+      // `thermalPadLand(padLengthMm, padWidthMm)` returns them as
+      // `{ widthMm: padLengthMm, heightMm: padWidthMm }`, i.e. length on X. Two
+      // fields both called "length" on opposite axes, so the pad came out turned
+      // ninety degrees from the package it is on the underside of, and shipped:
+      // a rotated pad usually still fits between the lead rows, so no invariant
+      // fires and nothing looks unusual in CAD.
+      //
+      // D2 is measured parallel to D on a package outline drawing and
+      // `bodyLengthMm` is D, so length-along-length is what the drawing means.
+      // `thermalPadFitsBody` in `confidence.ts` already compares length against
+      // length, so the record check and the generator disagreed and this was the
+      // wrong half. Swapped at the call rather than inside `thermalPadLand`,
+      // whose own argument order is documented against the drawing's letters.
+      const solved = thermalPadLand(length, width);
+      thermal = {
+        ...solved,
+        widthMm: solved.heightMm,
+        heightMm: solved.widthMm,
+        apertures: solved.apertures.map((aperture) => ({
+          xMm: aperture.yMm,
+          yMm: aperture.xMm,
+          widthMm: aperture.heightMm,
+          heightMm: aperture.widthMm
+        }))
+      };
     } catch (error) {
       if (error instanceof LandPatternError) throw new FootprintUnavailableError(error.message);
       throw error;
@@ -1419,6 +1555,18 @@ function assemble(
     : (part.dimensions.bodyLengthMm ?? rowSpanMm + definition.pitchMm) / 2;
   const bodyHalfWidthMm = (part.dimensions.bodyWidthMm ?? land.gMinMm) / 2;
 
+  // How far the lands actually reach, which is what the courtyard has to clear.
+  // Paste apertures are inside their own copper and thermal vias inside the pad,
+  // so the lands bound everything.
+  const padHalfExtentXMm = Math.max(
+    0,
+    ...pads.map((pad) => Math.abs(pad.centre.xMm) + pad.widthMm / 2)
+  );
+  const padHalfExtentYMm = Math.max(
+    0,
+    ...pads.map((pad) => Math.abs(pad.centre.yMm) + pad.heightMm / 2)
+  );
+
   return {
     name: `${slugify(part.partNumber)}-${slugify(definition.family)}`,
     // What the pads actually ARE, stated as the claim it is. "The manufacturer
@@ -1435,14 +1583,34 @@ function assemble(
     // The keep-out has to clear the LANDS, and on a quad they reach the same
     // distance out on all four sides. Taking the height from the body, as the
     // dual case does, would draw a courtyard inside the top and bottom lands.
+    // Sized from what it must CONTAIN, in both axes.
+    //
+    // The height used to come from the BODY on a dual package, and the comment
+    // above says why that is wrong on a quad without noticing it is the same
+    // mistake on a dual: a lead row longer than the body puts the end lands
+    // outside their own keep-out. The board designer trusts the courtyard and
+    // places the neighbour on top of a pad.
+    //
+    // Found on 2026-08-16 by the footprint's own invariants (`validateGeometry`),
+    // on the first run after they were added. Nothing had checked that the
+    // courtyard contains the lands, on any package.
+    //
+    // Taking the larger of the body and the actual land extent is also closer to
+    // what IPC-7351B means by a courtyard: it is the land pattern's extent plus
+    // an excess per density level, and the body is only ever the bound when it
+    // is the wider of the two.
+    //
+    // The density level's own excess, not a hardcoded 0.25. They agree at
+    // density B, which is why the constant survived unnoticed, and they differ
+    // by a factor of four between A and C: a customer who chose level A to buy
+    // solder-joint robustness was getting a courtyard sized for level B in one
+    // axis and level A in the other.
     courtyard: {
-      halfWidthMm: land.courtyardHalfMm,
-      // The density level's own excess, not a hardcoded 0.25. They agree at
-      // density B, which is why the constant survived unnoticed, and they differ
-      // by a factor of four between A and C: a customer who chose level A to buy
-      // solder-joint robustness was getting a courtyard sized for level B in one
-      // axis and level A in the other.
-      halfHeightMm: quad ? land.courtyardHalfMm : bodyHalfLengthMm + COURTYARD_EXCESS[densityLevel]
+      halfWidthMm: Math.max(land.courtyardHalfMm, padHalfExtentXMm + COURTYARD_EXCESS[densityLevel]),
+      halfHeightMm: Math.max(
+        quad ? land.courtyardHalfMm : bodyHalfLengthMm + COURTYARD_EXCESS[densityLevel],
+        padHalfExtentYMm + COURTYARD_EXCESS[densityLevel]
+      )
     },
     // Outside pin 1, which sits at the top of the LEFT side on both arrangements.
     pin1Marker: {
@@ -1579,6 +1747,21 @@ export async function createExportZip(
   let reason: string | null = null;
   try {
     footprint = buildFootprintGeometry(part, densityLevel, options.formedLeadSpanMm);
+    // THE FOOTPRINT CHECKS ITSELF BEFORE ANY FILE IS WRITTEN.
+    //
+    // Every check in `confidenceChecks` runs on the RECORD, and both of the
+    // wrong footprints this product has produced passed all of them: the inputs
+    // were individually fine and the ARRANGEMENT was wrong. A TO-220 came out as
+    // two opposing rows; a twenty-pin table came out under a twenty-eight pin
+    // package's name. Neither is visible in a record and both are obvious in the
+    // pads.
+    //
+    // This throws rather than warns. A footprint whose lands overlap is a short
+    // circuit, not a footprint with a caveat, and an engineer would want it
+    // withheld rather than shipped beside a note they can click past. It is also
+    // a defect in Forge rather than in the datasheet, so it is not a question
+    // the user can answer and must not be dressed as one.
+    validateGeometry(footprint, part);
   } catch (error) {
     // An UNANSWERABLE refusal is not a question and must not be softened into
     // one: it fails the export here, as it always has.
@@ -1793,10 +1976,20 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
     packageOutlineCode: null,
     jedecOutline: null,
     vendorLandPattern: null,
-    // A thermal pad belongs to one package of a family and not to its siblings.
-    // Claiming the SOIC has the QFN's would refuse it; claiming the QFN lacks
-    // the SOIC's would emit a footprint missing a mandatory soldered feature.
-    exposedPad: false,
+    // A thermal pad belongs to one package of a family and not to its siblings,
+    // so it comes from THAT PACKAGE'S OWN TABLE where the document printed one.
+    //
+    // It used to be set to false unconditionally, and the comment here named the
+    // consequence while accepting it: claiming the QFN lacks the SOIC's pad
+    // emits a footprint missing a mandatory soldered feature. That was the only
+    // honest answer while the flag lived on the record, because one flag has to
+    // be wrong for one of two packages that disagree. Recorded per table since
+    // 2026-08-16, so there is a right answer to carry and this carries it.
+    //
+    // Still false where the document printed no table for this package: nothing
+    // states it either way, and `buildFootprintGeometry` refuses a pinout that
+    // contradicts the designator regardless.
+    exposedPad: table?.exposedPad ?? false,
     dimensions: blank
   };
 }
@@ -1836,6 +2029,104 @@ function optionFor(
   }
 }
 
+
+/**
+ * The chooser for a document that gave a pinout PER PACKAGE and no single one.
+ *
+ * ## The deadlock this ends
+ *
+ * A family datasheet whose part number does not name a package gets `pins` and
+ * `pinCount` null, correctly: the model is told not to pick among several
+ * pinouts, because guessing one becomes a footprint. It returns them all,
+ * labelled, in `pinTablesByPackage`.
+ *
+ * `resolveForExport` then refused the record for having no pins, `packageOptions`
+ * returned `ok: false`, and the user was shown "the reading is missing pins" for
+ * a document whose pinouts were sitting on the record. The chooser refused to
+ * offer the very choice that would have answered the question, which is the
+ * deadlock the field was added to break and never did.
+ *
+ * Measured 2026-08-16 over the hold-out: TWELVE of the fifty-one parts with a
+ * reading are in exactly this state, every one of them counted as "no pins, no
+ * count". Only four genuinely had no pinout at all.
+ *
+ * ## Why it is safe to build from these
+ *
+ * Each table is located on a real page by `mergeModelValues` before it is
+ * stored, using the same check the main pin table passes, with quarantined
+ * regions cut first. A table that matches no page keeps a null citation, and
+ * `resolveForExport` refuses it here exactly as it would anywhere else. Nothing
+ * is trusted because it is convenient.
+ *
+ * Only fires when the pinout is the ONLY thing missing. A record also short of a
+ * body size has a different problem and gets the plain refusal, so this cannot
+ * quietly paper over an unrelated gap.
+ */
+function optionsFromPerPackageTables(
+  record: PartRecord,
+  resolved: Extract<ReturnType<typeof resolveForExport>, { ok: false }>,
+  formedLeadSpanMm?: number
+): PackageChoice | null {
+  const tables = record.pinTablesByPackage;
+  if (!tables || tables.length === 0) return null;
+
+  const blocked = [...resolved.missing, ...(resolved.untraceable ?? [])];
+  if (blocked.length === 0) return null;
+  if (!blocked.every((field) => field === "pins" || field === "pinCount")) return null;
+
+  const options = record.packageVariants.map((variant) => {
+    const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
+    const table = pinTableFor(tables, variant.designator);
+    if (!table) {
+      return {
+        ...base,
+        status: "unsupported" as const,
+        needs: [],
+        reason:
+          `This document gives a pinout for each package it describes, and none of them matches ` +
+          `${variant.designator}. Re-reading the datasheet for this package is what would settle it.`
+      };
+    }
+    const forThisPackage = withPinTable(record, table);
+    const usable = resolveForExport(forThisPackage);
+    if (!usable.ok) {
+      const why = usable.missing.length > 0 ? usable.missing : (usable.untraceable ?? []);
+      return {
+        ...base,
+        status: "unsupported" as const,
+        needs: [],
+        reason: `${variant.designator}'s own pin table is on the record but cannot be used: ${why.join(", ")}.`
+      };
+    }
+    return optionFor(usable.part, variant, false, formedLeadSpanMm);
+  });
+
+  return { ok: true, options };
+}
+
+/** The record as it stands for ONE package, carrying that package's own pinout. */
+function withPinTable(
+  record: PartRecord,
+  table: { packageType: string; pins: PinRecord[]; exposedPad?: boolean; citation?: Citation | null }
+): PartRecord {
+  // `vlm`, because a model read it, and the citation is the page the merge
+  // LOCATED it on rather than one the model claimed. A null citation leaves the
+  // value untraceable and the export refuses it, which is the intended outcome.
+  const provenance = {
+    confidence: table.citation ? 0.5 : null,
+    method: "vlm" as const,
+    citation: table.citation ?? null
+  };
+  return {
+    ...record,
+    pins: { value: table.pins, ...provenance },
+    pinCount: { value: table.pins.length, ...provenance },
+    // The pad this package has, rather than whatever the record carried from
+    // whichever package the reading happened to settle on. See `asPackage`.
+    exposedPad: table.exposedPad ?? record.exposedPad
+  };
+}
+
 /**
  * Every package the document offers this part, each with what it would produce.
  *
@@ -1847,6 +2138,8 @@ function optionFor(
 export function packageOptions(record: PartRecord, formedLeadSpanMm?: number): PackageChoice {
   const resolved = resolveForExport(record);
   if (!resolved.ok) {
+    const perPackage = optionsFromPerPackageTables(record, resolved, formedLeadSpanMm);
+    if (perPackage) return perPackage;
     const blocked = resolved.missing.length > 0 ? resolved.missing : (resolved.untraceable ?? []);
     return { ok: false, blockedBy: blocked };
   }

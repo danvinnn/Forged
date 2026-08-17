@@ -340,3 +340,53 @@ test("the export note says what the lands actually are, not what they usually ar
   assert.match(note, /printed in this datasheet/i, `note claimed: ${note}`);
   assert.doesNotMatch(note, /generated from the IPC-7351B land pattern/);
 });
+
+/**
+ * A footprint that fails its OWN invariants is a refusal, not a crash.
+ *
+ * `validateGeometry` throws `FootprintInvalidError` when the built footprint
+ * contradicts itself: lands overlapping, a pad for a pin the part does not
+ * have, a courtyard inside its own copper. It is the only guard measured as
+ * catching real defects, and it caught two quad packages shipping with shorted
+ * corners on its first run.
+ *
+ * Nothing caught the error. `createExportZip` rethrows anything that is not a
+ * `FootprintUnavailableError` carrying needs, and this route rethrows anything
+ * that is neither that nor a `GeneratorUnavailableError`, so it left the handler
+ * and Next.js turned it into a 500. The user saw "Export failed."
+ *
+ * So the guard fired correctly, withheld the bad file correctly, and then told
+ * the user nothing at all. Its own message names what to check and says a
+ * corrected value rebuilds the footprint, and that message was unreachable.
+ *
+ * `geometry-invariants.test.ts` proves the throw. This proves it arrives.
+ */
+test("a footprint that fails its own invariants is refused, not a 500", async () => {
+  // An exposed pad whose designator is a NAME rather than a number, which is how
+  // most datasheets print it (`EP`, `PAD`, `TAB`). The pad placer numbers the
+  // thermal land from the pin table's own designator and `validateGeometry`
+  // expects `pinCount + 1`, so the two disagree and the footprint is withheld.
+  const part = exportablePart("8-pin SOIC", 8);
+  const invalid: PartRecord = {
+    ...part,
+    exposedPad: true,
+    pins: citedValue([...pins(8), { number: "PAD", name: "GND", electricalType: "passive" as const }]),
+    dimensions: {
+      ...part.dimensions,
+      thermalPadLengthMm: citedValue(2.15),
+      thermalPadWidthMm: citedValue(1.2),
+      landPadLengthMm: citedValue(1.4),
+      landPadWidthMm: citedValue(0.6),
+      landSpanMm: citedValue(5.0)
+    }
+  };
+
+  const response = await POST(post({ part: invalid, format: "kicad" }));
+  assert.notEqual(response.status, 500, "a guard doing its job must not read as a crash");
+  assert.equal(response.status, 422);
+
+  const payload = await response.json();
+  assert.equal(payload.code, "FOOTPRINT_INVALID");
+  assert.ok(Array.isArray(payload.violations) && payload.violations.length > 0, "what failed, itemised");
+  assert.match(payload.error, /not valid and was not written/, "and the guard's own words reach the user");
+});

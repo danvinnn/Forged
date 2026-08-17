@@ -6,6 +6,7 @@ import {
   GeneratorUnavailableError,
   type SuppliedDimensions
 } from "../../../lib/exporters";
+import { FootprintInvalidError } from "../../../lib/confidence";
 import { partSchema, resolveForExport } from "../../../lib/types";
 import { sanitizeFileName, clientKey, RateLimiter } from "../../../lib/retrieval";
 
@@ -217,6 +218,33 @@ export async function POST(request: Request) {
           availableFormats: error.available
         },
         { status: 501 }
+      );
+    }
+    // THE FOOTPRINT CONTRADICTED ITSELF, which is a refusal and not a crash.
+    //
+    // `validateGeometry` is the one guard measured as catching real defects: it
+    // found two quad packages shipping with all four corner lands shorted on its
+    // first run. It fired correctly and then left this handler uncaught, so
+    // Next.js answered 500 and the user read "Export failed".
+    //
+    // Its own message names the values to check and says that correcting one
+    // rebuilds the footprint. That message was unreachable, which made a working
+    // guard indistinguishable from a broken server.
+    //
+    // 422 rather than 500 because the request was well formed and the ANSWER is
+    // that no file can honestly be produced from it. `violations` is itemised
+    // separately from the prose so a UI can list them without parsing a
+    // paragraph. Deliberately NOT `needs`: a violation is not a question, and
+    // dressing it as one would prompt for a value that fixes nothing.
+    if (error instanceof FootprintInvalidError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: "FOOTPRINT_INVALID",
+          violations: error.violations,
+          packageType: part.packageType
+        },
+        { status: 422 }
       );
     }
     if (error instanceof FootprintUnavailableError) {

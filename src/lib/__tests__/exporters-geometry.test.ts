@@ -548,8 +548,17 @@ test("a sized exposed pad becomes a real land, numbered after the leads", async 
   // Pad 9 on an 8-pin part: the convention every CAD tool expects.
   const copper = /\(pad "9" smd roundrect \(at 0(?:\.0+)? 0(?:\.0+)?\) \(size ([\d.]+) ([\d.]+)\) \(property pad_prop_heatsink\) \(layers "F\.Cu" "F\.Mask"\)/.exec(footprint);
   assert.ok(copper, `a thermal land must be emitted; got:\n${footprint}`);
-  assert.equal(Number(copper[1]), 2.1, "the land is 1:1 with the exposed pad");
-  assert.equal(Number(copper[2]), 1.8);
+  // 1:1 with the pad, and on the pad's own axes. The fixture's D2 x E2 is
+  // 2.1 x 1.8, and D2 is measured parallel to D, which this generator draws on
+  // Y. So the emitted size is (E2, D2) and not (D2, E2).
+  //
+  // These two assertions read 2.1 then 1.8 until 2026-08-16, which is what the
+  // generator did rather than what the drawing means: `bodyLengthMm` went to Y
+  // and `thermalPadLengthMm` to X, so the pad sat ninety degrees from the body.
+  // A square fixture cannot show that, and every thermal test before this one
+  // used a square pad.
+  assert.equal(Number(copper[1]), 1.8, "the land's X is the pad's WIDTH (E2)");
+  assert.equal(Number(copper[2]), 2.1, "and its Y is the pad's LENGTH (D2), along the body's length");
   assert.ok(!/\(pad "9" smd roundrect[^\n]*F\.Paste/.test(footprint), "the COPPER carries no paste");
 });
 
@@ -572,9 +581,13 @@ test("the thermal land's paste is an array, covering well under 100%", async () 
 
   // Every aperture sits inside the land. Paste at the very edge bridges to the
   // perimeter lands.
+  //
+  // The land is 1.8 wide in X and 2.1 tall in Y: D2 runs along the body's
+  // length, which this generator draws on Y. The apertures follow the land they
+  // sit on, so they turn with it.
   for (const a of apertures) {
-    assert.ok(Math.abs(Number(a[1])) + Number(a[3]) / 2 <= 2.1 / 2 + 1e-9, "aperture within the land in x");
-    assert.ok(Math.abs(Number(a[2])) + Number(a[4]) / 2 <= 1.8 / 2 + 1e-9, "aperture within the land in y");
+    assert.ok(Math.abs(Number(a[1])) + Number(a[3]) / 2 <= 1.8 / 2 + 1e-9, "aperture within the land in x");
+    assert.ok(Math.abs(Number(a[2])) + Number(a[4]) / 2 <= 2.1 / 2 + 1e-9, "aperture within the land in y");
   }
 });
 
@@ -593,6 +606,62 @@ test("Altium writes a windowed paste rather than refusing the part", async () =>
   });
   const out = await createExportZip(padded, "altium");
   assert.ok(out.files.length > 0, "an exposed-pad part is exportable to Altium");
+});
+
+test("the exposed pad lies along the SAME axis as the body it is on the underside of", async () => {
+  // ## The defect
+  //
+  // `bodyLengthMm` sets the fabrication outline's Y half-extent, and
+  // `thermalPadLengthMm` set the thermal pad's X size. Two fields both called
+  // "length", on opposite axes, so the pad came out turned ninety degrees from
+  // the package it belongs to.
+  //
+  // It shipped silently. A rotated pad usually still fits between the lead rows,
+  // so no invariant fires and nothing in CAD looks unusual. Every test that
+  // touched a thermal pad before this used a SQUARE one (1.68 x 1.68), which is
+  // the shape that cannot show the bug.
+  //
+  // ## Which one is right
+  //
+  // D2 is measured parallel to D on a package outline drawing, and `bodyLength`
+  // is D. So the pad's length lies along the body's length. `thermalPadFitsBody`
+  // in `confidence.ts` already compares length against length and width against
+  // width, so the record check and the generator disagreed and the generator was
+  // the wrong half.
+  //
+  // A dual package draws its lead rows down the left and right, so the body's
+  // long axis is Y. The pad's long axis must be Y too.
+  const part = soicPart({
+    exposedPad: true,
+    pins: [...pins(8), { number: "9", name: "GND", electricalType: "passive" as const }],
+    dimensions: {
+      ...soicPart().dimensions,
+      // Body 4.9 long by 3.9 wide, pad 3.0 long by 1.6 wide. Both rectangular,
+      // both on the same axis, which is what makes the orientation observable.
+      bodyLengthMm: 4.9,
+      bodyWidthMm: 3.9,
+      thermalPadLengthMm: 3.0,
+      thermalPadWidthMm: 1.6,
+      landPadLengthMm: 1.4,
+      landPadWidthMm: 0.6,
+      landSpanMm: 5.0
+    }
+  });
+
+  const files = await filesFrom(part);
+  const footprint = files.get("acme27524.pretty/acme27524-8-pin-soic.kicad_mod");
+  assert.ok(footprint, "a footprint must be emitted");
+
+  const pad = /\(pad "9" smd roundrect \(at [\d.-]+ [\d.-]+\) \(size ([\d.]+) ([\d.]+)\)/.exec(footprint);
+  assert.ok(pad, "the thermal land must be emitted");
+  const [, xMm, yMm] = pad.map(Number);
+
+  assert.equal(yMm, 3.0, "the pad's LENGTH runs along the body's length, which is Y here");
+  assert.equal(xMm, 1.6, "and its width across, which is X");
+  assert.ok(
+    yMm > xMm,
+    "a pad longer than it is wide, on a body longer than it is wide, must agree about which way that is"
+  );
 });
 
 

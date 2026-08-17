@@ -31,31 +31,6 @@ export interface TextItem {
   end: number;
 }
 
-/**
- * Whether a run's characters are in the order they are PRINTED in.
- *
- * pdf.js reports a run's `width` as its total advance from the origin. That is
- * normally positive, because text advances rightwards. A NEGATIVE advance means
- * the glyphs were individually positioned leftwards, so the run's string is the
- * order the content stream drew them in and not the order a reader sees.
- *
- * An RHF310A prints pin 4 as `VCC-` and hands the run over as `"-VCC"` with an
- * advance of -1.1 for four characters at 12 point. Its origin, 194.7, sits at the
- * RIGHT edge of the column its three sibling names are right-aligned to, which is
- * the corroboration: the first character of the string is the last one on the
- * page. Rendering the page is what settled it.
- *
- * Nothing here tries to put such a run back in order. One sample does not
- * establish how the glyphs were placed, and a name is a netlist. Callers that
- * assemble names refuse them instead.
- *
- * Measured over the benchmark cache: 24 runs in 5 documents, and exactly one of
- * them, RHF310A's, ever reached a pin name. The rest are on mechanical drawing
- * pages, where they were already unusable.
- */
-export function hasPrintedOrder(item: TextItem): boolean {
-  return item.width >= 0;
-}
 
 export interface PageText {
   page: number;
@@ -437,40 +412,5 @@ export function datasheetTextFromPages(pageTexts: string[]): DatasheetText {
   return { text: combined, pages, pageCount: pages.length, truncated: false };
 }
 
-/** Finds the page containing a character offset in the combined text. */
-export function pageAt(doc: DatasheetText, index: number): PageText | null {
-  for (const page of doc.pages) {
-    if (index >= page.start && index <= page.end) return page;
-  }
-  return null;
-}
 
-function unionRegion(items: TextItem[]): TextRegion | null {
-  if (items.length === 0) return null;
-  const minX = Math.min(...items.map((item) => item.x));
-  const maxX = Math.max(...items.map((item) => item.x + item.width));
-  const minY = Math.min(...items.map((item) => item.y));
-  const maxY = Math.max(...items.map((item) => item.y + item.height));
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-}
 
-/**
- * Builds a citation for the span [index, index + length) of the combined text.
- * Returns null when the offset does not land on a rendered page, so a caller
- * that cannot cite a value records null rather than inventing a location.
- */
-export function citationAt(doc: DatasheetText, index: number, length: number): Citation | null {
-  if (index < 0 || length <= 0) return null;
-  const page = pageAt(doc, index);
-  if (!page) return null;
-
-  const end = index + length;
-  const covering = page.items.filter((item) => item.end > index && item.start < end);
-  const snippet = doc.text.slice(index, end).replace(/\s+/g, " ").trim();
-
-  return {
-    page: page.page,
-    snippet,
-    region: unionRegion(covering)
-  };
-}

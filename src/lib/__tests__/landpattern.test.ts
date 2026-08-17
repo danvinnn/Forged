@@ -587,3 +587,73 @@ test("no silkscreen segment crosses a pad", async () => {
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// The solder mask clearance belongs to ONE of the two variants
+// ---------------------------------------------------------------------------
+
+/**
+ * A land-pattern drawing prints two mask details side by side: the
+ * NON-solder-mask-defined one, where copper defines the land and the mask
+ * opening is larger, and the solder-mask-defined one, where the mask opening is
+ * smaller and defines the pad. The clearance figure means opposite things in the
+ * two, and the prompt asks for the pair together for exactly that reason.
+ *
+ * `solderMaskDefined` was read, stored, carried through `resolveForExport` and
+ * consumed by NOTHING until 2026-08-16, so whichever variant the model happened
+ * to report was written as a positive mask expansion. On a mask-defined figure
+ * that opens the mask wider precisely where it should be narrower.
+ *
+ * Neither emitter can express a mask-defined land today, so the honest outcome
+ * is to emit no clearance rather than the wrong one.
+ */
+test("a non-solder-mask-defined clearance reaches the pad, because that is what we emit", async () => {
+  const footprint = await footprintOf(
+    withDimensions({
+      pitchMm: 1.27,
+      leadSides: 2,
+      landPadLengthMm: 1.95,
+      landPadWidthMm: 0.6,
+      landSpanMm: 4.95,
+      solderMaskExpansionMm: 0.05,
+      solderMaskDefined: "non-solder-mask-defined"
+    })
+  );
+  assert.match(footprint, /\(solder_mask_margin 0\.050\)/, "the datasheet's own figure is written");
+});
+
+test("a solder-mask-defined clearance is NOT written as an expansion", async () => {
+  const footprint = await footprintOf(
+    withDimensions({
+      pitchMm: 1.27,
+      leadSides: 2,
+      landPadLengthMm: 1.95,
+      landPadWidthMm: 0.6,
+      landSpanMm: 4.95,
+      solderMaskExpansionMm: 0.05,
+      solderMaskDefined: "solder-mask-defined"
+    })
+  );
+  assert.doesNotMatch(
+    footprint,
+    /solder_mask_margin/,
+    "the mask opening is smaller than the copper on this variant, so a positive margin is the wrong instruction"
+  );
+});
+
+test("an unstated variant still takes the clearance, because unstated is the ordinary case", async () => {
+  // Most drawings print one detail and do not label it. Refusing those would
+  // throw away a figure the document states, which is the opposite failure.
+  const footprint = await footprintOf(
+    withDimensions({
+      pitchMm: 1.27,
+      leadSides: 2,
+      landPadLengthMm: 1.95,
+      landPadWidthMm: 0.6,
+      landSpanMm: 4.95,
+      solderMaskExpansionMm: 0.05,
+      solderMaskDefined: null
+    })
+  );
+  assert.match(footprint, /\(solder_mask_margin 0\.050\)/);
+});

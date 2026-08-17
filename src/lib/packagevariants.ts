@@ -334,63 +334,7 @@ export function declaredLeadCount(designator: string): number | null {
   return counted.length === 1 ? counted[0].leadCount : null;
 }
 
-/**
- * The lead count the document names, where every package it names agrees on one.
- *
- * This corroborates a pin table on the parts whose designator the front-matter
- * pattern cannot see. That pattern requires a word boundary after the count, so
- * `FLAT-16P` and `SMD5C` declare nothing to it, and an RHFL4913 read a complete
- * sixteen-pin table beside a package called FLAT-16P and still reported an
- * unknown pin count.
- *
- * Several counts is not a corroboration and returns null: an RTAX2000S names 208,
- * 256 and 352, a TSV911 names 8 and 14. A variant that declares no count at all
- * is no obstacle, because it contradicts nothing; that is how an LD1117's TO-220
- * sits beside its SO-8 without either being ruled out.
- *
- * Note this is only ever a SECOND signal. It corroborates a pin count read off a
- * table or figure and never sets one on its own, so a document naming one package
- * and no pinout still reports no pins.
- */
-export function soleDeclaredLeadCount(variants: PackageVariant[]): number | null {
-  const counts = new Set(
-    variants.map((variant) => variant.leadCount).filter((count): count is number => count !== null)
-  );
-  return counts.size === 1 ? [...counts][0] : null;
-}
 
-/**
- * The one package this document is about, where it is about exactly one.
- *
- * "Exactly one" means one family AT one lead count. Both halves are load-bearing
- * and each was measured wrong first:
- *
- * An RTAX2000S is sold as a 208, a 256 and a 352 pin CQFP. One family, three
- * packages, and answering `208-Pin CQFP` picks one of them for a caller who
- * never said which they had.
- *
- * An ADC128S102QML-SP is a 16-lead ceramic SOIC AND a 16-lead ceramic flatpack,
- * and its document also mentions a 14-pin CFP and a 16-lead TSSOP. An earlier
- * version broke that tie with the declared pin count and returned `14-pin CFP`
- * for a 16 pin part, because the declared count is a regex over the same front
- * matter that produced the candidates. Two weak signals agreeing with each other
- * is not corroboration.
- *
- * So there is no tie-break at all. Anything ambiguous goes to the caller as a
- * list, which is what the product's input model is for: one click beats a guess.
- */
-export function selectSinglePackage(variants: PackageVariant[]): PackageVariant | null {
-  if (variants.length === 0) return null;
-
-  const distinct = new Set(variants.map((variant) => `${variant.family}:${variant.leadCount ?? "?"}`));
-  if (distinct.size !== 1) return null;
-
-  // One package, possibly written several ways. Prefer the spelling that
-  // declares a count, and among those the one in the front matter.
-  const counted = variants.filter((variant) => variant.leadCount !== null);
-  const pool = counted.length > 0 ? counted : variants;
-  return pool.find((variant) => variant.inFrontMatter) ?? pool[0];
-}
 
 
 /**
@@ -516,28 +460,55 @@ export function findOrderablePackages(text: string, partNumber: string): Package
  * an SSOP-28, an SN74HC595 a 16-pin SOIC or a 20-pin FK, an LT1013 an 8, 14 or
  * 16 lead part. A 20-pad footprint labelled SSOP-28 is a board nobody can build.
  *
- * ## Matched on the lead count, and only on that
+ * ## Matched on the designator first, then on the lead count
  *
- * The two sides name packages in different vocabularies. The model writes what
- * the document prints (`SSOP-28`, `HSOIC (DDA, 8)`, `DB, DGV, DW, N, NS, PW,
- * RGY`) and the variant scanner writes its own normalised designator. The one
- * thing both express comparably is the LEAD COUNT, so that is the key. Inventing
- * a normaliser for the family spellings would be fitting a rule to the handful
- * of spellings that happen to be in the cache, which rule 4 forbids.
+ * Both sides are rendering the SAME printed designator, and they differ only in
+ * punctuation and case: a TCA9548A's variants read `VQFN (RGE)` where its tables
+ * read `VQFNRGE`, and an ADG1211's read `16-lead TSSOP` on both sides. So the
+ * first key is the designator with everything but letters and digits removed.
+ * That is not a normaliser fitted to particular spellings; it is the comparison
+ * you make when two renderings of one string differ in how they punctuate it.
  *
- * Returns null when the count does not identify exactly one table, which is the
- * honest answer rather than a guess. The caller decides what to do with that,
- * and `buildFootprintGeometry` refuses anything left contradictory.
+ * Matching on the LEAD COUNT alone was the first attempt and it was measured
+ * failing: of twelve hold-out parts carrying per-package tables, it matched two.
+ * `TSSOP (PW)` declares no count at all, and an ADG1211 offers a 16-lead TSSOP
+ * beside a 16-lead LFCSP, so the count is ambiguous exactly where a family
+ * datasheet is most likely to need it.
+ *
+ * The count survives as the FALLBACK, for a designator whose text does not line
+ * up but whose count identifies exactly one table.
+ *
+ * Returns null when nothing identifies exactly one table, which is the honest
+ * answer rather than a guess. `buildFootprintGeometry` refuses anything left
+ * contradictory.
  */
 export function pinTableFor<T extends { packageType: string; pins: unknown[] }>(
   tables: readonly T[] | undefined,
   designator: string
 ): T | null {
   if (!tables || tables.length === 0) return null;
-  const wanted = declaredLeadCount(designator);
-  if (wanted === null) return null;
+
+  /** Letters and digits only, so `VQFN (RGE)` and `VQFNRGE` are one string. */
+  const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const wantedKey = key(designator);
+  if (wantedKey.length > 0) {
+    const exact = tables.filter((table) => key(table.packageType) === wantedKey);
+    if (exact.length === 1) return exact[0];
+
+    // One name inside the other, which is how `16-lead TSSOP` meets `TSSOP` and
+    // how `SOIC (D)` meets `SOICD`. Only when it picks out exactly one table.
+    const containing = tables.filter((table) => {
+      const other = key(table.packageType);
+      return other.length > 0 && (other.includes(wantedKey) || wantedKey.includes(other));
+    });
+    if (containing.length === 1) return containing[0];
+  }
+
+  // The lead count, for a designator whose text does not line up with any table.
   // The table's own row count is what it actually contains, which is a stronger
   // statement than the count its label happens to declare.
+  const wanted = declaredLeadCount(designator);
+  if (wanted === null) return null;
   const matching = tables.filter((table) => table.pins.length === wanted);
   return matching.length === 1 ? matching[0] : null;
 }

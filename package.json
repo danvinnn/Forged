@@ -13,6 +13,7 @@
     "bench:extraction": "tsx src/lib/__bench__/extraction.ts",
     "bench:holdout": "tsx src/lib/__bench__/holdout.ts",
     "bench:replay": "tsx src/lib/__bench__/replay.ts",
+    "bench:guards": "tsx src/lib/__bench__/guards.ts",
     "oracle:build": "bash tools/altium-oracle/setup.sh",
     "bench:mutation": "tsx src/lib/__bench__/mutation.ts"
   },

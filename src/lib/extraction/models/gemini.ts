@@ -198,7 +198,13 @@ export class GeminiExtractionModel implements ExtractionModel {
     ];
 
     let lastError: unknown;
+    // Counted so a FAILED call can report what it cost. Every attempt reached
+    // the provider and was billed, and the failure path used to carry no count
+    // at all, so a call retried three times and never answered was recorded as
+    // one charge. Retries are most likely on exactly this branch.
+    let made = 0;
     for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt += 1) {
+      made = attempt + 1;
       try {
         const response = await withTimeout(
           model.generateContent({ contents: [{ role: "user", parts }] }),
@@ -234,10 +240,16 @@ export class GeminiExtractionModel implements ExtractionModel {
       }
     }
 
-    if (lastError instanceof ExtractionModelError) throw lastError;
+    // Re-thrown with the ATTEMPT COUNT attached, whichever branch produced it. A
+    // timeout raises an `ExtractionModelError` of its own inside the loop and
+    // that one carries no count, so it is rebuilt here rather than rethrown.
+    if (lastError instanceof ExtractionModelError) {
+      throw new ExtractionModelError(lastError.kind, lastError.message, made);
+    }
     throw new ExtractionModelError(
       "transport",
-      lastError instanceof Error ? lastError.message : "Gemini request failed."
+      lastError instanceof Error ? lastError.message : "Gemini request failed.",
+      made
     );
   }
 }

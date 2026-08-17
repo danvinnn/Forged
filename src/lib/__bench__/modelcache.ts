@@ -24,7 +24,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { extractionFields } from "../extraction/contracts";
+import { extractionFields, ExtractionModelError } from "../extraction/contracts";
 import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "../extraction/contracts";
 import { buildPrompt } from "../extraction/models/prompt";
 
@@ -518,8 +518,17 @@ export function cachingModel(inner: ExtractionModel, mode: CacheMode, labelFor: 
         // A failed call is still a charge. Recording it here is the whole point:
         // the cache directory only ever knew about successes, so every failure
         // and every retry was spend nobody could see.
+        //
+        // EVERY ATTEMPT, not one. This recorded a flat 1 while the success path
+        // three lines down already read `result.attempts`, so the undercount the
+        // success path was fixed for on 2026-08-14 survived on the branch where
+        // retries are MOST likely: a call fails because the provider is
+        // refusing, which is exactly when the retry loop runs to its end. Three
+        // billed attempts were booked as one.
         stats.failed += 1;
-        if (wasPaidFor(inner.name, !freeTier())) recordBilled(1, null);
+        if (wasPaidFor(inner.name, !freeTier())) {
+          recordBilled(error instanceof ExtractionModelError ? (error.attempts ?? 1) : 1, null);
+        }
         throw error;
       }
       stats.inputTokens += result.usage?.inputTokens ?? 0;

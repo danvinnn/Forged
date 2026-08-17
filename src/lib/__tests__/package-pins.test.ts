@@ -246,3 +246,89 @@ test("the per-package tables survive the export route's schema", async () => {
   assert.equal(parsed.data.pinTablesByPackage?.length, 2, "and both tables survive");
   assert.equal(parsed.data.pinTablesByPackage?.[1].pins.length, 28);
 });
+
+// ---------------------------------------------------------------------------
+// A pinout per package is a pinout
+// ---------------------------------------------------------------------------
+
+/**
+ * The deadlock this ends, measured 2026-08-16.
+ *
+ * A family datasheet whose part number does not name a package gets `pins` null,
+ * correctly: the model is told not to pick among several pinouts because
+ * guessing one becomes a footprint. It returns them all, labelled.
+ *
+ * `resolveForExport` then refused the record for having no pins, `packageOptions`
+ * returned `ok: false`, and the user was told the reading was missing pins for a
+ * document whose pinouts were on the record. TWELVE of the fifty-one hold-out
+ * parts with a reading were in exactly that state; only four genuinely had no
+ * pinout at all.
+ */
+test("a record with no single pinout still offers a chooser, one option per package", () => {
+  const record = familyRecord({
+    pinCount: unknown<number>(),
+    pins: unknown<PinRecord[]>(),
+    pinTablesByPackage: [
+      { packageType: "SSOP-20", pins: pins(20), citation: { page: 4, snippet: "20-row pin table", region: null } },
+      { packageType: "SSOP-28", pins: pins(28), citation: { page: 5, snippet: "28-row pin table", region: null } }
+    ]
+  });
+
+  const choice = packageOptions(record);
+  assert.equal(choice.ok, true, "the chooser is offered rather than the record refused");
+  if (!choice.ok) return;
+  assert.equal(choice.options.length, 2);
+  assert.ok(
+    choice.options.every((option) => option.status !== "unsupported"),
+    "and each package is usable, because its own pinout is on the record"
+  );
+});
+
+test("an unlocated table is not evidence and does not unblock anything", () => {
+  // A table that matched no page in the document keeps a null citation.
+  // `resolveForExport` refuses it exactly as it refuses any uncited value, which
+  // is what stops this from being a way to smuggle an unverifiable pinout into a
+  // footprint.
+  const record = familyRecord({
+    pinCount: unknown<number>(),
+    pins: unknown<PinRecord[]>(),
+    pinTablesByPackage: [
+      { packageType: "SSOP-20", pins: pins(20), citation: null },
+      { packageType: "SSOP-28", pins: pins(28), citation: null }
+    ]
+  });
+
+  const choice = packageOptions(record);
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  assert.ok(
+    choice.options.every((option) => option.status === "unsupported"),
+    "an uncited pin table cannot build a footprint"
+  );
+});
+
+test("a designator is matched to its table through the document's own punctuation", () => {
+  // Both sides render the SAME printed designator and differ only in how they
+  // punctuate it: a TCA9548A's variants read `VQFN (RGE)` where its tables read
+  // `VQFNRGE`. Matching on the lead count alone found two of twelve parts.
+  const record = familyRecord({
+    packageVariants: [
+      { designator: "VQFN (RGE)", family: "VQFN", leadCount: null, inFrontMatter: true },
+      { designator: "TSSOP (PW)", family: "TSSOP", leadCount: null, inFrontMatter: true }
+    ],
+    pinCount: unknown<number>(),
+    pins: unknown<PinRecord[]>(),
+    pinTablesByPackage: [
+      { packageType: "VQFNRGE", pins: pins(24), citation: { page: 6, snippet: "t", region: null } },
+      { packageType: "TSSOPPW", pins: pins(24), citation: { page: 7, snippet: "t", region: null } }
+    ]
+  });
+
+  const choice = packageOptions(record);
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  assert.ok(
+    choice.options.every((option) => option.status !== "unsupported"),
+    "neither designator declares a lead count, and both still find their table"
+  );
+});

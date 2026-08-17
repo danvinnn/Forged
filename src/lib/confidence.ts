@@ -1,5 +1,6 @@
 import { computeLandPattern, COURTYARD_EXCESS, type DensityLevel } from "./ipc7351";
 import type { ResolvedPart } from "./types";
+import type { FootprintGeometry } from "./geometry";
 
 /**
  * How much to believe a record, from evidence already in hand.
@@ -313,3 +314,202 @@ export function summariseChecks(checks: readonly ConfidenceCheck[]): string {
 
 /** Re-exported so a caller sizing a courtyard and a caller checking one agree. */
 export { COURTYARD_EXCESS };
+
+// ---------------------------------------------------------------------------
+// The FOOTPRINT, rather than the reading it came from
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything above checks the RECORD: values read off a datasheet, and whether
+ * they contradict each other. Nothing checked the thing actually built from
+ * them, and that gap is not theoretical. Both of the wrong footprints this
+ * product has produced passed every check above, because in both cases the
+ * inputs were individually fine and the ARRANGEMENT was wrong:
+ *
+ *   - a TO-220's three pins laid out as two opposing rows, because the
+ *     through-hole path assumed two rows and never read `leadSides`
+ *   - a twenty-pin table built under a twenty-eight pin package's name, because
+ *     relabelling a part carried the wrong package's pinout across
+ *
+ * A reviewer cannot see either in a record. They are visible immediately in the
+ * pads.
+ *
+ * ## Why these REFUSE rather than warn
+ *
+ * These are statements about the FOOTPRINT rather than about the reading, which
+ * is what everything above is. A footprint whose lands overlap is not a
+ * footprint with a caveat; it is a short circuit, and an engineer would want it
+ * withheld rather than shipped with a note they might click past.
+ *
+ * What a violation does NOT establish is whose fault it is. Overlapping lands
+ * come from a generator bug or from a misread dimension, and the geometry cannot
+ * tell the two apart: on the first run of these checks, two quad packages were
+ * caught with all four CORNER lands overlapping, and the likely cause was a
+ * centre span read too small rather than anything in the placement. The message
+ * says both and points at the values a user can actually correct.
+ *
+ * So `validateGeometry` throws, and `confidenceChecks` never sees them. They are
+ * reported in the manifest as evidence of what was verified, which is what a
+ * reviewer opening the zip six months later actually needs.
+ *
+ * Mutation testing is what proves these can fail: `npm run bench:mutation`
+ * breaks the generator in twenty ways and every one of them trips something.
+ */
+export class FootprintInvalidError extends Error {
+  constructor(readonly violations: string[]) {
+    super(
+      `The generated footprint is not valid and was not written:\n  ${violations.join("\n  ")}\n` +
+        `Either a dimension was misread or this is a defect in Forge, and which cannot be told ` +
+        `from the geometry alone. Check the land pattern values against the page they were read ` +
+        `from; correcting one in the review panel rebuilds it. No file is produced meanwhile.`
+    );
+    this.name = "FootprintInvalidError";
+  }
+}
+
+/** A pad's extent along each axis, for the overlap and containment checks. */
+function extent(pad: { centre: { xMm: number; yMm: number }; widthMm: number; heightMm: number }) {
+  return {
+    x0: pad.centre.xMm - pad.widthMm / 2,
+    x1: pad.centre.xMm + pad.widthMm / 2,
+    y0: pad.centre.yMm - pad.heightMm / 2,
+    y1: pad.centre.yMm + pad.heightMm / 2
+  };
+}
+
+/** Floating-point slack. Two lands that share an edge exactly are not overlapping. */
+const TOUCHING_MM = 1e-6;
+
+/**
+ * The footprint's own invariants, checked against the part it claims to be.
+ *
+ * Returns the violations rather than throwing, so a caller that wants to report
+ * them (the package chooser, a bench) can, and `validateGeometry` throws for the
+ * caller that must not ship.
+ */
+export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPart): string[] {
+  const problems: string[] = [];
+  // Paste-only apertures carry no pin number and are not lands.
+  const lands = geometry.pads.filter((pad) => pad.number !== "");
+
+  // ONE LAND PER PIN, AND NO OTHERS.
+  //
+  // The check the SSOP-28 defect needed. A pad for a pin the part does not have
+  // connects to nothing; a pin with no pad is a connection that silently does
+  // not exist.
+  //
+  // Taken from `pinCount` rather than from the pins array, because that is what
+  // the pad placer numbers from: `dualRowSides(part.pinCount)` produces 1..N.
+  // Checking against the pin TABLE instead made this fire on a record whose
+  // table was empty but whose count was known, which is a different defect and
+  // one `pins-match-count` above already reports.
+  const wanted = new Set(Array.from({ length: part.pinCount }, (_, index) => String(index + 1)));
+  if (part.exposedPad) wanted.add(String(part.pinCount + 1));
+  const seen = new Map<string, number>();
+  for (const pad of lands) seen.set(pad.number, (seen.get(pad.number) ?? 0) + 1);
+
+  for (const number of wanted) {
+    const count = seen.get(number) ?? 0;
+    if (count !== 1) problems.push(`pin ${number} has ${count} lands, not one`);
+  }
+  for (const [number, count] of seen) {
+    if (!wanted.has(number)) problems.push(`land "${number}" belongs to no pin of this part (${count} of them)`);
+  }
+
+  // NO TWO LANDS TOUCH. This is what a wrong pitch, a wrong span or a wrong
+  // side-count all produce, whichever of them is at fault.
+  for (let left = 0; left < lands.length; left += 1) {
+    for (let right = left + 1; right < lands.length; right += 1) {
+      const a = extent(lands[left]);
+      const b = extent(lands[right]);
+      const overlaps =
+        a.x0 < b.x1 - TOUCHING_MM &&
+        b.x0 < a.x1 - TOUCHING_MM &&
+        a.y0 < b.y1 - TOUCHING_MM &&
+        b.y0 < a.y1 - TOUCHING_MM;
+      if (overlaps) {
+        problems.push(`lands ${lands[left].number} and ${lands[right].number} overlap, which shorts them together`);
+      }
+    }
+  }
+
+  // THE COURTYARD IS THE KEEP-OUT. One drawn inside its own lands is worse than
+  // none: the board designer trusts it and places the neighbouring part on a pad.
+  for (const pad of geometry.pads) {
+    const box = extent(pad);
+    const outside =
+      Math.abs(box.x0) > geometry.courtyard.halfWidthMm + TOUCHING_MM ||
+      Math.abs(box.x1) > geometry.courtyard.halfWidthMm + TOUCHING_MM ||
+      Math.abs(box.y0) > geometry.courtyard.halfHeightMm + TOUCHING_MM ||
+      Math.abs(box.y1) > geometry.courtyard.halfHeightMm + TOUCHING_MM;
+    if (outside) problems.push(`land ${pad.number || "(paste)"} reaches outside the courtyard`);
+  }
+
+  // A PLATED HOLE IS NOT PASTED. That joint is made by wave or by hand, and
+  // paste in the barrel only fouls it.
+  //
+  // Note what is NOT checked here, because it cannot be: whether an ordinary
+  // land carries paste at all. That is spelled in the EMITTER's layer list, not
+  // in this geometry, and the geometry has no field for it. Mutation testing
+  // found exactly that hole on 2026-08-16 (deleting `F.Paste` from every SMD pad
+  // left the suite green) and it is covered where it lives, by an invariant over
+  // the emitted file in `footprint-invariants.test.ts`. Pretending to check it
+  // here would be worse than not checking it.
+  for (const pad of lands) {
+    if (pad.mounting === "through-hole" && (pad.pasteApertures?.length ?? 0) > 0) {
+      problems.push(`plated hole ${pad.number} carries paste apertures`);
+    }
+  }
+
+  // A thermal pad's paste must sit INSIDE its copper. Paste past the edge is
+  // solder with nowhere to wet, and it is what bridges to the perimeter pins.
+  for (const pad of lands) {
+    for (const aperture of pad.pasteApertures ?? []) {
+      const inside =
+        Math.abs(aperture.centre.xMm) + aperture.widthMm / 2 <= pad.widthMm / 2 + TOUCHING_MM &&
+        Math.abs(aperture.centre.yMm) + aperture.heightMm / 2 <= pad.heightMm / 2 + TOUCHING_MM;
+      if (!inside) problems.push(`a paste aperture on land ${pad.number} reaches past the copper`);
+    }
+  }
+
+  // PIN 1 HAS TO BE FINDABLE. A correct footprint placed rotated is as wrong as
+  // an incorrect one, and the marker is the only thing that says which way round.
+  const one = lands.find((pad) => pad.number === "1");
+  if (!one) {
+    problems.push("there is no land for pin 1");
+  } else {
+    const distance = Math.hypot(geometry.pin1Marker.xMm - one.centre.xMm, geometry.pin1Marker.yMm - one.centre.yMm);
+    const nearest = Math.min(
+      ...lands
+        .filter((pad) => pad.number !== "1")
+        .map((pad) => Math.hypot(geometry.pin1Marker.xMm - pad.centre.xMm, geometry.pin1Marker.yMm - pad.centre.yMm))
+    );
+    if (Number.isFinite(nearest) && distance > nearest + TOUCHING_MM) {
+      problems.push("the pin-1 marker sits closer to another land than to pin 1");
+    }
+  }
+
+  // EVERY NUMBER HAS TO BE A NUMBER. A NaN in an s-expression is a file KiCad
+  // will not open, and the only way to find out is to try.
+  for (const pad of geometry.pads) {
+    for (const [what, value] of [
+      ["x", pad.centre.xMm],
+      ["y", pad.centre.yMm],
+      ["width", pad.widthMm],
+      ["height", pad.heightMm]
+    ] as const) {
+      if (!Number.isFinite(value)) problems.push(`land ${pad.number || "(paste)"} has a non-finite ${what}`);
+    }
+    if (pad.mounting === "through-hole" && !(pad.drillMm && pad.drillMm > 0)) {
+      problems.push(`plated hole ${pad.number} has no drill size`);
+    }
+  }
+
+  return problems;
+}
+
+/** Throws unless the footprint is one this generator is willing to stand behind. */
+export function validateGeometry(geometry: FootprintGeometry, part: ResolvedPart): void {
+  const violations = geometryViolations(geometry, part);
+  if (violations.length > 0) throw new FootprintInvalidError(violations);
+}

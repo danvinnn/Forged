@@ -258,6 +258,24 @@ function verifyPinTable(pageText: string, pins: PinRecord[]): boolean {
 }
 
 /**
+ * The page a pin table actually appears on, or null.
+ *
+ * Used for the per-package tables, which the model returns without a page claim.
+ * Every page is tested with the SAME evidence rule the rest of this module uses:
+ * quarantined regions are cut first, so a table planted inside an instruction
+ * block cannot be located and therefore cannot be cited.
+ */
+function locatePinTable(doc: DatasheetText, pins: PinRecord[]): Citation | null {
+  for (const page of doc.pages) {
+    const evidence = citableText(page.text, quarantinedRegions(page.text));
+    if (verifyPinTable(evidence, pins)) {
+      return { page: page.page, snippet: `${pins.length}-row pin table`, region: null };
+    }
+  }
+  return null;
+}
+
+/**
  * Turns a model's page CLAIM into a citation, but only if the claim holds.
  *
  * The model is not trusted to say where it read something. If the value does not
@@ -622,8 +640,71 @@ export function mergeModelValues(
 
   // Kept on the record so a package chosen later selects a table that is already
   // in hand. This is the whole reason it is read in the first pass.
+  //
+  // EACH TABLE IS LOCATED ON A PAGE before it is stored, which is what makes it
+  // usable rather than merely present.
+  //
+  // Measured 2026-08-16: twelve of the fifty-one hold-out parts with a reading
+  // carry per-package tables and no single `pins` answer, and every one was
+  // reported as "no pins, no count" and blocked before the package chooser ever
+  // ran. The pinouts were on the record the whole time. They could not be used
+  // because they arrived with no citation and `resolveForExport` refuses an
+  // untraceable value, correctly: a pin table nobody can find in the document is
+  // not evidence.
+  //
+  // The contract never asked the model for a page per table, and it does not
+  // need to. A pin table either appears on a page of this document or it does
+  // not, and `verifyPinTable` is the same check the main table already passes.
+  // Searching for the page that holds it invents nothing: an entry that matches
+  // no page stays uncited and stays refused.
+  //
+  // AND EACH ONE PASSES THE SAME PROOF THE MAIN TABLE DOES.
+  //
+  // These were stored raw until 2026-08-16, which put them past every check
+  // `pins` has to satisfy. `coercePinRows` in the model layer even states that
+  // the strict reader runs "when one of these is actually selected"; it does
+  // not, because `asPackage` and `withPinTable` assign `table.pins` straight
+  // into `pins`.
+  //
+  // Measured by building the footprint a gapped table produces: rows numbered
+  // 1-7,9 exported with EIGHT pads, one of them numbered 8 which the document
+  // never mentions, and SEVEN symbol pins. `validateGeometry` cannot see it,
+  // because the pads run 1..pinCount exactly as it expects. That is the same
+  // class as the twenty-pin table under a twenty-eight pin name, on the path
+  // opened for twelve hold-out parts the day before.
+  //
+  // The pad flag is recorded PER TABLE rather than on the record, because an
+  // exposed pad belongs to one package of a family and not to its siblings: an
+  // SOIC and a QFN of the same part disagree about it, and a single flag has to
+  // be wrong for one of them.
   if (result.pinTablesByPackage && result.pinTablesByPackage.length > 0) {
-    merged.pinTablesByPackage = result.pinTablesByPackage;
+    const usable: NonNullable<PartRecord["pinTablesByPackage"]> = [];
+    for (const table of result.pinTablesByPackage) {
+      const normalized = normalizeModelPins(table.pins);
+      if (!normalized.ok) {
+        merged.notes.push(
+          `${modelName} returned a ${table.packageType} pin table that was discarded, so that package stays ` +
+            `honestly unread: ${normalized.reason}.`
+        );
+        continue;
+      }
+      if (!isGapFreeSequence(normalized.pins)) {
+        merged.notes.push(
+          `${modelName} returned a ${table.packageType} pin table whose rows do not number 1..` +
+            `${normalized.pins.length} without gaps or repeats, so it was discarded rather than built from.`
+        );
+        continue;
+      }
+      usable.push({
+        packageType: table.packageType,
+        pins: normalized.pins,
+        exposedPad: normalized.exposedPad,
+        // Located on the NORMALISED rows, which is what a later package choice
+        // actually puts on the record.
+        citation: locatePinTable(doc, normalized.pins)
+      });
+    }
+    if (usable.length > 0) merged.pinTablesByPackage = usable;
   }
 
   return { part: merged, filled, uncited, rejected };

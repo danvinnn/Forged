@@ -22,13 +22,12 @@ import {
   withDeadline,
   worthAsking
 } from "../../../lib/extraction/budget";
-import { findPackageDrawing, type PackageDrawing } from "../../../lib/packagedrawing";
-import { findVendorLandPattern } from "../../../lib/vendorland";
-import { collectReviewItems, reviewPages, type ReviewItem } from "../../../lib/review";
+import { type PackageDrawing } from "../../../lib/packagedrawing";
+import { type ReviewItem } from "../../../lib/review";
 import { renderPages, type RenderedPage } from "../../../lib/pagerender";
-import { packageOptions, type PackageChoice, type RequiredInput } from "../../../lib/exporters";
-import { confidenceChecks, type ConfidenceCheck } from "../../../lib/confidence";
-import { resolveForExport } from "../../../lib/types";
+import { type PackageChoice } from "../../../lib/exporters";
+import { type ConfidenceCheck } from "../../../lib/confidence";
+import { buildReadout } from "../../../lib/readout";
 
 export const runtime = "nodejs";
 // Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
@@ -218,103 +217,14 @@ export async function POST(request: Request) {
   // derivation the printed page disagrees with, which is a refusal rather than a
   // note and runs at the point the copper is actually placed.
 
-  // Where the mechanical drawing is, so a value we could not read can be asked
-  // for with that page already in front of the user instead of making them hunt
-  // for it. Nothing is read off the drawing here; this is only its location.
-  const packageDrawing = findPackageDrawing(doc, part.packageType.value ?? undefined);
-
-  // WHERE THE PRINTED FOOTPRINT IS, for the package the READING settled on.
+  // EVERYTHING PAST THIS POINT IS SHARED WITH `/api/lookup`.
   //
-  // This has to happen here, after the model, and it used to happen in
-  // `buildPartRecord` before it. There the only package name in existence is the
-  // one the user clicked, so on the ordinary path (upload, no package chosen)
-  // nothing was found and two things went wrong at once:
-  //
-  //   1. The land-pattern questions had no page, so the UI fell back to showing
-  //      the package OUTLINE drawing. That drawing dimensions the body and the
-  //      leads; it does not carry a land length. The user was asked for a number
-  //      and shown a page that cannot answer it.
-  //   2. `contradictsPrintedLand` received null and returned false for every
-  //      part, so the check that catches a correct-inputs-wrong-lead-form
-  //      footprint never ran.
-  //
-  // `findPackageDrawing` on the line above already does exactly this, correctly.
-  // The two are the same problem and only one of them had been solved.
-  //
-  // A package the CALLER named still wins: their choice is a statement, and an
-  // inference should not overwrite it.
-  if (!part.vendorLandPattern && part.packageType.value) {
-    const printed = findVendorLandPattern(doc, part.packageType.value);
-    if (printed) {
-      part = {
-        ...part,
-        vendorLandPattern: {
-          page: printed.page,
-          valuesMm: printed.dimensions.map((dimension) => dimension.valueMm)
-        }
-      };
-    }
-  }
-
-  // What a person should look at, and the pages they need to look at it ON.
-  //
-  // The pages are shipped with the record rather than fetched later on demand,
-  // because by the time the user is looking at the panel this route has already
-  // released the PDF. A second endpoint would have to re-retrieve the document
-  // to rasterise one page, which on the commercial path means fetching a vendor
-  // PDF again to answer a question we could already answer.
-  // What clicking each offered package would actually do. Computed here, where
-  // the record is complete, because the chooser is shown before any export is
-  // attempted and a dropdown that cannot say which of its entries work is the
-  // failure `packageOptions` exists to end. It runs the real generator, so it
-  // costs one footprint build per package and never disagrees with the export.
-  const packageChoice = packageOptions(part);
-
-  // What the record checks out against, from evidence already in hand. Runs on
-  // the resolved projection because every check is about geometry, and a record
-  // too incomplete to resolve has nothing to check yet.
-  const resolvedForChecks = resolveForExport(part);
-  const checks: ConfidenceCheck[] = resolvedForChecks.ok ? confidenceChecks(resolvedForChecks.part) : [];
-
-  // WHERE TO LOOK, attached to every question that has an answer in the document.
-  //
-  // The exporter fills the page for a land-pattern ask, because the record knows
-  // which page the printed footprint is on. Everything else it asks for is on the
-  // package outline, and only this route knows where that is: `findPackageDrawing`
-  // runs here and the record never carries the result.
-  //
-  // Deliberately not applied to `formedLeadSpanMm`. No datasheet contains it, so
-  // pointing at a page would be a lie about where to look, and the exporter
-  // leaves its page null for exactly that reason.
-  const withPages = (needs: RequiredInput[]): RequiredInput[] =>
-    needs.map((need) =>
-      need.page || need.field === "formedLeadSpanMm" || !packageDrawing
-        ? need
-        : { ...need, page: packageDrawing.page, pageLabel: "Package outline drawing" }
-    );
-  const located: PackageChoice = packageChoice.ok
-    ? { ok: true, options: packageChoice.options.map((option) => ({ ...option, needs: withPages(option.needs) })) }
-    : packageChoice;
-
-  const review = collectReviewItems(part);
-  const wanted = reviewPages(review);
-  // Every page the user might be shown: the ones review cites, plus the ones the
-  // questions point at. Rendered together because a second endpoint would have to
-  // re-retrieve the document to rasterise one page, which on the commercial path
-  // means fetching a vendor PDF again to answer something we can answer now.
-  const asked = located.ok
-    ? located.options.flatMap((option) => option.needs.map((need) => need.page)).filter((page): page is number => Boolean(page))
-    : [];
-  const evidence = [...new Set([...wanted, ...asked, ...(packageDrawing ? [packageDrawing.page] : [])])];
-
-  const already = new Map(rendered.map((image) => [image.page, image]));
-  const missing = evidence.filter((page) => !already.has(page));
-  // Only the pages nothing has rasterised yet. A renderer failure degrades the
-  // panel to page numbers without pictures, which is still better than nothing,
-  // so this is never allowed to fail the request.
-  const extra = missing.length > 0 ? await renderPages(ref.bytes, missing, { maxPages: missing.length }) : [];
-  for (const image of extra) already.set(image.page, image);
-  const pages = evidence.map((page) => already.get(page)).filter((image): image is RenderedPage => Boolean(image));
+  // It used to live here and only here, so a looked-up part reached the user
+  // with no package chooser, no confidence checks and no review panel. See
+  // `buildReadout`: past the point where the bytes are in hand, an upload and a
+  // part-number lookup are the same operation, and keeping two copies is how the
+  // two came to differ.
+  const readout = await buildReadout(part, doc, ref.bytes, rendered);
 
   return NextResponse.json<
     RetrievalSuccess & {
@@ -326,14 +236,15 @@ export async function POST(request: Request) {
       reviewPages: RenderedPage[];
     }
   >({
-    part,
+    // The readout's copy, which carries the `vendorLandPattern` repair.
+    part: readout.part,
     source: toRetrievalSource(ref, "upload"),
     mode,
     method,
-    packageDrawing,
-    packageChoice: located,
-    checks,
-    review,
-    reviewPages: pages
+    packageDrawing: readout.packageDrawing,
+    packageChoice: readout.packageChoice,
+    checks: readout.checks,
+    review: readout.review,
+    reviewPages: readout.reviewPages
   });
 }
