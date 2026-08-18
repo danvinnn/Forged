@@ -149,7 +149,10 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   { partNumber: "PCM1808", manufacturer: "Texas Instruments", kind: "converter" },
   { partNumber: "TPS62130", manufacturer: "Texas Instruments", kind: "power" },
   { partNumber: "TPS7A4700", manufacturer: "Texas Instruments", kind: "power" },
-  { partNumber: "TPS54360", manufacturer: "Texas Instruments", kind: "power" },
+  // TPS54360 was PROMOTED to the tuned corpus on 2026-08-17: it produced an
+  // invalid footprint, and a defect that cannot be opened cannot be fixed.
+  // Replaced here so the hold-out keeps its size and its shape.
+  { partNumber: "TPS63020", manufacturer: "Texas Instruments", kind: "power" },
   { partNumber: "LM5117", manufacturer: "Texas Instruments", kind: "power" },
   { partNumber: "LP5907", manufacturer: "Texas Instruments", kind: "power" },
   { partNumber: "UCC28C43", manufacturer: "Texas Instruments", kind: "power" },
@@ -200,7 +203,8 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   { partNumber: "ADG1211", manufacturer: "Analog Devices", kind: "interface" },
   { partNumber: "ADUM1201", manufacturer: "Analog Devices", kind: "interface" },
   { partNumber: "ADM3202", manufacturer: "Analog Devices", kind: "interface" },
-  { partNumber: "ADXL345", manufacturer: "Analog Devices", kind: "sensor" },
+  // ADXL345 was PROMOTED to the tuned corpus on 2026-08-17, same reason.
+  { partNumber: "ADXL362", manufacturer: "Analog Devices", kind: "sensor" },
   { partNumber: "AD8495", manufacturer: "Analog Devices", kind: "sensor" },
   { partNumber: "LTC3105", manufacturer: "Analog Devices", kind: "power" }
 ];
@@ -302,7 +306,22 @@ async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: s
     await createExportZip(resolved.part, "kicad");
     return { ships: true, why: "" };
   } catch (error) {
-    if (!(error instanceof FootprintUnavailableError)) throw error;
+    // ONE PART MUST NEVER KILL THE RUN.
+    //
+    // This rethrew anything that was not a `FootprintUnavailableError`, and on
+    // 2026-08-17 a `FootprintInvalidError` from the output invariant ("the pin
+    // table lists pin 9 and no land was placed for it") ended a paid 56-part
+    // run partway through. $0.57 of answers were bought and no figure was
+    // produced. `shipCheck` in `extraction.ts` has recorded any error as a
+    // non-ship for months; this is the same rule with only one of its two
+    // copies hardened.
+    //
+    // An invalid footprint IS a non-ship, and saying so is strictly more
+    // informative than a stack trace: it is the output invariant doing its job.
+    if (!(error instanceof FootprintUnavailableError)) {
+      const why = error instanceof Error ? error.message.split("\n")[0].slice(0, 60) : "unknown";
+      return { ships: false, why: `invalid: ${why}` };
+    }
     direct = error;
   }
 

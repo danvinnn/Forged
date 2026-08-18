@@ -908,3 +908,69 @@ test("an exposed-pad row still leaves the numbered pins intact", async () => {
   assert.equal(outcome.part.pins.value?.length, 2, "the numbered rows survive");
   assert.equal(outcome.part.exposedPad, true, "and the pad is recorded rather than lost");
 });
+
+test("a thermal pad the vendor NUMBERED is built as a pad, not as a lead", () => {
+  // TPS54360, promoted out of the hold-out on 2026-08-17 for producing an
+  // invalid footprint. Texas Instruments numbers the PowerPAD rather than
+  // lettering it: an 8-lead HSOIC has a NINTH row called `9`.
+  //
+  // The row is numeric, so the `EP`/`PAD`/`TAB` check above never saw it. It
+  // survived as an ordinary signal pin on an eight-lead package, nothing placed
+  // a land for it, and the output invariant refused the part entirely with "the
+  // pin table lists pin 9 and no land was placed for it". The pad's SIZE was on
+  // the record the whole time.
+  const rows = Array.from({ length: 9 }, (_, index) => ({
+    number: index + 1,
+    name: index === 8 ? "PowerPAD" : `P${index + 1}`,
+    electricalType: "unspecified"
+  }));
+
+  const merged = mergeModelValues(
+    deterministic(),
+    doc,
+    {
+      values: {
+        pins: { value: rows as never, page: 1 },
+        "dimensions.leadCount": { value: 8, page: 1 },
+        "dimensions.thermalPadLengthMm": { value: 3.1, page: 1 },
+        "dimensions.thermalPadWidthMm": { value: 2.41, page: 1 }
+      }
+    },
+    "gemini"
+  );
+
+  assert.equal(merged.part.pins.value?.length, 8, "eight leads, as the package declares");
+  assert.equal(merged.part.exposedPad, true, "and the ninth row is the pad");
+  assert.ok(
+    merged.part.notes.some((note) => /exposed thermal pad, not a lead/.test(note)),
+    "the record says which row was reclassified and why"
+  );
+});
+
+test("an extra pin is NOT called a thermal pad when the document prints no pad", () => {
+  // The guard that keeps the rule above safe. Reclassifying a real signal pin as
+  // copper under the body is far worse than the refusal it replaces, so the
+  // document must actually state a pad size. Here it does not, and the ninth row
+  // stays a pin: the part then refuses, which is the correct outcome for a lead
+  // count and a pin table that disagree.
+  const rows = Array.from({ length: 9 }, (_, index) => ({
+    number: index + 1,
+    name: `P${index + 1}`,
+    electricalType: "unspecified"
+  }));
+
+  const merged = mergeModelValues(
+    deterministic(),
+    doc,
+    {
+      values: {
+        pins: { value: rows as never, page: 1 },
+        "dimensions.leadCount": { value: 8, page: 1 }
+      }
+    },
+    "gemini"
+  );
+
+  assert.equal(merged.part.pins.value?.length, 9, "every row survives");
+  assert.equal(merged.part.exposedPad, false, "nothing was invented from a count mismatch alone");
+});

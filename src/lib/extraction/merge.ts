@@ -687,6 +687,55 @@ export function mergeModelValues(
       )
     ];
   }
+  // A THERMAL PAD THE VENDOR NUMBERED AS A PIN.
+  //
+  // `normalizeModelPins` recognises an exposed pad by its designator being
+  // non-numeric (`EP`, `PAD`, `TAB`). Texas Instruments numbers it instead: a
+  // PowerPAD SOIC-8 has a NINTH row called `9`. That row is numeric, so it was
+  // kept as an ordinary signal pin on an eight-lead package, no land was ever
+  // placed for it, and the output invariant refused the whole part with "the pin
+  // table lists pin 9 and no land was placed for it".
+  //
+  // Found 2026-08-17 on TPS54360, promoted out of the hold-out for exactly this.
+  // The thermal pad's SIZE had been read correctly (3.1 x 2.41 mm) and sat unused
+  // on the record while the part refused, which is the same discard this file
+  // already has three comments about.
+  //
+  // Three conditions, all required, because reclassifying a real signal pin as
+  // copper under the body would be far worse than the refusal it replaces:
+  //
+  //   1. the pin table has EXACTLY one row more than the declared lead count,
+  //      so the extra row is unambiguous rather than one of several
+  //   2. that extra row is the LAST by number, where a vendor puts the pad
+  //   3. the thermal pad's dimensions are on the record, which is the document
+  //      stating that this package HAS an exposed pad
+  //
+  // Condition 3 is the load-bearing one. Without it this would fire on any part
+  // whose lead count was misread by one.
+  const padPins = merged.pins.value;
+  const declaredLeads = merged.dimensions.leadCount.value;
+  const padLength = merged.dimensions.thermalPadLengthMm.value;
+  const padWidth = merged.dimensions.thermalPadWidthMm.value;
+  if (
+    !merged.exposedPad &&
+    padPins !== null &&
+    declaredLeads !== null &&
+    padLength !== null &&
+    padWidth !== null &&
+    padPins.length === declaredLeads + 1
+  ) {
+    const last = padPins[padPins.length - 1];
+    if (last !== undefined && Number(last.number) === padPins.length) {
+      merged.exposedPad = true;
+      merged.pins = { ...merged.pins, value: padPins.slice(0, -1) };
+      merged.notes.push(
+        `Pin ${last.number} ("${last.name}") is the exposed thermal pad, not a lead: the package declares ` +
+          `${declaredLeads} leads and the table has ${padPins.length} rows, and the document gives a ` +
+          `${padLength} x ${padWidth} mm pad. It is built as a thermal land rather than a numbered lead.`
+      );
+    }
+  }
+
   // What the model LOOKED FOR and did not find, as one line rather than one per
   // field. The distinction it preserves is the whole point: a field the document
   // is silent about is a different situation from a field nobody asked about,

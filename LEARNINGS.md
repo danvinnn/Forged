@@ -117,7 +117,23 @@ and leave the other. Four instances in one session:
 - Altium stores height and description twice; the first copy of each was fixed
 - `local-focused.ts` narrowed the fields and the pages, and not the images
 
-**Ask where else this value lives.**
+And a fifth, on 2026-08-17, which is the one that cost money: `shipOutcome` in
+`holdout.ts` rethrew anything that was not a `FootprintUnavailableError`, so a
+`FootprintInvalidError` from the output invariant ENDED a paid 56-part run
+partway through. 28 answers bought, $0.57 spent, no figure produced. `shipCheck`
+in `extraction.ts` had recorded ANY error as a non-ship for months. One rule, two
+implementations, only one hardened.
+
+**Ask where else this value lives.** This shape appeared FOUR times in the single
+day of 2026-08-17 alone (the billing allowlist, the pass-2 precedence, a stale
+mutation, and this), which makes it the dominant failure mode in this codebase by
+a distance. It is worth asking "is there a second copy of this rule?" as the
+FIRST question on any change here rather than the last.
+
+**And ask it of the instruments too, not only the product.** The three earlier
+finds that day were all in product code; this one was in the bench measuring it,
+and it was the only one that cost anything. A benchmark that dies on one part is
+worse than one that never ran, because it spends the money first.
 
 ### An allowlist of the known cases, broken by the next case
 
@@ -242,6 +258,20 @@ outline guard fires on the one that is wrong and none of the five that are right
 **When a guard cannot fire, ask what the same defect looks like in that blind
 spot.** The lead-count guard had been shipped for a day and read as covering this.
 
+**The outline-code guard's own blind spot is measured and is NOT closed.** Only
+Texas Instruments prints designator-prefixed outline codes. Of 49 parts, 24 carry
+one and the guard can fire; 5 carry none but describe a single package, so there
+is nothing to confuse; and **20 carry none AND describe several packages**, where
+this defect could occur unseen. TSV321 is one, ships, and offers six packages;
+its numbers are right (0.95 pitch and a 2.6-3.0 span are distinctively SOT-23-5)
+but nothing checks that.
+
+A vendor-neutral replacement was proposed and measured and does not work; see
+section 6. **State this as a residual risk rather than papering over it:** the
+guard proves what it can prove, and for the other 20 the protection is that the
+chosen package goes into the model's prompt, which is a mitigation and not a
+check.
+
 ### Guard the output, not each input
 
 A pin table with a gap had three ways in: the model, a posted record at
@@ -340,6 +370,13 @@ Re-deriving these costs a day each.
 - **Always keeping pass 1's pins:** dominated by both alternatives, 18/20 and
   49%. It discards the case where the rendered figure CORRECTS the table
   (RHF310A, `-VCC` to `VCC-`).
+- **Requiring the page a dimension came from to NAME the package it describes:**
+  17 of 24 agree, and the 7 that do not are mostly RIGHT. Four of them
+  (UCC27524, DRV8825, SN65HVD230, ISO7741) read body size off PAGE 1, the
+  front-page package table, and get it correct: UCC27524's 4.905 mm is exactly
+  SOIC-8. The guard would refuse seven correct parts to catch nothing. Proposed
+  as a vendor-neutral replacement for the outline-code guard and measured before
+  being written, which is the only reason it cost minutes.
 
 Two of these actively corrupted parts and were caught by the pinout oracle alone,
 never by the test suite or any bench figure.

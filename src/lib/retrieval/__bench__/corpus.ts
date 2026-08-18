@@ -65,6 +65,8 @@ export const BENCH_CORPUS: BenchPart[] = [
   // --- mainstream analog: our strongest area ---------------------------------------------------
   { partNumber: "LM358", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "OPA333", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
+  // Promoted out of the hold-out 2026-08-17, same reason as TPS54360.
+  { partNumber: "ADXL345", manufacturer: "Analog Devices", category: "analog", expect: "hit", note: "promoted: invalid footprint" },
   { partNumber: "INA240", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "ADS1115", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   {
@@ -126,6 +128,10 @@ export const BENCH_CORPUS: BenchPart[] = [
   // --- power and discrete ----------------------------------------------------------------------
   { partNumber: "TPS7A4700", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit" },
   { partNumber: "UCC27524", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit" },
+  // Promoted out of the hold-out 2026-08-17. Its footprint failed the output
+  // invariant ("pin 9 has no land"), which is a real defect and one the
+  // hold-out rules forbid diagnosing in place.
+  { partNumber: "TPS54360", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit", note: "promoted: invalid footprint, pin with no land" },
   // PROMOTED from the hold-out 2026-07-31 to diagnose why TI's modern "Pin Functions"
   // table reads nothing. MSP430FR2433 stays in the hold-out as the generality check.
   { partNumber: "DRV8825", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit" },

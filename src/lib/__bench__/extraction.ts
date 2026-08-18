@@ -57,6 +57,7 @@ import {
   type CacheMode,
   type CachingModel
 } from "./modelcache";
+import { DIMENSION_ORACLE } from "./dimension-oracle";
 import { loadBenchEnv } from "./env";
 import { getDeploymentMode } from "../retrieval/deployment";
 
@@ -218,6 +219,8 @@ interface Row {
   namesChecked: boolean;
   /** The designator as extracted, for the package-family check. */
   packageType: string;
+  /** The vendor outline drawing the dimensions were measured from, for the ships list. */
+  outlineCode: string | null;
   /** Wall-clock time for the full text extraction plus deterministic pass, ms. */
   elapsedMs: number;
   pageCount: number;
@@ -351,6 +354,7 @@ async function scoreRow(part: BenchPart): Promise<Row> {
       nameMismatches: [],
       namesChecked: false,
       packageType: "",
+      outlineCode: null,
       elapsedMs: 0,
       pageCount: 0
     };
@@ -443,6 +447,7 @@ async function scoreRow(part: BenchPart): Promise<Row> {
       status: "ok",
       detail: "",
       packageType: record.packageType.value ?? "",
+      outlineCode: record.packageOutlineCode.value,
       filled,
       cited,
       scored,
@@ -485,6 +490,7 @@ async function scoreRow(part: BenchPart): Promise<Row> {
       nameMismatches: [],
       namesChecked: false,
       packageType: "",
+      outlineCode: null,
       elapsedMs: performance.now() - startedAt,
       pageCount: 0
     };
@@ -629,6 +635,28 @@ async function main() {
     `SHIPS A BUNDLE:   ${ships}/${allOk.length} parsed parts (${pct(ships, allOk.length).trim()})   <- the product` +
       `\n${allOk.length}/${rows.length} of the corpus had a datasheet at all.\n`
   );
+
+  // WHICH parts ship, by name and by the drawing their dimensions came from.
+  //
+  // The count alone cannot be acted on. Every figure in this report except the
+  // two oracles counts whether a field is PRESENT, so "ships" means a footprint
+  // was produced and not that it is right, and MAX232 sat in this number for a
+  // day with another package's land pattern. Verifying that costs a human
+  // reading the drawing, and a human cannot start without the list.
+  //
+  // The outline code is printed beside each because `DIMENSION_ORACLE` is keyed
+  // by DRAWING rather than by part, so one hand-read entry covers every part
+  // that shares it and this says which ones are already covered.
+  const shipping = allOk.filter((r) => r.ships);
+  if (shipping.length > 0) {
+    console.log("  shipping parts, and the outline drawing each was measured from:");
+    for (const row of shipping) {
+      const code = row.outlineCode ?? "(no outline code read)";
+      const covered = DIMENSION_ORACLE[code] ? "checked" : "UNCHECKED";
+      console.log(`    ${row.part.partNumber.padEnd(18)} ${code.padEnd(16)} ${covered}`);
+    }
+    console.log("");
+  }
 
   // Parts whose fields are all present and which still produce nothing. This is
   // the actionable list that the old report could not see at all.

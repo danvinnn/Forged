@@ -191,5 +191,102 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     bodyHeightMaxMm: 1.75,
     leadSides: 2,
     jedecOutline: "MS-012 AA"
+  },
+
+  // A ceramic flat pack that IS formed, which is the contrast that makes
+  // HBH0014A above mean something.
+  //
+  // Both are 14-lead ceramic flat packs at 1.27 pitch and they are not the same
+  // part to build: HBH0014A prints no seated foot, because its leads leave the
+  // body straight and the assembler forms them. This one prints a bend radius of
+  // R.015 [0.38], a 0 to 4 degree exit angle, and a .040 [1.02] foot in DETAIL A,
+  // and its side view carries the leads down to the seating plane. So `CFP` in a
+  // package name settles nothing about lead form, and a rule keyed on the family
+  // word would get one of these two wrong.
+  //
+  // Read off the RENDERED pages, not the text layer, as the interface requires.
+  NAC0014A: {
+    packageType: "CERPACK (14)",
+    // Left empty deliberately. This datasheet also offers a CDIP (J / R-GDIP-14)
+    // and which package a record should settle on has not been hand-checked, so
+    // no part is claimed here. The entry is keyed by the drawing and matches on
+    // that alone.
+    parts: [],
+    source: "LM139AQML-SP datasheet, page 30, PACKAGE OUTLINE NAC0014A, rev 4215197/C 08/2022",
+    leadForm: "gullwing",
+    // .410 +/- .010 across the top view, lead tip to lead tip.
+    leadSpanMm: { minMm: 10.16, maxMm: 10.66 },
+    // 14X .017 +/- .002.
+    leadWidthMm: { minMm: 0.38, maxMm: 0.48 },
+    // DETAIL A, .040 +/- .003. Present precisely because these leads are formed.
+    leadContactMm: { minMm: 0.95, maxMm: 1.09 },
+    // 12X .050 +/- .002, twelve gaps across fourteen leads.
+    pitchMm: 1.27,
+    // .3870 +/- .0030, the dimension the leads are distributed along.
+    bodyLengthMm: { minMm: 9.754, maxMm: 9.906 },
+    // .250 +.020 -.005, an asymmetric tolerance printed as a stacked fraction.
+    bodyWidthMm: { minMm: 6.23, maxMm: 6.85 },
+    // bodyHeightMaxMm deliberately ABSENT. The end view prints .044MAX TYP [1.1]
+    // and .070 +.010 -.020 [1.78], and which of the two is the seated height is
+    // not unambiguous from the drawing. An oracle is only worth having while
+    // every line in it was actually read, so an uncertain number is left out
+    // rather than guessed: a wrong entry here would mark a correct reading as a
+    // defect and cost more than the missing check.
+    leadSides: 2,
+    // Note 4 on the drawing: "No JEDEC registration as of December 2021", so
+    // there is no `jedecOutline` to record rather than one we failed to find.
+    land: {
+      source: "LM139AQML-SP datasheet, page 31, EXAMPLE BOARD LAYOUT NAC0014A",
+      // 14X .090 [2.29], the pad's long axis, measured outward from centre.
+      padLengthMm: 2.29,
+      // 14X .027 [0.69], across the row.
+      padWidthMm: 0.69,
+      // (.37) [9.4], centre to centre between the opposing columns.
+      spanMm: 9.4,
+      // .003 [0.07], printed MAX for the non-solder-mask-defined detail and MIN
+      // for the solder-mask-defined one. Same number either way.
+      solderMaskExpansionMm: 0.07
+    }
+  },
+
+  // The 16-lead sibling of NAC0014A, and read separately rather than assumed
+  // from it. Nearly every number does match, which is the point: assuming it
+  // would have been right here and is exactly the habit that produced the MAX232
+  // defect, where one drawing's numbers were taken for another's.
+  //
+  // The two differ where it matters least and would matter most if guessed: this
+  // drawing states its height in the TITLE ("CFP - 2.33mm max height") and
+  // NAC0014A's title states none at all, which is why that entry omits the
+  // field rather than borrowing this one.
+  NAC0016A: {
+    packageType: "CFP (16)",
+    // Empty for the same reason as NAC0014A: this datasheet also offers a
+    // ceramic SOIC, and which one the record settles on is not hand-checked.
+    parts: [],
+    source: "ADC128S102QML-SP datasheet, page 31, PACKAGE OUTLINE NAC0016A, rev 4215198/C 08/2022",
+    leadForm: "gullwing",
+    // .410 +/- .010 [10.414 +/- 0.254].
+    leadSpanMm: { minMm: 10.16, maxMm: 10.668 },
+    // 16X .017 +/- .002 [0.4318 +/- 0.0508]. Printed to four decimal places
+    // here and two on the 14-lead drawing; both are transcribed as printed.
+    leadWidthMm: { minMm: 0.381, maxMm: 0.4826 },
+    // DETAIL A, .040 +/- .003 [1.016 +/- 0.0762].
+    leadContactMm: { minMm: 0.9398, maxMm: 1.0922 },
+    // 14X .050 +/- .002, fourteen gaps across sixteen leads.
+    pitchMm: 1.27,
+    bodyLengthMm: { minMm: 9.754, maxMm: 9.906 },
+    // .250 +.020 -.005 [6.35 +0.508 -0.127].
+    bodyWidthMm: { minMm: 6.223, maxMm: 6.858 },
+    // From the drawing's own title block.
+    bodyHeightMaxMm: 2.33,
+    leadSides: 2,
+    // Note 4: "No JEDEC registration as of December 2021".
+    land: {
+      source: "ADC128S102QML-SP datasheet, page 32, EXAMPLE BOARD LAYOUT NAC0016A",
+      padLengthMm: 2.29,
+      padWidthMm: 0.69,
+      spanMm: 9.4,
+      solderMaskExpansionMm: 0.07
+    }
   }
 };

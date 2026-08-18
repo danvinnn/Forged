@@ -156,8 +156,14 @@ const MUTATIONS: Mutation[] = [
     id: "M14",
     breaks: "through-hole rows sit at twice the drawing's spacing, so the part does not fit",
     file: EXPORTERS,
-    from: "      padCentreMm: rowSpacingMm / 2,",
-    to: "      padCentreMm: rowSpacingMm,"
+    // Retargeted 2026-08-17. The line read `rowSpacingMm / 2` until single-row
+    // packages landed and the span became 0 for a one-row part; this mutation
+    // then matched nothing and reported NOT APPLIED, which is a hole in the
+    // suite that still looks like a member of it. A mutation that cannot be
+    // applied proves nothing and must be repaired the run it is reported, not
+    // left as a permanent 19-of-20.
+    from: "      padCentreMm: spanMm / 2,",
+    to: "      padCentreMm: spanMm,"
   },
 
   // --- KiCad output ---------------------------------------------------------
