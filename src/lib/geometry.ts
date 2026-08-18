@@ -65,6 +65,17 @@ export interface Pad {
    * An emitter that ignores this produces a footprint that looks right in CAD
    * and fails at reflow, so every emitter must either honour it or refuse.
    */
+  /**
+   * `centre` is in the FOOTPRINT's coordinates, the same frame as `Pad.centre`,
+   * not an offset from the pad.
+   *
+   * Stated because two files have to agree about it and only worked by
+   * accident: both emitters write it straight out as a footprint coordinate,
+   * while `geometryViolations` tested `|aperture.centre| + w/2 <= pad.width/2`,
+   * i.e. as a pad-relative offset. The two coincide only because every exposed
+   * pad this generator builds sits on the origin, so an off-centre pad would
+   * have made one of them silently wrong.
+   */
   pasteApertures?: Array<{ centre: Point; widthMm: number; heightMm: number }>;
   /**
    * Solder mask clearance around this land, in millimetres, when the datasheet
@@ -109,6 +120,16 @@ export interface FootprintProvenance {
   padWidthMm: number;
   padLengthMm: number;
   centreToCentreMm: number;
+  /**
+   * The same distance across the OTHER axis, for a four-sided package whose two
+   * axes differ. Absent means the two are equal, which is every two-sided
+   * package and every square quad.
+   *
+   * The provenance block is what a reviewer reads to see what was built, and it
+   * carried one span for a footprint that has two: the file described itself as
+   * square while its own pads were not.
+   */
+  centreToCentreCrossMm?: number;
   pitchMm: number;
 }
 

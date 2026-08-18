@@ -24,6 +24,15 @@ import {
 } from "./http";
 import { buildPartVariants, normalizePartNumber } from "../partnumber";
 
+/**
+ * How many PDF links to try on one scraped page.
+ *
+ * A page we did not write decides what this server connects to, so the number of
+ * connections it can cause has to be ours. Eight is well past what a real
+ * datasheet landing page carries and far short of what a link farm does.
+ */
+const MAX_PDF_LINKS_PER_PAGE = 8;
+
 const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Forge/1.0";
 
@@ -197,7 +206,13 @@ async function inspectCandidate(url: string): Promise<{ pdfUrl: string; sourcePa
   }
 
   const html = await response.text();
-  const pdfLinks = extractPdfLinks(html, finalUrl);
+  // BOUNDED, like every other reach in this file. The search-result list is
+  // capped at 12 candidates, the redirect chain at 5 and the body at 50MB, and
+  // this one was not: a link-heavy or hostile page turned one lookup into an
+  // unbounded outbound fan-out from a public endpoint, each hop carrying a 30
+  // second download timeout. Ranked highest first so the cap drops the least
+  // likely link rather than the last one on the page.
+  const pdfLinks = extractPdfLinks(html, finalUrl).slice(0, MAX_PDF_LINKS_PER_PAGE);
 
   for (const pdfLink of pdfLinks) {
     let pdfResponse: Response;

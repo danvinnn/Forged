@@ -65,11 +65,13 @@ function exportablePart(
       leadCount: citedValue(pinCount),
       leadWidthMm: citedValue({ minMm: 0.35, maxMm: 0.5 }),
       leadSpanMm: citedValue({ minMm: 5.8, maxMm: 6.2 }), leadContactMm: citedValue({ minMm: 0.4, maxMm: 0.625 }),
+      leadSpanCrossMm: unknown<{ minMm: number; maxMm: number }>(),
       thermalPadLengthMm: unknown<number>(),
       thermalPadWidthMm: unknown<number>(),
       landPadLengthMm: unknown<number>(),
       landPadWidthMm: unknown<number>(),
       landSpanMm: unknown<number>(),
+      landSpanCrossMm: unknown<number>(),
       leadSides: citedValue<2 | 4>(2),
       leadForm: citedValue<"gullwing" | "nolead" | "straight">(leadForm),
       mounting: unknown<"smd" | "through-hole">(),
@@ -178,11 +180,23 @@ test("a land pattern the user supplies is validated before it becomes copper", a
     );
     assert.equal(response.status, 400, `landPadLengthMm ${JSON.stringify(bad)} must be rejected`);
   }
-  for (const bad of [1, 3, 8, "2"]) {
+  // 1 IS VALID and is asserted below, not here. It became a valid reading on
+  // 2026-08-17 so a TO-220, TO-92 or SIP could be represented at all, and this
+  // route went on rejecting it: the generator asked for it, the UI offered a box
+  // that accepts it, and the answer came back 400. This test pinned that.
+  for (const bad of [0, 3, 8, "2"]) {
     const response = await POST(
       post({ part: exportablePart("12-Pin BGA", 12), format: "kicad", leadSides: bad })
     );
     assert.equal(response.status, 400, `leadSides ${JSON.stringify(bad)} must be rejected`);
+  }
+  // Every value the record accepts is accepted here. A field the record admits
+  // and the route refuses is an unanswerable question.
+  for (const good of [1, 2, 4]) {
+    const response = await POST(
+      post({ part: exportablePart("12-Pin BGA", 12), format: "kicad", leadSides: good })
+    );
+    assert.notEqual(response.status, 400, `leadSides ${good} must be accepted`);
   }
 });
 
@@ -225,6 +239,10 @@ const ASKABLE: Array<{ field: string; good: unknown; bad: unknown }> = [
   { field: "landPadLengthMm", good: 1.5, bad: 0 },
   { field: "landPadWidthMm", good: 0.6, bad: 500 },
   { field: "landSpanMm", good: 5.4, bad: "1.2" },
+  // The cross-axis span, askable since 2026-08-18. A four-sided package has two
+  // centre spans and the record carried one, so an unread second axis was being
+  // read as "the same as the first", which is a guess dressed as a reading.
+  { field: "landSpanCrossMm", good: 6.4, bad: 0 },
   { field: "leadSides", good: 2, bad: 3 },
   { field: "leadsPerSide", good: "6,6,6,5", bad: "6,6,6" },
   { field: "thermalPadLengthMm", good: 2.1, bad: 0 },
@@ -374,22 +392,29 @@ test("the export note says what the lands actually are, not what they usually ar
  * `geometry-invariants.test.ts` proves the throw. This proves it arrives.
  */
 test("a footprint that fails its own invariants is refused, not a 500", async () => {
-  // An exposed pad whose designator is a NAME rather than a number, which is how
-  // most datasheets print it (`EP`, `PAD`, `TAB`). The pad placer numbers the
-  // thermal land from the pin table's own designator and `validateGeometry`
-  // expects `pinCount + 1`, so the two disagree and the footprint is withheld.
+  // A PIN TABLE THAT LISTS A PIN THE COUNT DOES NOT REACH, which is the defect
+  // `geometryViolations` was written for and which the UI allows inline: rename
+  // pin 8 to 9 in the record panel and the footprint comes out with pads 1..8
+  // and the symbol with seven pins, every other check passing. Pin 9 simply does
+  // not exist on the board and pad 8 connects to nothing in the netlist.
+  //
+  // This used to plant a `PAD` row and rely on the pad placer reading its
+  // designator. That lookup could never fire on a real record (`normalizeModelPins`
+  // strips non-numeric rows before they reach `part.pins`), so the test was
+  // exercising a path only a hand-built record could reach, and it went green for
+  // the wrong reason.
   const part = exportablePart("8-pin SOIC", 8);
+  const renamed = [...pins(8)];
+  renamed[7] = { ...renamed[7], number: "9" };
   const invalid: PartRecord = {
     ...part,
-    exposedPad: true,
-    pins: citedValue([...pins(8), { number: "PAD", name: "GND", electricalType: "passive" as const }]),
+    pins: citedValue(renamed),
     dimensions: {
       ...part.dimensions,
-      thermalPadLengthMm: citedValue(2.15),
-      thermalPadWidthMm: citedValue(1.2),
       landPadLengthMm: citedValue(1.4),
       landPadWidthMm: citedValue(0.6),
-      landSpanMm: citedValue(5.0)
+      landSpanMm: citedValue(5.0),
+      landSpanCrossMm: unknown<number>()
     }
   };
 

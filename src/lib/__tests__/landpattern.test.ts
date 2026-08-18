@@ -58,12 +58,14 @@ function bare(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       leadCount: count,
       leadWidthMm: null,
       leadSpanMm: null,
+      leadSpanCrossMm: null,
       leadContactMm: null,
       thermalPadLengthMm: null,
       thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
+      landSpanCrossMm: null,
       leadSides: null,
       leadForm: null,
       mounting: null,
@@ -129,7 +131,8 @@ test("a printed land pattern IS the pads, to the micron", async () => {
       leadSides: 2,
       landPadLengthMm: PUBLISHED_SOIC8.padLengthMm,
       landPadWidthMm: PUBLISHED_SOIC8.padWidthMm,
-      landSpanMm: PUBLISHED_SOIC8.spanMm
+      landSpanMm: PUBLISHED_SOIC8.spanMm,
+      landSpanCrossMm: null,
     })
   );
 
@@ -175,6 +178,7 @@ const DRAWN_SOIC8 = {
   leadSides: 2 as const,
   leadForm: "gullwing" as const,
   leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+  leadSpanCrossMm: null,
   leadContactMm: { minMm: 0.4, maxMm: 0.625 },
   leadWidthMm: { minMm: 0.31, maxMm: 0.51 }
 };
@@ -368,6 +372,7 @@ function dip8(): ResolvedPart {
     mounting: "through-hole",
     leadDiameterMm: 0.5,
     landSpanMm: 7.62,
+    landSpanCrossMm: null,
     bodyLengthMm: 9.27,
     bodyWidthMm: 6.35
   }, { partNumber: "ACMEDIP", packageType: "DIP-8" });
@@ -431,7 +436,8 @@ test("a through-hole part whose row count was not read asks, rather than assumin
       leadSides: null,
       mounting: "through-hole",
       leadDiameterMm: 0.7,
-      landSpanMm: 5.0
+      landSpanMm: 5.0,
+      landSpanCrossMm: null,
     }, { partNumber: "ACMEREG", packageType: "TO-220", pinCount: 3 })
   );
   assert.ok(
@@ -465,7 +471,8 @@ test("the through-hole question asks which row count it is, now that BOTH are bu
       leadSides: null,
       mounting: "through-hole",
       leadDiameterMm: 0.7,
-      landSpanMm: 5.0
+      landSpanMm: 5.0,
+      landSpanCrossMm: null,
     }, { partNumber: "ACMEREG", packageType: "TO-220", pinCount: 3 })
   );
   const need = error.needs.find((entry) => entry.field === "leadSides");
@@ -647,6 +654,7 @@ test("a non-solder-mask-defined clearance reaches the pad, because that is what 
       landPadLengthMm: 1.95,
       landPadWidthMm: 0.6,
       landSpanMm: 4.95,
+      landSpanCrossMm: null,
       solderMaskExpansionMm: 0.05,
       solderMaskDefined: "non-solder-mask-defined"
     })
@@ -662,6 +670,7 @@ test("a solder-mask-defined clearance is NOT written as an expansion", async () 
       landPadLengthMm: 1.95,
       landPadWidthMm: 0.6,
       landSpanMm: 4.95,
+      landSpanCrossMm: null,
       solderMaskExpansionMm: 0.05,
       solderMaskDefined: "solder-mask-defined"
     })
@@ -683,6 +692,7 @@ test("an unstated variant still takes the clearance, because unstated is the ord
       landPadLengthMm: 1.95,
       landPadWidthMm: 0.6,
       landSpanMm: 4.95,
+      landSpanCrossMm: null,
       solderMaskExpansionMm: 0.05,
       solderMaskDefined: null
     })

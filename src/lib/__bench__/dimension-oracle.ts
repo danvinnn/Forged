@@ -80,6 +80,12 @@ export interface DimensionOracleEntry {
   leadForm?: "gullwing" | "nolead" | "straight";
   /** Tip to tip across the package, including the leads. */
   leadSpanMm?: OracleRange;
+  /**
+   * The same span across the OTHER axis, for a four-sided package that is not
+   * square. Absent on a two-sided or one-sided package, which has one, and on a
+   * square quad, where `leadSpanMm` already says it.
+   */
+  leadSpanCrossMm?: OracleRange;
   /** Width of one lead, as printed on the drawing. */
   leadWidthMm?: OracleRange;
   /**
@@ -95,8 +101,8 @@ export interface DimensionOracleEntry {
   bodyWidthMm?: OracleRange;
   /** Maximum seated height. */
   bodyHeightMaxMm?: number;
-  /** Sides carrying leads. */
-  leadSides?: 2 | 4;
+  /** Sides carrying leads. 1 for a single line, as on a TO-220 or a SIP. */
+  leadSides?: 1 | 2 | 4;
   /** The JEDEC registration the drawing cites, exactly as printed. */
   jedecOutline?: string;
   /** The datasheet's OWN printed footprint, where it prints one. */
@@ -108,6 +114,12 @@ export interface DimensionOracleEntry {
     padWidthMm: number;
     /** Centre to centre between opposing rows. */
     spanMm: number;
+    /**
+     * Centre to centre across the OTHER axis, for a four-sided footprint that is
+     * not square. The drawing prints both and nothing here could record the
+     * second, so a rectangular quad's cross span had no correctness check at all.
+     */
+    spanCrossMm?: number;
     solderMaskExpansionMm?: number;
   };
 }

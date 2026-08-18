@@ -46,7 +46,10 @@ async function main() {
   const before = chargedSpend().usd;
 
   // Exactly what the route builds when the caller names a package.
-  const record = buildPartRecord(doc, `${partNumber}.pdf`, partNumber, hint ? { packageType: hint } : undefined);
+  // No source URL: the third parameter is `sourceUrl`, and this passed the PART
+  // NUMBER into it, so the probe was not building "exactly what the route
+  // builds" as the note above claims.
+  const record = buildPartRecord(doc, `${partNumber}.pdf`, undefined, hint ? { packageType: hint } : undefined);
   const run = await runExtraction(record, doc, buffer, model, `${partNumber}.pdf`, partNumber);
   const part = run?.part ?? record;
 

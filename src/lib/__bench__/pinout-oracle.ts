@@ -604,10 +604,17 @@ export function checkPinNames(
  * is the caller's job. An extracted designator naming a family NOT in this list is
  * an error, and that is the number worth having.
  *
- * `ceramic` marks a part whose package is hermetic. It is separate because the
- * word is load-bearing rather than descriptive: `packages.ts` refuses a ceramic
- * part the plastic JEDEC families by testing the designator string for it, so a
- * designator that drops the word silently drops the guard.
+ * `ceramic` marks a part whose package is hermetic. It is reported separately
+ * because a designator that loses the word loses information the vendor printed,
+ * and that word travels into the model's prompt and into the footprint's name.
+ *
+ * WHAT IT NO LONGER MEANS. This said `packages.ts` "refuses a ceramic part the
+ * plastic JEDEC families by testing the designator string for it". That module
+ * was the hand-typed family table and it was deleted on 2026-08-14; no code in
+ * `src/lib` or `src/app` tests a designator for `ceramic` or `hermetic` today,
+ * and lead form is now READ off the drawing rather than inferred from a family
+ * name. So losing the word is a loss of fidelity rather than the loss of a
+ * guard, and saying otherwise told a reader a protection exists that does not.
  */
 export interface PackageOracleEntry {
   families: string[];
@@ -672,13 +679,12 @@ export function checkPackageFamily(
   const flat = designator.toUpperCase().replace(/[^A-Z0-9]/g, "");
   return {
     ok: entry.families.some((family) => flat.includes(family.toUpperCase().replace(/[^A-Z0-9]/g, ""))),
-    // The guard in packages.ts reads this word off the designator, so losing it
-    // is a defect — but ONLY where the family name does not already imply it. A
-    // `CFP` is a ceramic flat pack by definition and there is no plastic family
-    // of that name to be confused with, so `14-lead CFP` has lost nothing. The
-    // case that matters is a family name shared with a plastic package: RHF1201's
-    // `Ceramic SO48` reduced to `SO48` is one characterised family away from
-    // taking plastic geometry on a hermetic part.
+    // Reported only where the family name does not already imply it. A `CFP` is
+    // a ceramic flat pack by definition and there is no plastic family of that
+    // name to be confused with, so `14-lead CFP` has lost nothing. The case
+    // worth seeing is a family name shared with a plastic package: RHF1201's
+    // `Ceramic SO48` reduced to `SO48` reads as an ordinary plastic SO to
+    // everything downstream, including the model's own prompt.
     ceramicLost: entry.ceramic === true && !CERAMIC_BY_NAME.test(designator)
   };
 }

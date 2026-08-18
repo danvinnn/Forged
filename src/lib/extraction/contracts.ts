@@ -30,6 +30,10 @@ export const extractionFields = [
   // constant. A model reading the rendered drawing returns both exactly.
   "dimensions.leadWidthMm",
   "dimensions.leadSpanMm",
+  // The second span, for a four-sided package that is not square. The drawing
+  // prints both and this asked for one, so `computeLandPattern` placed all four
+  // sides at the same centre distance. See `leadSpanCrossMm` in types.ts.
+  "dimensions.leadSpanCrossMm",
   "dimensions.leadContactMm",
   // The exposed thermal pad's own size. Without these a part with a pad cannot
   // be built at all: the numbered lands alone are a footprint missing the
@@ -56,6 +60,7 @@ export const extractionFields = [
   "dimensions.landPadLengthMm",
   "dimensions.landPadWidthMm",
   "dimensions.landSpanMm",
+  "dimensions.landSpanCrossMm",
   // How many sides carry leads. Read off the drawing because the only other
   // source was a hand-typed family table, and that table refused SOT-23 and
   // LFCSP outright while their datasheets printed complete footprints.
@@ -264,6 +269,28 @@ export interface ExtractionResult {
    * further call.
    */
   pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[] }>;
+  /**
+   * The packages this document PRINTS a mechanical outline drawing for, labelled
+   * as each drawing labels itself.
+   *
+   * A fact about the DOCUMENT rather than about the requested part, and that is
+   * the whole design: asking "which package did you measure" invites agreement
+   * with the package already named in the prompt, while asking which drawings
+   * exist has an answer that does not depend on the request.
+   *
+   * Exists because dimensions arrive with no statement of where they came from.
+   * Measured 2026-08-17: asked for MAX232 in `SOIC (D)`, the reader returned the
+   * DW0016A drawing's numbers, because that document prints outlines for NS0016A
+   * and DW0016A and none at all for the narrow D. A 9.3 mm land span where a
+   * narrow SOIC-16 wants about 6 mm, every number correctly transcribed off the
+   * wrong page. Texas Instruments happens to encode the designator in its outline
+   * code so that one is catchable; ST, ADI and Intersil do not, leaving 20 of 49
+   * corpus parts with several packages and nothing to check them against.
+   *
+   * Absent means the model did not answer, NOT that the document prints nothing.
+   * Nothing may refuse a part on an absent list.
+   */
+  drawnPackages?: string[];
   /**
    * What the call cost, when the provider reports it. Absent otherwise, and
    * absent is not zero.

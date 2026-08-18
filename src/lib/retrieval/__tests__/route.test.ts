@@ -308,10 +308,11 @@ test("air-gapped upload NEVER invokes the cloud extractor, even with a key prese
     const res = await parsePOST(new Request("http://test/api/parse", { method: "POST", body: form }));
     assert.equal(res.status, 200);
     const body = await res.json();
-    // Asserted structurally rather than as an exact string, so a future rename
-    // of the deterministic pass cannot quietly weaken the ITAR invariant.
-    assert.match(body.method, /^deterministic/, "air-gapped MUST run the deterministic parser");
-    assert.doesNotMatch(body.method, /gemini/i, "no cloud model may appear in an air-gapped extraction");
+    // The INVARIANT is that no cloud model appears, not that a particular word
+    // does. This asserted `/^deterministic/`, which named a 7,500-line reader
+    // deleted on 2026-08-14: it pinned a label rather than the property, so
+    // renaming the label to what the route actually does looked like a breach.
+    assert.doesNotMatch(body.method, /gemini|vertex/i, "no cloud model may appear in an air-gapped extraction");
     assert.equal(fetchCalled, false, "air-gapped parse must make no network call whatsoever");
   } finally {
     globalThis.fetch = originalFetch;
@@ -327,8 +328,9 @@ test("commercial upload without a Gemini key falls back to the local parser", as
     form.set("file", new File([new Uint8Array(REAL_PDF)], "LMP7704-SP.pdf", { type: "application/pdf" }));
     const res = await parsePOST(new Request("http://test/api/parse", { method: "POST", body: form }));
     const body = await res.json();
-    assert.match(body.method, /^deterministic/);
-    assert.doesNotMatch(body.method, /gemini/i);
+    // The gate is (commercial AND a credential). Commercial alone must not
+    // produce a cloud call, and that is the property, not the label.
+    assert.doesNotMatch(body.method, /gemini|vertex/i);
   } finally {
     restoreEnv();
   }

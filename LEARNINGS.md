@@ -90,6 +90,24 @@ fixed, listed because the SHAPE keeps coming back and not as open bugs:
 **When coverage looks bad, measure what is already on the record before writing
 a reader.** Every one of these was found by reading, never by a test.
 
+### The hold-out was contaminated, and nothing checked it
+
+Three parts were in `BENCH_CORPUS` and `HOLDOUT_CORPUS` at the same time: L7805,
+LTC3105 and TPS7A4700. Each had reader rules fitted to it while counting toward
+"the number that predicts a stranger's datasheet".
+
+**Found by accident on 2026-08-17**, when promoting L7805 created a duplicate
+entry and a two-part run reported three parts. Nothing else would have surfaced
+it: a contaminated hold-out does not look broken, it reads slightly high forever.
+
+Fixed by removing them from the HOLD-OUT (never from the tuned corpus, which is
+where the fitting actually happened) and adding blind replacements.
+`corpus-separation.test.ts` now fails on any overlap or any repeated entry.
+
+**Every assumption a headline number rests on should have a test.** This one was
+stated forcefully in a 30-line comment at the top of `holdout.ts` and enforced
+nowhere.
+
 ### The bench measures the product WITHOUT the user, so its blocked figures are a floor
 
 `oneClickCheck` calls `packageOptions` on the record as it stands. Naming a
@@ -416,3 +434,64 @@ So:
   strategy that governed weeks of work is gone from this file because the parser
   was switched off on 2026-08-12 and measurement showed it was subtracting.
 - Add an entry when something costs a second time, not the first time.
+
+---
+
+## 9. What a line-by-line audit found that nothing else could, 2026-08-18
+
+Every line of all 22,580 production lines was read by hand. 69 findings. The
+value is not the count, it is the SHAPE of what only reading catches, so this
+records the shapes rather than the list (which is in `AUDIT-FINDINGS.md`).
+
+**The instrument had the defect it was built to find, three times.** The guard
+bench and the replay bench each read `dimensions.landSpanMm` into
+`landSpanCrossMm`, so every part they built was a square quad by construction and
+neither could ever see a rectangular one. The extraction bench scored
+`bodyLengthMm, bodyWidthMm, pitchMm` as "geometry", which stopped being the
+fields that place copper on 2026-08-12; the same lesson was written above
+`untraceableDimensions` in types.ts and did not reach the bench measuring it.
+**Audit the instrument in the same pass as the product, not after it.**
+
+**Two tests asserted the defect.** `leadSides 1 must be rejected` pinned the
+unanswerable question; two route tests pinned `method` starting with
+`deterministic`, a label naming a reader deleted four days earlier. A test that
+pins a LABEL rather than a PROPERTY converts a fix into a failure and defends the
+bug. When a test fails after a fix, read what it asserts before assuming the fix
+is wrong.
+
+**A guard defeated by the line below it.** `neutralizeUntrustedText` inserted
+U+200B to break `<<<`, and the next replacement stripped the class containing
+U+200B. `<<<` came out unchanged for the whole life of the function while its
+comment said otherwise. **Order is behaviour.** Running the four replacements by
+hand took ten seconds and no test had ever done it.
+
+**A refusal that could not tell "no" from "cannot tell".** The `drawnPackages`
+guard compared a package named by family and lead count against a drawing named
+by a vendor outline code, found nothing in common, and refused the part. A
+refusal has to be a PROOF of disagreement; where two labels share no comparable
+feature the honest verdict is undecidable, and the guard must stay quiet.
+
+**The one function, bypassed by the caller that mattered.** `asPackage` is the
+only place the relabelling rule lives, and the UI never reached it: it wrote the
+chosen designator into the record and posted that, so the rule ran in the chooser
+that computes the button's label and never on the export the button leads to. A
+shared function is only shared if every path actually calls it. **Ask which
+caller does NOT go through it.**
+
+**The 3D body did not close.** Two of six faces named a vertical edge belonging
+to the opposite side. Invisible in the text, immediate to any CAD tool. Found by
+walking the loops on paper. The fix derives edge orientation by walking rather
+than tabulating it, so a loop that does not close now throws.
+
+**"Every dimension" was fifteen of twenty-five.** The record panel's own
+disclosure said "every dimension"; the exposed pad showed one number for a
+two-number field, and the cross-axis span was invisible. A list that has to be
+maintained beside a record falls behind the record. Prefer enumerating the
+object.
+
+### The cheapest check in this project
+
+`bench:replay` is free, runs the real generator over 113 real model answers, and
+answered "does asking for the cross span cost any parts" in ninety seconds: five
+parts gained the question and all five were already asking three others, so no
+shipping part was lost. **Measure a trade before defending it.**

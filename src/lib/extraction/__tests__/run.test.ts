@@ -424,12 +424,14 @@ test("every field merge requires as a min/max pair is asked for that way, and no
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
   const guide = readFileSync(fileURLToPath(new URL("../models/prompt.ts", import.meta.url)), "utf8");
-  const merge = readFileSync(fileURLToPath(new URL("../merge.ts", import.meta.url)), "utf8");
 
-  // The fields merge insists on as ranges, read out of the guard itself so this
-  // cannot fall behind a fourth one being added.
-  const guard = merge.slice(merge.indexOf("const range = asRange(value);") - 400, merge.indexOf("const range = asRange(value);"));
-  const required = [...guard.matchAll(/field === "(dimensions\.\w+)"/g)].map((m) => m[1]);
+  // The fields merge insists on as ranges, taken from the exported list the
+  // merge itself tests against, so this cannot fall behind one being added. It
+  // used to scrape `field === "dimensions.X"` out of the source, which broke the
+  // moment the list became a named constant: a test that reads an implementation
+  // by regex is pinned to how the implementation is spelled.
+  const { RANGE_FIELDS } = await import("../merge");
+  const required = [...RANGE_FIELDS];
   assert.ok(required.length >= 3, "expected merge to require several range fields");
 
   for (const field of required) {

@@ -14,7 +14,13 @@ import {
 import { extractPartRecord } from "../../../lib/datasheet";
 import { PdfExtractionError, type DatasheetText } from "../../../lib/pdftext";
 import { makeExtractionModel, runExtraction } from "../../../lib/extraction";
-import { renderPages, type RenderedPage } from "../../../lib/pagerender";
+import {
+  ModelDeadlineError,
+  modelBudgetMs,
+  withDeadline,
+  worthAsking
+} from "../../../lib/extraction/budget";
+import { type RenderedPage } from "../../../lib/pagerender";
 import { buildReadout } from "../../../lib/readout";
 import { type PackageDrawing } from "../../../lib/packagedrawing";
 import { type PackageChoice } from "../../../lib/exporters";
@@ -25,6 +31,12 @@ import { type PartRecord } from "../../../lib/types";
 export const runtime = "nodejs";
 // Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
 export const maxDuration = 30;
+
+/**
+ * The model pass gets a budget carved out of this route's own, exactly as on
+ * `/api/parse`. See `extraction/budget.ts` for the measured numbers.
+ */
+const ROUTE_BUDGET_MS = maxDuration * 1000;
 
 // Bounded on purpose. Real manufacturer part numbers top out well under 64 characters, and these
 // strings are interpolated into vendor URLs and search queries, so an unbounded input is both a
@@ -53,44 +65,81 @@ function normalizePartNumber(value: string): string {
   return value.trim().toUpperCase().replace(/\s+/g, "");
 }
 
-// Layer 2 extraction on already-retrieved bytes. The deterministic text pass always runs and always
-// wins; a model only fills fields it could not resolve. makeExtractionModel picks the model for the
+// Layer 2 extraction on already-retrieved bytes. makeExtractionModel picks the model for the
 // deployment mode and reaches concrete models through dynamic imports, so the cloud model is never
 // loaded in air-gapped mode. This mirrors the resolver air-gap guard.
 async function extractPart(
   ref: { fileName: string; bytes: ArrayBuffer; pdfUrl?: string },
   mode: DeploymentMode,
   partNumberHint?: string,
-  packageHint?: string
+  packageHint?: string,
+  /** What is left of the route's own budget when this is called. */
+  budgetMs = ROUTE_BUDGET_MS
 ): Promise<{ part: PartRecord; method: string; doc: DatasheetText; rendered: RenderedPage[] }> {
-  // Deterministic pass first, always. A model only fills what it could not read.
   const { doc, part } = await extractPartRecord(ref.fileName, ref.bytes, ref.pdfUrl, {
     packageType: packageHint
   });
 
   const model = await makeExtractionModel(mode);
-  if (!model) return { part, method: "deterministic", doc, rendered: [] };
+  if (!model) return { part, method: "text only", doc, rendered: [] };
+
+  // THE SAME DEADLINE `/api/parse` ENFORCES.
+  //
+  // This route ran the model with no budget at all while the other one carved
+  // one out, checked it was worth asking, and raced the call against it. Both
+  // have `maxDuration = 30`, a model call can take 41.6 seconds, and THIS route
+  // spends part of its budget fetching the PDF over the network first, so it is
+  // the likelier of the two to be killed by the platform. Being killed costs the
+  // user the record that had already succeeded and returns a 504, which is
+  // exactly what `budget.ts` exists to prevent. One rule, both callers.
+  if (!worthAsking(budgetMs)) {
+    return {
+      part: {
+        ...part,
+        notes: [
+          ...part.notes,
+          `Finding and parsing the datasheet used the request's time budget, so the ${model.name} extraction pass was skipped.`
+        ]
+      },
+      method: "text only",
+      doc,
+      rendered: []
+    };
+  }
 
   try {
-    const outcome = await runExtraction(part, doc, ref.bytes, model, ref.fileName, partNumberHint);
-    if (!outcome) return { part, method: "deterministic", doc, rendered: [] };
-    // The pages the model asked to SEE, kept rather than dropped. The review
-    // panel shows a reviewer the page a value was read from, and re-rendering a
-    // page already rasterised for the model is pure waste. This route discarded
-    // them, which is part of why it had no panel to show.
-    const rendered = await renderPages(ref.bytes, outcome.renderedPages, { maxPages: 8 });
+    const outcome = await withDeadline(
+      runExtraction(part, doc, ref.bytes, model, ref.fileName, partNumberHint),
+      budgetMs
+    );
+    if (!outcome) return { part, method: "text only", doc, rendered: [] };
+    // The renders the model was already shown, rather than a second pass over
+    // the same pages. The review panel shows a reviewer the page a value was
+    // read from, and `runExtraction` has already rasterised exactly those pages.
     return {
       part: outcome.part,
-      method: outcome.filled.length > 0 ? `deterministic+${model.name}` : "deterministic",
+      method: outcome.filled.length > 0 ? `read by ${model.name}` : "text only",
       doc,
-      rendered
+      rendered: outcome.renderedImages
     };
   } catch (error) {
-    // The deterministic record is still useful; a model outage must not lose it.
-    console.error("extraction model failed", error);
+    // The record is still useful; a model outage must not lose it. A deadline is
+    // reported as what it is rather than as a failure, because the two call for
+    // different actions: one is retryable, the other means this document is too
+    // big for this route's budget.
+    const timedOut = error instanceof ModelDeadlineError;
+    if (!timedOut) console.error("extraction model failed", error);
     return {
-      part: { ...part, notes: [...part.notes, `The ${model.name} extraction pass failed; only text extraction was applied.`] },
-      method: "deterministic",
+      part: {
+        ...part,
+        notes: [
+          ...part.notes,
+          timedOut
+            ? `The ${model.name} extraction pass did not answer within its ${Math.round(budgetMs / 1000)}s budget and was abandoned, so nothing was read off the document.`
+            : `The ${model.name} extraction pass failed, so nothing was read off the document.`
+        ]
+      },
+      method: "text only",
       doc,
       rendered: []
     };
@@ -98,6 +147,7 @@ async function extractPart(
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
   const mode = getDeploymentMode();
 
   // Rate limit BEFORE any parsing or resolution work. This route fans out to vendor sites and
@@ -166,7 +216,13 @@ export async function POST(request: Request) {
   let doc;
   let rendered;
   try {
-    ({ part, method, doc, rendered } = await extractPart(ref, mode, partNumber, packageType));
+    ({ part, method, doc, rendered } = await extractPart(
+      ref,
+      mode,
+      partNumber,
+      packageType,
+      modelBudgetMs(ROUTE_BUDGET_MS, Date.now() - startedAt)
+    ));
   } catch (error) {
     // The resolver found a real PDF, but it is too large or complex to parse.
     // That is a property of the document, not a server fault.

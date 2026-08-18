@@ -82,13 +82,15 @@ const defaultPart: PartRecord = {
     leadCount: nothing<number>(),
     leadWidthMm: nothing<LeadWidth>(),
     leadSpanMm: nothing<LeadWidth>(),
+    leadSpanCrossMm: nothing<LeadWidth>(),
     leadContactMm: nothing<LeadWidth>(),
     thermalPadLengthMm: nothing<number>(),
     thermalPadWidthMm: nothing<number>(),
     landPadLengthMm: nothing<number>(),
     landPadWidthMm: nothing<number>(),
     landSpanMm: nothing<number>(),
-    leadSides: nothing<2 | 4>(),
+    landSpanCrossMm: nothing<number>(),
+    leadSides: nothing<1 | 2 | 4>(),
     leadForm: nothing<"gullwing" | "nolead" | "straight">(),
     mounting: nothing<"smd" | "through-hole">(),
     leadDiameterMm: nothing<number>(),
@@ -103,14 +105,6 @@ const defaultPart: PartRecord = {
   sourceFileName: "",
   notes: []
 };
-
-/**
- * A hand-entered value is fully trusted but has no citation, and must never keep
- * the reader's provenance. Editing a field is a change of method.
- */
-function userEdited<T>(value: T | null): Extracted<T> {
-  return { value, confidence: value === null ? null : 1, method: value === null ? null : "user", citation: null };
-}
 
 /**
  * Where an `install`-scoped answer is remembered. Survives the session deliberately.
@@ -134,6 +128,17 @@ const INSTALL_LABELS: Record<string, string> = {
 
 /** Largest span the export route accepts, mirrored so the UI refuses it first. */
 const MAX_LEAD_SPAN_MM = 200;
+
+/**
+ * The route's own bound on the formed FOOT, which is far tighter than the span.
+ *
+ * A foot is a feature of one lead rather than a distance across the package, so
+ * `/api/export` caps it at 5 mm. This screen validated every millimetre answer
+ * against the span's 200, so 8 was accepted here and rejected there with a
+ * message about a limit the user had never been shown. Mirrored per field
+ * rather than one number for all of them, which is what let the two drift.
+ */
+const MAX_FORMED_CONTACT_MM = 5;
 
 // ---------------------------------------------------------------------------
 // Presentational pieces
@@ -297,6 +302,28 @@ export default function HomePage() {
   const [offeredVariants, setOfferedVariants] = useState<PartRecord["packageVariants"]>([]);
   const [packageChoice, setPackageChoice] = useState<PackageChoice | null>(null);
 
+  /**
+   * The package the USER picked, held beside the record rather than written into it.
+   *
+   * `/api/export` applies `asPackage` only when the request names a package, and
+   * this screen never named one: it wrote the chosen designator into
+   * `part.packageType` instead and posted the record. So the one function that
+   * knows what relabelling costs (blank every dimension read for the old
+   * package, take the new package's own pin table, keep the lead-count check)
+   * ran in the CHOOSER, which computes the button's label, and never on the
+   * export the button leads to. A part chosen this way exported with one
+   * package's name over another's body, land pattern and outline code, which is
+   * the failure this product is most exposed to because every input is
+   * individually valid.
+   *
+   * Held separately because the record says what was READ and the request says
+   * what the caller is HOLDING. Merging the two is what made `asPackage`
+   * short-circuit: it returns the record unchanged when the designator it is
+   * given already matches, which is right, and was being handed a designator the
+   * UI had just written in.
+   */
+  const [chosenPackage, setChosenPackage] = useState<string | null>(null);
+
   // Values the export asked for. Empty unless the last attempt came back 422.
   const [pendingNeeds, setPendingNeeds] = useState<RequiredInput[]>([]);
   // One box per question. Sharing one made a part needing three numbers
@@ -360,6 +387,9 @@ export default function HomePage() {
   const imageFor = (page: number | null | undefined) =>
     page ? pageImages.find((image) => image.page === page) : undefined;
 
+  /** What the export will actually build for: the caller's choice, else the reading. */
+  const activePackage = chosenPackage ?? part.packageType.value;
+
   const packageOutcomes = useMemo(
     () => new Map(packageChoice?.ok ? packageChoice.options.map((option) => [option.designator, option]) : []),
     [packageChoice]
@@ -379,13 +409,13 @@ export default function HomePage() {
    */
   const knownNeeds = useMemo(() => {
     if (!packageChoice?.ok) return [];
-    const chosen = packageChoice.options.find((option) => option.designator === part.packageType.value);
+    const chosen = packageChoice.options.find((option) => option.designator === activePackage);
     // The resolved package where there is one, otherwise the only offer. With
     // several unresolved packages the questions differ per package, and showing
     // one package's questions as if they were the part's would be a guess.
     const option = chosen ?? (packageChoice.options.length === 1 ? packageChoice.options[0] : undefined);
     return option?.status === "needs-input" ? option.needs : [];
-  }, [packageChoice, part.packageType.value]);
+  }, [packageChoice, activePackage]);
 
   const shownNeeds = pendingNeeds.length > 0 ? pendingNeeds : knownNeeds;
 
@@ -414,6 +444,7 @@ export default function HomePage() {
     if (!keepChoice) {
       setOfferedVariants(record.packageVariants);
       setPackageChoice((payload.packageChoice as PackageChoice) ?? null);
+      setChosenPackage(null);
     }
   }
 
@@ -510,15 +541,21 @@ export default function HomePage() {
     const held = part.pins.value ?? [];
     const complete = held.length > 0 && part.pinCount.value !== null;
 
+    // THE CHOICE IS RECORDED, THE RECORD IS NOT REWRITTEN.
+    //
+    // Every branch below used to write the designator into `part.packageType`,
+    // and two of them also wrote the pins. That is `asPackage`'s job, done a
+    // second time and less completely: it left every dimension read for the
+    // PREVIOUS package in place under the new package's name, and it made the
+    // export request name no package at all, so the real rule never ran. See
+    // `chosenPackage`.
     const table = pinTableFor(part.pinTablesByPackage, designator);
     if (table) {
-      setPart({
-        ...part,
-        packageType: userEdited(designator),
-        pins: userEdited(table.pins),
-        pinCount: userEdited(table.pins.length)
-      });
-      setStatus(`Package set to ${designator}, with the ${table.pins.length}-pin table this datasheet prints for it.`);
+      setChosenPackage(designator);
+      setStatus(
+        `Package set to ${designator}. The ${table.pins.length}-pin table this datasheet prints for it will be used, ` +
+          `and the dimensions read for the other package are dropped.`
+      );
       return;
     }
 
@@ -526,8 +563,8 @@ export default function HomePage() {
     const contradicts = complete && declared !== null && declared !== part.pinCount.value;
 
     if (complete && !contradicts) {
-      setPart({ ...part, packageType: userEdited(designator) });
-      setStatus(`Package set to ${designator}. The pinout was already read, so it was kept.`);
+      setChosenPackage(designator);
+      setStatus(`Package set to ${designator}. The pinout was already read, so it is kept.`);
       return;
     }
     if (origin?.kind === "upload") return handleFile(origin.file, designator);
@@ -538,7 +575,7 @@ export default function HomePage() {
         packageType: designator
       });
     }
-    setPart({ ...part, packageType: userEdited(designator) });
+    setChosenPackage(designator);
   }
 
   /**
@@ -562,6 +599,10 @@ export default function HomePage() {
         body: JSON.stringify({
           part,
           format: selectedFormat,
+          // The package the caller is HOLDING, when they picked one. This is what
+          // makes `/api/export` apply `asPackage`, which is the only place the
+          // relabelling rule is written.
+          ...(chosenPackage ? { packageType: chosenPackage } : {}),
           // Every answered question, under the field name the refusal used.
           ...answers,
           // Install-scoped answers last, so a remembered value is sent even on
@@ -674,8 +715,11 @@ export default function HomePage() {
     if (need.unit === "counts") {
       // Four whole counts from pin 1. Checked here so a typo is caught beside the
       // box rather than as a 400 from the route.
-      if (!/^\d{1,3}(,\d{1,3}){3}$/.test(text)) {
-        setStatus("Enter four counts separated by commas, e.g. 6,6,6,5.");
+      // One count per SIDE, for the arrangements this generator builds: 1, 2 or
+      // 4. This demanded exactly four, so a two-sided package with unequal rows
+      // had a question it could not answer here.
+      if (!/^\d{1,3}(?:,\d{1,3})?$|^\d{1,3}(?:,\d{1,3}){3}$/.test(text)) {
+        setStatus("Enter one count per side, separated by commas, e.g. 6,6,6,5.");
         return;
       }
       value = text;
@@ -687,9 +731,10 @@ export default function HomePage() {
       }
       value = parsed;
     } else {
+      const ceiling = need.field === "formedLeadContactMm" ? MAX_FORMED_CONTACT_MM : MAX_LEAD_SPAN_MM;
       const parsed = Number(text);
-      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > MAX_LEAD_SPAN_MM) {
-        setStatus(`Enter ${need.label.toLowerCase()} in mm, greater than 0.`);
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > ceiling) {
+        setStatus(`Enter ${need.label.toLowerCase()} in mm, greater than 0 and no more than ${ceiling}.`);
         return;
       }
       value = parsed;
@@ -808,7 +853,7 @@ export default function HomePage() {
                 <div className="identity-main">
                   <span className="ident-part">{part.partNumber.value ?? "unknown part"}</span>
                   <span className="ident-sub">
-                    {[part.manufacturer.value, part.packageType.value].filter(Boolean).join(" · ") || "package not read"}
+                    {[part.manufacturer.value, activePackage].filter(Boolean).join(" · ") || "package not read"}
                   </span>
                 </div>
                 <dl className="identity-facts">
@@ -948,7 +993,7 @@ export default function HomePage() {
                 <ul className="packages">
                   {offeredVariants.map((variant) => {
                     const outcome: PackageOption | undefined = packageOutcomes.get(variant.designator);
-                    const active = part.packageType.value === variant.designator;
+                    const active = activePackage === variant.designator;
                     return (
                       <li key={variant.designator}>
                         <button
@@ -1071,7 +1116,9 @@ export default function HomePage() {
                           type={need.unit === "counts" ? "text" : "number"}
                           min={need.unit === "mm" ? "0" : "1"}
                           step={need.unit === "mm" ? "0.01" : "1"}
-                          {...(need.unit === "mm" ? { max: MAX_LEAD_SPAN_MM } : {})}
+                          {...(need.unit === "mm"
+                            ? { max: need.field === "formedLeadContactMm" ? MAX_FORMED_CONTACT_MM : MAX_LEAD_SPAN_MM }
+                            : {})}
                           value={needValues[need.field] ?? ""}
                           placeholder={need.unit === "counts" ? "6,6,6,5" : need.unit === "count" ? "2" : "1.55"}
                           onChange={(event) =>
@@ -1132,22 +1179,42 @@ export default function HomePage() {
                         <Row label="Body height" unit="mm" field={part.dimensions.bodyHeightMm} />
                         <Row label="Pitch" unit="mm" field={part.dimensions.pitchMm} />
                         <Row label="Lead span" unit="mm" field={part.dimensions.leadSpanMm} />
+                        <Row label="Lead span, other axis" unit="mm" field={part.dimensions.leadSpanCrossMm} />
                         <Row label="Lead width" unit="mm" field={part.dimensions.leadWidthMm} />
+                        <Row label="Lead length" unit="mm" field={part.dimensions.leadLengthMm} />
                         <Row label="Seated foot" unit="mm" field={part.dimensions.leadContactMm} />
                         <Row label="Lead form" field={part.dimensions.leadForm} />
+                        <Row label="Mounting" field={part.dimensions.mounting} />
+                        <Row label="Lead diameter" unit="mm" field={part.dimensions.leadDiameterMm} />
                         <Row label="Sides with leads" field={part.dimensions.leadSides} />
+                        <Row label="Leads per side" field={part.dimensions.leadsPerSide} />
+                        <Row label="Empty grid position" field={part.dimensions.vacantLeadSlot} />
+                        <Row label="Lead count" field={part.dimensions.leadCount} />
                       </tbody>
                     </table>
 
                     <h3>Printed footprint</h3>
+                    {/*
+                      EVERY dimension, because the disclosure above says so.
+                      This showed fifteen of twenty-five and called itself "every
+                      dimension". Two of the omissions mattered: the exposed pad
+                      was one row labelled "Exposed pad", so a rectangular pad
+                      read to a reviewer as a single number, and the cross-axis
+                      centre span was invisible, so the value that places half a
+                      quad's copper could not be seen or corrected.
+                    */}
                     <table className="facts">
                       <tbody>
                         <Row label="Land length" unit="mm" field={part.dimensions.landPadLengthMm} />
                         <Row label="Land width" unit="mm" field={part.dimensions.landPadWidthMm} />
                         <Row label="Centre span" unit="mm" field={part.dimensions.landSpanMm} />
+                        <Row label="Centre span, other axis" unit="mm" field={part.dimensions.landSpanCrossMm} />
                         <Row label="Mask expansion" unit="mm" field={part.dimensions.solderMaskExpansionMm} />
-                        <Row label="Exposed pad" unit="mm" field={part.dimensions.thermalPadLengthMm} />
+                        <Row label="Mask defined by" field={part.dimensions.solderMaskDefined} />
+                        <Row label="Exposed pad length" unit="mm" field={part.dimensions.thermalPadLengthMm} />
+                        <Row label="Exposed pad width" unit="mm" field={part.dimensions.thermalPadWidthMm} />
                         <Row label="Via drill" unit="mm" field={part.dimensions.thermalViaDiameterMm} />
+                        <Row label="Via pitch" unit="mm" field={part.dimensions.thermalViaPitchMm} />
                       </tbody>
                     </table>
                   </div>

@@ -15,6 +15,22 @@ import { citableText, quarantinedRegions } from "./untrusted";
  * Air-gap safe: no networking, no external URLs.
  */
 
+/**
+ * The fields a drawing prints as a MIN/MAX PAIR rather than a single number.
+ *
+ * Exported because it was a list in two places: here, and in the merge test that
+ * proves every extraction field can reach the record. Adding a range field and
+ * missing one of them makes the test feed a scalar to a range field, which the
+ * validation below correctly drops, and the test then reports the merge broken.
+ * One list, both readers.
+ */
+export const RANGE_FIELDS = [
+  "dimensions.leadWidthMm",
+  "dimensions.leadSpanMm",
+  "dimensions.leadSpanCrossMm",
+  "dimensions.leadContactMm"
+] as const;
+
 /** Reads the Extracted<T> currently at a dotted field path. */
 function fieldAt(part: PartRecord, field: ExtractionField): Extracted<unknown> {
   switch (field) {
@@ -572,11 +588,7 @@ export function mergeModelValues(
     // A range field is validated before anything else looks at it. An
     // ill-formed pair is DROPPED rather than stored uncited, for the same
     // reason a bad pin table is: these two feed the land pattern directly.
-    if (
-      field === "dimensions.leadWidthMm" ||
-      field === "dimensions.leadSpanMm" ||
-      field === "dimensions.leadContactMm"
-    ) {
+    if ((RANGE_FIELDS as readonly string[]).includes(field)) {
       const range = asRange(value);
       if (!range) {
         rejected.push({ field, reason: "the value was not a positive min/max pair in millimetres" });
@@ -651,19 +663,16 @@ export function mergeModelValues(
     });
     filled.push(field);
 
-    // A displaced reading becomes a conflict, and each side is recorded under
-    // its OWN name: the code's displaced value in `deterministic`, the model's
-    // new one in `model`, and `holding: "model"` to say which the record took.
+    // NOTHING IS DISPLACED HERE, so nothing is recorded as a conflict.
     //
-    // These two used to be written the other way round, so that the value on the
-    // record always sat in the `deterministic` slot. It made the review panel
-    // and the bench both attribute each reading to the wrong reader on exactly
-    // the fields where the model had overruled the code. Measured on OPA2189,
-    // where the bench reported "code 1:NC vs model 1:OUT A" when the truth was
-    // the reverse, and page 5 of the datasheet settles it: the code was right.
-    //
-    // Recorded only after the value is actually stored, so a row rejected
-    // further up never claims to have superseded anything.
+    // This carried a paragraph describing a conflict record with a
+    // `deterministic` side, a `model` side and a `holding` field. No such record
+    // is written and none can be: `alreadyAnswered` above returns early for any
+    // field that already has a value, so a model answer never overrules
+    // anything, and the only values on the record at this point are the user's.
+    // The paragraph was left behind when the cross-check module was deleted and
+    // it told a reader that a review signal exists which does not. Deleted
+    // rather than softened, per the rule this file already follows twice.
   }
 
   if (filled.length > 0) {
@@ -728,6 +737,18 @@ export function mergeModelValues(
     if (last !== undefined && Number(last.number) === padPins.length) {
       merged.exposedPad = true;
       merged.pins = { ...merged.pins, value: padPins.slice(0, -1) };
+      // AND THE COUNT, which was left behind until 2026-08-18.
+      //
+      // A model that read the pad row as a pin usually counted it as one too, so
+      // `pinCount` came back 9 on an eight-lead PowerPAD SOIC. The pads are
+      // placed from `pinCount`, so removing the row from `pins` alone left the
+      // record asking for NINE lead lands on an eight-lead package, and
+      // `pins-match-count` reporting a table that disagrees with its own count.
+      // Corrected only where the count actually included the row, so a record
+      // that already said 8 is untouched.
+      if (merged.pinCount.value === padPins.length) {
+        merged.pinCount = { ...merged.pinCount, value: declaredLeads };
+      }
       merged.notes.push(
         `Pin ${last.number} ("${last.name}") is the exposed thermal pad, not a lead: the package declares ` +
           `${declaredLeads} leads and the table has ${padPins.length} rows, and the document gives a ` +
@@ -839,6 +860,13 @@ export function mergeModelValues(
       });
     }
     if (usable.length > 0) merged.pinTablesByPackage = usable;
+  }
+
+  // Which packages the document actually DRAWS. Stored unfiltered: it is checked
+  // against the caller's chosen package at footprint time, and narrowing it here
+  // would only hide why a refusal happened.
+  if (result.drawnPackages && result.drawnPackages.length > 0) {
+    merged.drawnPackages = result.drawnPackages;
   }
 
   return { part: merged, filled, uncited, rejected };

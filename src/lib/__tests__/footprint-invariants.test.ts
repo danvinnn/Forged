@@ -40,6 +40,7 @@ interface Shape {
   landLengthMm: number;
   landWidthMm: number;
   landSpanMm: number;
+  landSpanCrossMm?: number | null;
   bodyMm: [number, number];
   leadsPerSide?: string;
   vacantLeadSlot?: number;
@@ -66,6 +67,7 @@ function shapes(): Shape[] {
         landLengthMm: pitchMm * 1.2,
         landWidthMm: pitchMm * 0.5,
         landSpanMm: pitchMm * 4 + 2,
+        landSpanCrossMm: null,
         bodyMm: [pitchMm * pinCount * 0.6 + 2, pitchMm * 3 + 1],
         ...(pinCount % 2 === 1 ? { vacantLeadSlot: Math.ceil(pinCount / 2) } : {})
       });
@@ -79,6 +81,7 @@ function shapes(): Shape[] {
           landLengthMm: pitchMm * 1.2,
           landWidthMm: pitchMm * 0.5,
           landSpanMm: pitchMm * (pinCount / 4) + 2,
+          landSpanCrossMm: null,
           bodyMm: [pitchMm * (pinCount / 4) + 1, pitchMm * (pinCount / 4) + 1]
         });
       }
@@ -94,6 +97,7 @@ function shapes(): Shape[] {
     landLengthMm: 0.8,
     landWidthMm: 0.2,
     landSpanMm: 4,
+    landSpanCrossMm: null,
     bodyMm: [6, 4]
   });
   out.push({
@@ -105,6 +109,7 @@ function shapes(): Shape[] {
     landLengthMm: 0.8,
     landWidthMm: 0.25,
     landSpanMm: 4,
+    landSpanCrossMm: null,
     bodyMm: [4, 4]
   });
   // Exposed pads, which add a land and a paste array.
@@ -116,6 +121,7 @@ function shapes(): Shape[] {
     landLengthMm: 0.825,
     landWidthMm: 0.25,
     landSpanMm: 2.925,
+    landSpanCrossMm: null,
     bodyMm: [3, 3],
     exposedPad: [1.68, 1.68]
   });
@@ -143,12 +149,14 @@ function partFor(shape: Shape): ResolvedPart {
       leadCount: shape.pinCount,
       leadWidthMm: null,
       leadSpanMm: null,
+      leadSpanCrossMm: null,
       leadContactMm: null,
       thermalPadLengthMm: shape.exposedPad?.[0] ?? null,
       thermalPadWidthMm: shape.exposedPad?.[1] ?? null,
       landPadLengthMm: shape.landLengthMm,
       landPadWidthMm: shape.landWidthMm,
       landSpanMm: shape.landSpanMm,
+      landSpanCrossMm: null,
       leadSides: shape.sides,
       leadForm: null,
       mounting: null,
@@ -377,6 +385,7 @@ test("a through-hole pad never carries paste, and a surface-mount one always doe
       landLengthMm: 1.5,
       landWidthMm: 1.5,
       landSpanMm: 7.62,
+      landSpanCrossMm: null,
       bodyMm: [9.27, 6.35]
     }),
     "kicad"

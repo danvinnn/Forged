@@ -218,7 +218,15 @@ export function landDisagreements(
   const checks: Array<{ what: string; value: number }> = [
     { what: "land length", value: computed.padLengthMm },
     { what: "land width", value: computed.padWidthMm },
-    { what: "centre-to-centre span", value: computed.padCentreMm * 2 }
+    { what: "centre-to-centre span", value: computed.padCentreMm * 2 },
+    // AND THE OTHER AXIS, where the computed pattern has one. A rectangular
+    // quad's printed drawing carries both spans, and checking one left the
+    // second free to disagree with the page unchallenged. Absent on every
+    // two-sided package and every square quad, which is why the list is built
+    // rather than fixed.
+    ...(computed.padCentreCrossMm !== undefined
+      ? [{ what: "cross-axis centre-to-centre span", value: computed.padCentreCrossMm * 2 }]
+      : [])
   ];
   return checks
     .filter((check) => !matched(printedMm, check.value, toleranceMm))

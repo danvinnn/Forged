@@ -279,8 +279,9 @@ function silkscreenOutline(geometry: FootprintGeometry): string[] {
  *
  * The chamfer is how every reference footprint marks pin 1 on `F.Fab`, and it is
  * the mark that survives assembly, since silkscreen is often covered by the
- * part. Pin 1 sits at the top of the left-hand side on both arrangements this
- * generator builds, so the cut is on the top-left corner.
+ * part. Pin 1 sits at the top of the left-hand side on every arrangement this
+ * generator builds (one row, two rows or four), so the cut is on the top-left
+ * corner.
  */
 function fabricationOutline(geometry: FootprintGeometry): string {
   const { halfWidthMm: w, halfHeightMm: h } = geometry.body;

@@ -60,8 +60,13 @@ export interface FieldGroup {
   /**
    * How to find the PAGES that answer this group, by the heading a datasheet
    * prints above them. Not a parser: it locates a section, it does not read one.
+   *
+   * Null where there is nothing to locate by, which is the catch-all bucket. It
+   * is not the same as a pattern that matches everything: `pagesFor` scores a
+   * page by how often the pattern hits, so an empty pattern scores by LENGTH and
+   * picks the longest page in the document.
    */
-  readonly locate: RegExp;
+  readonly locate: RegExp | null;
 }
 
 export const FIELD_GROUPS: readonly FieldGroup[] = [
@@ -85,12 +90,45 @@ export const FIELD_GROUPS: readonly FieldGroup[] = [
       "dimensions.leadLengthMm",
       "dimensions.leadWidthMm",
       "dimensions.leadSpanMm",
+      "dimensions.leadSpanCrossMm",
       "dimensions.leadContactMm"
     ],
     locate: /package\s+outline|mechanical\s+(?:data|drawing)|outline\s+dimensions/i
   },
+  // How the leads leave the body and how they attach, all off the same outline
+  // drawing. Added 2026-08-18 with the land-pattern fields above, for the same
+  // reason: they were on the record and in no group.
   {
-    fields: ["dimensions.landPadLengthMm", "dimensions.landPadWidthMm", "dimensions.landSpanMm"],
+    fields: [
+      "dimensions.leadSides",
+      "dimensions.leadForm",
+      "dimensions.mounting",
+      "dimensions.leadDiameterMm",
+      "dimensions.leadsPerSide",
+      "dimensions.vacantLeadSlot",
+      "jedecOutline",
+      "packageOutlineCode"
+    ],
+    locate: /package\s+outline|mechanical\s+(?:data|drawing)|outline\s+dimensions|pin\s+(?:configuration|assignment)/i
+  },
+  {
+    // Every field read off the RECOMMENDED FOOTPRINT drawing, which is one page.
+    //
+    // This listed three. The mask details, the via grid and the cross-axis span
+    // are printed on the same drawing and were added to the record without being
+    // added here, so they fell into the catch-all bucket: thirteen unrelated
+    // fields asked as ONE wide question over ONE page, which is the wide-question
+    // failure this whole model exists to replace.
+    fields: [
+      "dimensions.landPadLengthMm",
+      "dimensions.landPadWidthMm",
+      "dimensions.landSpanMm",
+      "dimensions.landSpanCrossMm",
+      "dimensions.solderMaskExpansionMm",
+      "dimensions.solderMaskDefined",
+      "dimensions.thermalViaDiameterMm",
+      "dimensions.thermalViaPitchMm"
+    ],
     // Shared with the page selector in `run.ts` rather than written twice. The
     // same heading pattern in two files is the defect shape LEARNINGS.md names
     // first: fixed in one place, not the other.
@@ -127,9 +165,17 @@ export function groupsFor(fields: readonly ExtractionField[]): FieldGroup[] {
 
   // Anything not named in a group above still has to be asked about, or adding a
   // field to `contracts.ts` would silently stop it ever being requested here.
+  //
+  // NEVER WITH AN EMPTY PATTERN. This used `/(?:)/`, which with the `g` flag
+  // `pagesFor` adds matches at every character position, so the bucket's hit
+  // count became the page's LENGTH and the ranking handed it the longest page in
+  // the document. `pagesFor`'s own comment two lines below says why that is the
+  // worst possible choice: "a wrong LONG page is what produces confident
+  // nonsense". `null` says there is nothing to locate, and the fallback then
+  // does what it was written to do and sends the shortest page.
   const grouped = new Set(groups.flatMap((group) => group.fields));
   const ungrouped = [...wanted].filter((field) => !grouped.has(field));
-  return ungrouped.length > 0 ? [...groups, { fields: ungrouped, locate: /(?:)/ }] : groups;
+  return ungrouped.length > 0 ? [...groups, { fields: ungrouped, locate: null }] : groups;
 }
 
 /**
@@ -151,11 +197,13 @@ export function pagesFor(
   group: FieldGroup,
   pages: ExtractionRequest["pages"]
 ): ExtractionRequest["pages"] {
-  const anywhere = new RegExp(group.locate.source, "gi");
-  const scored = pages
-    .map((page) => ({ page, hits: (page.text.match(anywhere) ?? []).length }))
-    .filter((entry) => entry.hits > 0)
-    .sort((a, b) => b.hits - a.hits || a.page.text.length - b.page.text.length);
+  const anywhere = group.locate ? new RegExp(group.locate.source, "gi") : null;
+  const scored = anywhere
+    ? pages
+        .map((page) => ({ page, hits: (page.text.match(anywhere) ?? []).length }))
+        .filter((entry) => entry.hits > 0)
+        .sort((a, b) => b.hits - a.hits || a.page.text.length - b.page.text.length)
+    : [];
 
   // Nothing announced itself. Send the shortest few rather than the first few:
   // a wrong LONG page is what produces confident nonsense.
@@ -209,6 +257,12 @@ export class FocusedLocalExtractionModel implements ExtractionModel {
   async extract(request: ExtractionRequest): Promise<ExtractionResult> {
     const groups = groupsFor(request.fields);
     const values: ExtractionResult["values"] = {};
+    // What the model LOOKED FOR and did not find, gathered like the values.
+    // Dropping it made a document that is silent about a field indistinguishable
+    // from a field nobody asked about, which is the distinction that took a whole
+    // investigation to recover on the cloud path.
+    const declined = new Set<ExtractionField>();
+    const notes: string[] = [];
     let inputTokens = 0;
     let outputTokens = 0;
     let answered = 0;
@@ -235,6 +289,8 @@ export class FocusedLocalExtractionModel implements ExtractionModel {
           const field = key as ExtractionField;
           if (!(field in values)) values[field] = value;
         }
+        for (const field of result.declined ?? []) declined.add(field);
+        for (const note of result.notes ?? []) notes.push(note);
         inputTokens += result.usage?.inputTokens ?? 0;
         outputTokens += result.usage?.outputTokens ?? 0;
         answered += 1;
@@ -259,6 +315,15 @@ export class FocusedLocalExtractionModel implements ExtractionModel {
       );
     }
 
-    return { values, usage: { inputTokens, outputTokens } };
+    return {
+      values,
+      // A field ANSWERED by a later group is not declined, whatever an earlier
+      // one said about it.
+      ...(declined.size > 0
+        ? { declined: [...declined].filter((field) => !(field in values)) }
+        : {}),
+      ...(notes.length > 0 ? { notes } : {}),
+      usage: { inputTokens, outputTokens }
+    };
   }
 }

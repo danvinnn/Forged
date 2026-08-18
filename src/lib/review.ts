@@ -129,6 +129,30 @@ const REVIEWABLE: Array<{ field: string; label: string; consequence: string }> =
     consequence: "Sets how far apart the two rows of lands sit. Wrong here and the whole footprint misses the leads."
   },
   {
+    // Added 2026-08-18. All three place copper and none could be reviewed, so an
+    // uncited one blocked the export with no way to clear it, and a wrong one
+    // could not be corrected. The panel is an allowlist and these three fell out
+    // of it as they were added to the record, which is the same list-versus-
+    // enumeration mistake `untraceableDimensions` in types.ts was rewritten to
+    // remove.
+    field: "dimensions.landSpanCrossMm",
+    label: "Land centre span, other axis (printed footprint)",
+    consequence:
+      "Sets how far apart the OTHER pair of rows sits on a four-sided package. Wrong here and half the footprint misses its leads."
+  },
+  {
+    field: "dimensions.vacantLeadSlot",
+    label: "Empty grid position",
+    consequence:
+      "Says which position on the short row carries no lead. Put the gap in the wrong slot and every pin after it is miswired, on a board that looks correct in CAD."
+  },
+  {
+    field: "dimensions.leadsPerSide",
+    label: "Leads on each side",
+    consequence:
+      "Divides the pins between the sides of a four-sided package. A wrong split puts leads where the package has none."
+  },
+  {
     field: "dimensions.leadSides",
     label: "Sides carrying leads",
     consequence: "Decides whether the pads are laid out in two rows or four. The wrong answer is a completely different footprint."

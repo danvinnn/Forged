@@ -386,12 +386,19 @@ function silkscreenTracks(geometry: FootprintGeometry): Buffer[] {
     if (crossing.length === 0) return true;
     return Math.min(...crossing.map((s) => s.lo)) > from || Math.max(...crossing.map((s) => s.hi)) < to;
   };
+  // Named for the OBSTRUCTION rather than for the board, because which of them is
+  // "inward" depends on the sign of the edge and the arithmetic does not care:
+  // it takes the nearer one either way. They were called `inward` and `outward`,
+  // which reads correctly for a negative edge and backwards for a positive one.
+  // The KiCad emitter carries the identical rule and was renamed for this reason;
+  // this copy was not, which is the shape that turns two implementations of one
+  // rule into two behaviours.
   const clearOf = (at: number, spans: Array<{ lo: number; hi: number }>) => {
     const crossing = spans.filter((span) => span.lo < at && span.hi > at);
     if (crossing.length === 0) return at;
-    const inward = Math.max(...crossing.map((span) => span.hi));
-    const outward = Math.min(...crossing.map((span) => span.lo));
-    return Math.abs(at - outward) <= Math.abs(at - inward) ? outward : inward;
+    const pastFarEnd = Math.max(...crossing.map((span) => span.hi));
+    const beforeNearEnd = Math.min(...crossing.map((span) => span.lo));
+    return Math.abs(at - beforeNearEnd) <= Math.abs(at - pastFarEnd) ? beforeNearEnd : pastFarEnd;
   };
 
   const spansY = blockers.map((pad) => ({ lo: pad.y0, hi: pad.y1 }));
@@ -741,11 +748,13 @@ export interface AltiumFootprintExtras {
 }
 
 export function emitAltiumPcbLib(geometry: FootprintGeometry, extras: AltiumFootprintExtras = {}): Buffer {
-  // A pad whose paste must not follow its copper cannot be spelled in this
-  // writer yet, and emitting it as an ordinary pad would paste a thermal land
-  // 1:1: the solder volume floats the package and lifts the perimeter leads off
-  // their lands. Refusing is the only honest option, because the file would look
-  // correct in Altium and fail at reflow.
+  // A pad whose paste must not follow its copper IS spelled here: the copper
+  // land has its paste suppressed and the apertures are written on Top Paste,
+  // below. This carried a paragraph saying the writer could not express one and
+  // that "refusing is the only honest option", with no refusal under it, so a
+  // reader was told a guard exists that does not and cannot: pasting a thermal
+  // land 1:1 floats the package off its leads, which is why it is spelled rather
+  // than refused.
 
   if (geometry.pads.length === 0) {
     throw new AltiumEmitError(`Footprint "${geometry.name}" has no pads, so there is nothing to fabricate from.`);

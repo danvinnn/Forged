@@ -19,7 +19,7 @@ import {
   type ThermalPadLand
 } from "./ipc7351";
 import { landDisagreements } from "./vendorland";
-import { declaredLeadCount, designatorToken, outlineCodeDesignator, pinTableFor } from "./packagevariants";
+import { declaredLeadCount, designatorToken, normaliseForMatch, outlineCodeDesignator, pinTableFor } from "./packagevariants";
 import {
   type FootprintGeometry,
   type Pad,
@@ -65,6 +65,7 @@ export interface RequiredInput {
     | "landPadLengthMm"
     | "landPadWidthMm"
     | "landSpanMm"
+    | "landSpanCrossMm"
     | "leadDiameterMm"
     | "leadSides"
     | "pitchMm"
@@ -151,7 +152,14 @@ type Discards = string[];
  * PARTIAL printed pattern is not a pattern: filling the gaps from a computed
  * one would mix two sources into a footprint that claims to be the vendor's.
  */
-function printedLand(part: ResolvedPart, densityLevel: DensityLevel, discards: Discards = []): LandPattern | null {
+function printedLand(
+  part: ResolvedPart,
+  densityLevel: DensityLevel,
+  discards: Discards = [],
+  /** Passed to the band check, which needs them for a straight-lead package. */
+  formedLeadSpanMm?: number,
+  formedLeadContactMm?: number
+): LandPattern | null {
   const padLengthMm = part.dimensions.landPadLengthMm;
   const padWidthMm = part.dimensions.landPadWidthMm;
   const centreSpan = part.dimensions.landSpanMm;
@@ -184,7 +192,19 @@ function printedLand(part: ResolvedPart, densityLevel: DensityLevel, discards: D
   // choice, one outside it is a misread. This is the industry's bound and it
   // supersedes the two invented ones below, which stay as a floor for documents
   // that print a footprint but no lead dimensions.
-  const band = withinIpcBand(part, padLengthMm, centreSpan);
+  // A FINITE POSITIVE NUMBER or nothing. Tested for the value rather than
+  // against null because a record can carry `undefined` here as easily as
+  // `null` (an older stored part, a hand-built fixture, a partial object from
+  // the export route) and `undefined / 2` is NaN, which then places lands at a
+  // non-finite coordinate and makes the corner check silently unable to fire
+  // (`x > NaN` is false). Both happened the first time this was written.
+  //
+  // Read BEFORE the band check so both axes can be checked against the
+  // standard, rather than the main one alone.
+  const rawCrossSpan = part.dimensions.landSpanCrossMm;
+  const crossSpan = typeof rawCrossSpan === "number" && Number.isFinite(rawCrossSpan) ? rawCrossSpan : null;
+
+  const band = withinIpcBand(part, padLengthMm, centreSpan, formedLeadSpanMm, formedLeadContactMm, crossSpan);
   if (band === false) {
     discards.push(
       `the printed footprint was rejected: it reaches ${(centreSpan + padLengthMm).toFixed(2)} mm toe to toe, ` +
@@ -205,11 +225,28 @@ function printedLand(part: ResolvedPart, densityLevel: DensityLevel, discards: D
   }
 
 
-  const zMaxMm = centreSpan + padLengthMm;
+  // The OTHER axis, for a four-sided package that is not square. Range-checked
+  // exactly like the main span, because it places copper on the same footing: a
+  // cross span that puts the top and bottom rows through each other is a
+  // misread, not an unusual package.
+  if (crossSpan !== null && (crossSpan <= 0 || crossSpan - padLengthMm <= 0)) {
+    discards.push(
+      `the printed footprint was rejected: a ${padLengthMm} mm land on a ${crossSpan} mm cross-axis centre ` +
+        `span puts the two rows into each other, so one of the two was misread`
+    );
+    return null;
+  }
+
+  // The WIDER axis governs the courtyard, which is a single half-extent. Using
+  // the main span alone would draw a keep-out smaller than the copper whenever
+  // the cross axis is the longer one, and a courtyard that does not contain its
+  // own lands is the exact thing `validateGeometry` refuses.
+  const zMaxMm = Math.max(centreSpan, crossSpan ?? 0) + padLengthMm;
   return {
     padWidthMm,
     padLengthMm,
     padCentreMm: centreSpan / 2,
+    ...(crossSpan !== null && crossSpan !== centreSpan ? { padCentreCrossMm: crossSpan / 2 } : {}),
     zMaxMm,
     gMinMm,
     // The courtyard is a keep-out convention for the board, not a dimension of
@@ -247,10 +284,21 @@ export class FootprintUnavailableError extends Error {
 // unescaped quote or newline breaks out of the literal and injects structure into the file. This
 // is the CADGEN_INPUT_SANITIZATION obligation, fixed at the sink.
 
-// STEP Part 21 strings are single-quoted; a literal single quote is escaped by doubling it, and
-// control characters (which have no valid place in these identifiers) are stripped.
+// STEP Part 21 strings are single-quoted, a literal single quote is escaped by
+// doubling it, and BACKSLASH introduces Part 21's own control directives
+// (`\X2\` and friends), so a stray one changes how a reader decodes the rest of
+// the literal.
+//
+// EVERY control character, not three of them. The comment here said "control
+// characters ... are stripped" while the code replaced `\r`, `\n` and `\t` only,
+// so a designator carrying any other C0 character wrote it straight into the
+// file. Both halves are now true: the whole C0 and C1 ranges go, and the escape
+// introducer is doubled the way the standard doubles a quote.
 function stepString(value: string): string {
-  return value.replace(/[\r\n\t]+/g, " ").replace(/'/g, "''");
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "''");
 }
 
 function slugify(value: string): string {
@@ -298,7 +346,12 @@ function askForBody(part: ResolvedPart): RequiredInput[] {
     .map(([field, , label]) => ({ field, label, why, unit: "mm" as const, scope: "part" as const }));
 }
 
-function buildStepModel(part: ResolvedPart): { content: string; note: string; supported: boolean; fileName: string } {
+/**
+ * Exported so the solid's own invariants can be checked directly. The loop walk
+ * inside it throws rather than writing a shell that does not close, and a test
+ * that can only reach it through a zip cannot say which face failed.
+ */
+export function buildStepModel(part: ResolvedPart): { content: string; note: string; supported: boolean; fileName: string } {
   const lengthMm = part.dimensions.bodyLengthMm;
   const widthMm = part.dimensions.bodyWidthMm;
   const heightMm = part.dimensions.bodyHeightMm;
@@ -384,17 +437,81 @@ function buildStepModel(part: ResolvedPart): { content: string; note: string; su
     const vectorId = edge.id + 300;
     lines.push(`#${directionId}=DIRECTION('',(${formatStepNumber(edge.direction[0])},${formatStepNumber(edge.direction[1])},${formatStepNumber(edge.direction[2])}));`);
     lines.push(`#${vectorId}=VECTOR('',#${directionId},${formatStepNumber(edge.length)});`);
-    lines.push(`#${lineId}=LINE('',#${edge.start},#${vectorId});`);
+    // A LINE's first argument is its point of origin, a CARTESIAN_POINT. This
+    // passed `edge.start`, which is the VERTEX_POINT built ON that point, so
+    // every line in the file referenced an entity of the wrong type. The points
+    // are numbered 10..17 and their vertices 20..27, which is the offset undone
+    // here rather than a second lookup table to keep in step.
+    lines.push(`#${lineId}=LINE('',#${edge.start - 10},#${vectorId});`);
     lines.push(`#${edge.id}=EDGE_CURVE('',#${edge.start},#${edge.end},#${lineId},.T.);`);
   });
+
+  /**
+   * Walks a face's edge list head to tail and reports which way each edge runs.
+   *
+   * TWO defects made this necessary rather than a tidy-up.
+   *
+   * An `EDGE_LOOP` holds ORIENTED_EDGE entities, not EDGE_CURVE ones: an edge is
+   * shared by exactly two faces and runs the opposite way round each of them, so
+   * the orientation flag is what makes the shell closed rather than a bag of
+   * curves. This wrote the EDGE_CURVE ids straight into the loop.
+   *
+   * And two of the six faces named an edge that is not on them: the -x face
+   * carried the vertical edge at +x and the +x face carried the one at -x, so
+   * the shell did not close. That is invisible in the text and immediate the
+   * moment a CAD tool tries to sew the solid.
+   *
+   * Derived by walking rather than tabulated, so the orientations cannot drift
+   * from the loops, and a loop that does not close throws instead of writing an
+   * invalid solid. That is the only honest option here: a body a tool refuses to
+   * open is worse than none.
+   */
+  const orientedLoop = (faceId: number, loop: number[]): Array<{ edge: number; sense: boolean }> => {
+    const byId = new Map(edges.map((edge) => [edge.id, edge]));
+    const first = byId.get(loop[0]);
+    if (!first) throw new Error(`STEP face ${faceId} names edge ${loop[0]}, which does not exist.`);
+    // The first edge sets the direction of travel: take it forwards, unless that
+    // leaves the second edge unreachable from either of its ends.
+    const second = byId.get(loop[1]);
+    if (!second) throw new Error(`STEP face ${faceId} names edge ${loop[1]}, which does not exist.`);
+    let at = second.start === first.end || second.end === first.end ? first.end : first.start;
+    const forwards = at === first.end;
+    const walked: Array<{ edge: number; sense: boolean }> = [{ edge: first.id, sense: forwards }];
+
+    for (const id of loop.slice(1)) {
+      const edge = byId.get(id);
+      if (!edge) throw new Error(`STEP face ${faceId} names edge ${id}, which does not exist.`);
+      if (edge.start === at) {
+        walked.push({ edge: id, sense: true });
+        at = edge.end;
+      } else if (edge.end === at) {
+        walked.push({ edge: id, sense: false });
+        at = edge.start;
+      } else {
+        throw new Error(
+          `STEP face ${faceId} is not a closed loop: edge ${id} runs ${edge.start} to ${edge.end} and the ` +
+            `loop had reached vertex ${at}, so this face names an edge that is not on it.`
+        );
+      }
+    }
+    const closedAt = forwards ? first.start : first.end;
+    if (at !== closedAt) {
+      throw new Error(`STEP face ${faceId} does not close: the loop ends at vertex ${at} and began at ${closedAt}.`);
+    }
+    return walked;
+  };
 
   const faces = [
     { id: 60, origin: stepPoint(0, 0, baseZ), normal: [0, 0, -1], reference: [1, 0, 0], loop: [33, 32, 31, 30] },
     { id: 61, origin: stepPoint(0, 0, topZ), normal: [0, 0, 1], reference: [1, 0, 0], loop: [34, 35, 36, 37] },
     { id: 62, origin: stepPoint(0, -halfWidth, heightMm / 2), normal: [0, -1, 0], reference: [1, 0, 0], loop: [30, 39, 34, 38] },
     { id: 63, origin: stepPoint(0, halfWidth, heightMm / 2), normal: [0, 1, 0], reference: [1, 0, 0], loop: [32, 41, 36, 40] },
-    { id: 64, origin: stepPoint(-halfLength, 0, heightMm / 2), normal: [-1, 0, 0], reference: [0, 1, 0], loop: [33, 40, 37, 38] },
-    { id: 65, origin: stepPoint(halfLength, 0, heightMm / 2), normal: [1, 0, 0], reference: [0, 1, 0], loop: [31, 39, 35, 41] }
+    // Vertical edge 41 joins vertices 23 and 27, both at x = -halfLength, so it
+    // belongs to THIS face; 40 joins 22 and 26 at x = +halfLength and belongs to
+    // the one below. The two were the wrong way round, so neither face closed
+    // and the shell was not a solid. Caught by the loop walk above.
+    { id: 64, origin: stepPoint(-halfLength, 0, heightMm / 2), normal: [-1, 0, 0], reference: [0, 1, 0], loop: [33, 41, 37, 38] },
+    { id: 65, origin: stepPoint(halfLength, 0, heightMm / 2), normal: [1, 0, 0], reference: [0, 1, 0], loop: [31, 40, 35, 39] }
   ];
 
   faces.forEach((face) => {
@@ -411,7 +528,15 @@ function buildStepModel(part: ResolvedPart): { content: string; note: string; su
     lines.push(`#${referenceId}=DIRECTION('',(${formatStepNumber(face.reference[0])},${formatStepNumber(face.reference[1])},${formatStepNumber(face.reference[2])}));`);
     lines.push(`#${axisId}=AXIS2_PLACEMENT_3D('',#${locationId},#${normalId},#${referenceId});`);
     lines.push(`#${planeId}=PLANE('',#${axisId});`);
-    lines.push(`#${loopId}=EDGE_LOOP('',(${face.loop.map((edgeId) => `#${edgeId}`).join(",")}));`);
+    const oriented = orientedLoop(face.id, face.loop);
+    oriented.forEach((step, index) => {
+      lines.push(
+        `#${face.id * 10 + index}=ORIENTED_EDGE('',*,*,#${step.edge},${step.sense ? ".T." : ".F."});`
+      );
+    });
+    lines.push(
+      `#${loopId}=EDGE_LOOP('',(${oriented.map((_, index) => `#${face.id * 10 + index}`).join(",")}));`
+    );
     lines.push(`#${boundId}=FACE_OUTER_BOUND('',#${loopId},.T.);`);
     lines.push(`#${face.id}=ADVANCED_FACE('',(#${boundId}),#${planeId},.T.);`);
   });
@@ -534,7 +659,14 @@ function buildSymbolGeometry(part: ResolvedPart): SymbolGeometry {
   //
   // KLC S4.1: "using a 100mil (2.54mm) grid, pin origin must lie on a grid
   // node". Confirmed against the official `MCP2551-I-SN`, whose four left pins
-  // sit at 5.08, 2.54, -2.54 and -5.08.
+  // sit on grid nodes 2.54 mm apart.
+  //
+  // The exact coordinates the reference uses are NOT what this produces and the
+  // comment used to quote them as though they were: it cited 5.08, 2.54, -2.54,
+  // -5.08 for a four-row symbol, and `topMm` below puts four rows at 2.54, 0,
+  // -2.54, -5.08. Both are on the grid, which is the property KLC states and the
+  // only one that matters; quoting a set of numbers the code does not emit
+  // invites the next reader to "fix" a symbol that is already correct.
   //
   // This emitter used to centre the pin block on the origin, which puts an EVEN
   // number of rows on odd multiples of 1.27: an 8-pin part came out at +/-3.81
@@ -695,6 +827,86 @@ function buildFootprintGeometry(
     );
   }
 
+  // THE DOCUMENT MUST ACTUALLY DRAW THE PACKAGE IT IS BEING ASKED TO BUILD.
+  //
+  // The check above proves a mismatch from the vendor's outline CODE, which only
+  // Texas Instruments prints in a form that carries the designator. Measured
+  // 2026-08-17: 24 of 49 corpus parts carry such a code, 5 describe a single
+  // package so there is nothing to confuse, and 20 describe SEVERAL packages
+  // with no code at all. Those twenty had no protection whatsoever.
+  //
+  // `drawnPackages` closes that by asking the model a question about the
+  // DOCUMENT rather than about the request: which packages does this datasheet
+  // print an outline drawing for. MAX232 answers NS0016A and DW0016A, and a
+  // request for the narrow `SOIC (D)` is then provably unbuildable from this
+  // document rather than quietly measured off the wide one.
+  //
+  // MATCHED LOOSELY AND DELIBERATELY. A drawing labels itself in whatever style
+  // its vendor uses ("DW0016A", "8-Lead Plastic Small Outline (SO-8)", "SOIC-8"),
+  // and the caller's package name is a different string for the same thing. So a
+  // match is: either name contains the other's designator token, or one contains
+  // the other once punctuation and case are stripped. Anything less forgiving
+  // refuses correct parts, which is how the last two attempts at this failed.
+  //
+  // ABSENT MEANS UNKNOWN. A model that did not answer, or a document whose
+  // drawings could not be identified, must never refuse a part: that would turn
+  // every non-answer into a lost part, which is the opposite of the trade this
+  // is making.
+  //
+  // AND IT ONLY FIRES WHERE THE TWO LABELS CAN BE COMPARED AT ALL.
+  //
+  // A refusal here loses the part outright, so it has to be a PROOF of
+  // disagreement and not merely a failure to find agreement. Two labels that
+  // share no comparable feature prove nothing: a package named by family and
+  // lead count (`CFP (14)`) against a drawing named by a vendor outline code
+  // (`HBH0014A`) have no word, no token and no punctuation in common, and the
+  // match above returned false for both of them. `designatorToken` correctly
+  // returns null for `(14)`, which is a lead count rather than an outline code,
+  // and the guard read that "cannot tell" as "does not draw it" and refused a
+  // correct part with its own drawing on the page.
+  //
+  // The one feature those two DO share is the lead count: `packagedrawing.ts`
+  // records that a vendor outline code's four digits are the lead count, and a
+  // designator like `CFP (14)` declares one in words. So a label is decidable
+  // when it shares a normalised name, a designator token, or a declared lead
+  // count with the request; otherwise it says nothing and the guard stays quiet.
+  const drawn = part.drawnPackages;
+  if (drawn !== undefined && drawn.length > 0 && part.packageType) {
+    const wanted = normaliseForMatch(part.packageType);
+    const wantedToken = designatorToken(part.packageType);
+    const wantedLeads = declaredLeadCount(part.packageType) ?? part.pinCount;
+
+    type Verdict = "match" | "mismatch" | "undecidable";
+    const verdicts = drawn.map((label): Verdict => {
+      const drawnNormal = normaliseForMatch(label);
+      if (drawnNormal.includes(wanted) || wanted.includes(drawnNormal)) return "match";
+      const token = designatorToken(label) ?? outlineCodeDesignator(label);
+      if (wantedToken !== null && token !== null) {
+        return token === wantedToken ? "match" : "mismatch";
+      }
+      // The lead count both sides can state, and the only comparison left when
+      // the names share nothing. An outline code carries it in its four digits.
+      const outlineLeads = /^[A-Za-z]{1,4}(\d{4})[A-Za-z]?$/.exec(label.trim())?.[1];
+      const drawnLeads = outlineLeads !== undefined ? Number(outlineLeads) : declaredLeadCount(label);
+      if (drawnLeads !== null && drawnLeads !== undefined && wantedLeads !== null) {
+        return drawnLeads === wantedLeads ? "match" : "mismatch";
+      }
+      return "undecidable";
+    });
+
+    // Refused only when every drawing was DECIDABLE and every one said no.
+    const matched = verdicts.includes("match") || verdicts.includes("undecidable");
+    if (!matched) {
+      throw new FootprintUnavailableError(
+        `This datasheet prints an outline drawing for ${drawn.join(", ")}, and none of them is ` +
+          `${part.packageType}. A footprint for ${part.packageType} cannot be measured from this document, ` +
+          `so any dimensions on the record describe one of the other packages. Use the datasheet that draws ` +
+          `${part.packageType}, or pick one of the packages this document does draw.`,
+        []
+      );
+    }
+  }
+
   // An exposed thermal pad is laid out when its size is known, and refused when
   // it is not. It is a mandatory soldered feature: the numbered lands alone are
   // a footprint the board house builds wrong.
@@ -764,7 +976,7 @@ function buildFootprintGeometry(
   const discards: Discards = [];
 
   const layout = datasheetLayout(part);
-  const printed = printedLand(part, densityLevel, discards);
+  const printed = printedLand(part, densityLevel, discards, formedLeadSpanMm, formedLeadContactMm);
 
   if (printed && layout) {
     return assemble(part, densityLevel, printed, layout);
@@ -1071,9 +1283,22 @@ function leadFromDrawing(
     return null;
   }
 
+  // THE SECOND SPAN, for a four-sided package that is not square.
+  //
+  // Only the outline's own cross span counts, and only on a gull-wing lead: a
+  // `straight` part's spans are both set by the assembler's forming die, and
+  // one formed span is what is asked for, so there is no second number to use.
+  // Absent leaves `computeLandPattern` placing both axes at one distance, which
+  // is what it did for every package before this field existed and is still
+  // correct for a square.
+  const spanCross = form === "gullwing" ? part.dimensions.leadSpanCrossMm : null;
+  const usableCross =
+    spanCross && spanCross.minMm > 0 && spanCross.maxMm >= spanCross.minMm ? spanCross : null;
+
   return {
     form: "gullwing",
     span,
+    ...(usableCross ? { spanCross: { minMm: usableCross.minMm, maxMm: usableCross.maxMm } } : {}),
     contact: { minMm: contact.minMm, maxMm: contact.maxMm },
     width: { minMm: width.minMm, maxMm: width.maxMm }
   };
@@ -1115,16 +1340,52 @@ function contradictsPrintedLand(part: ResolvedPart, land: LandPattern): boolean 
  * datasheet that prints a footprint but no lead dimensions is common, and the
  * invented guards still run underneath as a floor.
  */
-function withinIpcBand(part: ResolvedPart, padLengthMm: number, centreSpan: number): boolean | null {
-  const lead = leadFromDrawing(part);
+function withinIpcBand(
+  part: ResolvedPart,
+  padLengthMm: number,
+  centreSpan: number,
+  /**
+   * The seated geometry the ASSEMBLER supplies, for a package that ships with
+   * straight leads.
+   *
+   * Threaded through from 2026-08-18. This called `leadFromDrawing(part)` with
+   * neither, so a `straight` part never yielded a lead and the band check
+   * silently returned null for it even once the user had answered both
+   * questions. Ceramic flat packs are most of this product's market, so the one
+   * check with an industry bound behind it was unavailable on exactly the
+   * packages it matters most for.
+   */
+  formedLeadSpanMm?: number,
+  formedLeadContactMm?: number,
+  /** The cross-axis centre span, where the printed footprint states one. */
+  crossSpan?: number | null
+): boolean | null {
+  const lead = leadFromDrawing(part, formedLeadSpanMm, formedLeadContactMm);
   if (!lead) return null;
   try {
     const most = computeLandPattern(lead, { densityLevel: "A" });
     const least = computeLandPattern(lead, { densityLevel: "C" });
-    const zMax = centreSpan + padLengthMm;
     // Compared on the toe-to-toe extent, which is the dimension both density
     // levels move most and the one a misread decimal point distorts first.
-    return zMax >= least.zMaxMm - BAND_TOLERANCE_MM && zMax <= most.zMaxMm + BAND_TOLERANCE_MM;
+    const inBand = (span: number, leastZ: number, mostZ: number) => {
+      const zMax = span + padLengthMm;
+      return zMax >= leastZ - BAND_TOLERANCE_MM && zMax <= mostZ + BAND_TOLERANCE_MM;
+    };
+    if (!inBand(centreSpan, least.zMaxMm, most.zMaxMm)) return false;
+
+    // AND THE OTHER AXIS. A rectangular quad has two centre spans and this
+    // checked one, so a misread decimal point on the second was unchallenged:
+    // the axis nothing looked at is the axis a wrong number survives on.
+    // Checked against the band the CROSS lead span produces, which is the
+    // matching pair, and skipped where either number is absent, because a
+    // missing input is not a disagreement.
+    if (typeof crossSpan === "number" && Number.isFinite(crossSpan) && lead.spanCross) {
+      const crossLead = { ...lead, span: lead.spanCross };
+      const mostCross = computeLandPattern(crossLead, { densityLevel: "A" });
+      const leastCross = computeLandPattern(crossLead, { densityLevel: "C" });
+      if (!inBand(crossSpan, leastCross.zMaxMm, mostCross.zMaxMm)) return false;
+    }
+    return true;
   } catch {
     return null;
   }
@@ -1207,6 +1468,12 @@ export interface SuppliedDimensions {
   landPadLengthMm?: number;
   landPadWidthMm?: number;
   landSpanMm?: number;
+  /**
+   * The cross-axis centre span. Askable and suppliable because the record
+   * accepts it: a four-sided package has two and a null was being read as "the
+   * same as the other one", which is a guess dressed as a reading.
+   */
+  landSpanCrossMm?: number;
   leadDiameterMm?: number;
   pitchMm?: number;
   leadSides?: 1 | 2 | 4;
@@ -1233,6 +1500,7 @@ function withSupplied(part: ResolvedPart, supplied: SuppliedDimensions | undefin
       landPadLengthMm: fill(part.dimensions.landPadLengthMm, supplied.landPadLengthMm),
       landPadWidthMm: fill(part.dimensions.landPadWidthMm, supplied.landPadWidthMm),
       landSpanMm: fill(part.dimensions.landSpanMm, supplied.landSpanMm),
+      landSpanCrossMm: fill(part.dimensions.landSpanCrossMm, supplied.landSpanCrossMm),
       leadDiameterMm: fill(part.dimensions.leadDiameterMm, supplied.leadDiameterMm),
       pitchMm: fill(part.dimensions.pitchMm, supplied.pitchMm),
       leadSides: fill(part.dimensions.leadSides, supplied.leadSides),
@@ -1324,11 +1592,40 @@ function askForLandPattern(
   if (part.dimensions.landSpanMm === null) {
     needs.push({ field: "landSpanMm", label: "Centre-to-centre span between opposing rows", why, unit: "mm", scope: "part", page: landPage, pageLabel: landLabel });
   }
+  // THE SECOND SPAN, on a four-sided package, and asked rather than assumed.
+  //
+  // A quad has two centre spans and the record carried one. An unread cross
+  // span was being read as "the same as the other one", which is correct only
+  // for a square and silently wrong for every rectangular quad: the copper was
+  // placed at the wrong distance and nothing said so. Where the two axes really
+  // are equal the answer is the same number typed twice, which is one question
+  // rather than a wrong footprint.
+  //
+  // Asked only for `leadSides === 4`, because a two-sided or one-sided package
+  // genuinely has one span and asking would be friction with no answer behind it.
+  if (part.dimensions.leadSides === 4 && part.dimensions.landSpanCrossMm === null) {
+    needs.push({
+      field: "landSpanCrossMm",
+      label: "Centre-to-centre span across the other axis",
+      why:
+        `${part.packageType} carries leads on all four sides, so its footprint has TWO centre spans, one per ` +
+        `axis. Most four-sided packages are rectangular and the two differ; where they are equal, enter the ` +
+        `same number again rather than leaving it, because assuming they are equal is how a rectangular part ` +
+        `gets square copper.`,
+      unit: "mm",
+      scope: "part",
+      page: landPage,
+      pageLabel: landLabel
+    });
+  }
   if (part.dimensions.leadSides !== 1 && part.dimensions.leadSides !== 2 && part.dimensions.leadSides !== 4) {
     needs.push({
       field: "leadSides",
-      label: "Sides carrying leads (2 or 4)",
-      why: `The package drawing shows this, but it was not read for ${part.packageType}. Two opposing rows is 2; leads on all four sides is 4.`,
+      // 1 was missing here until 2026-08-18 while the through-hole ask beside it
+      // offered it, so a single line of pins was unanswerable on the surface-
+      // mount path: the label named two of the three values the record accepts.
+      label: "Sides carrying leads (1 for a TO-220 or SIP, 2 for a DIP or SOIC, 4 for a QFP)",
+      why: `The package drawing shows this, but it was not read for ${part.packageType}. A single line of leads along one edge is 1; two opposing rows is 2; leads on all four sides is 4.`,
       unit: "count",
       scope: "part"
     });
@@ -1462,6 +1759,17 @@ function assemble(
       : Math.ceil(part.pinCount / 2);
   const rowSpanMm = (perSideCount - 1) * definition.pitchMm;
 
+  // THE FIRST row's own extent, which is the one pin 1 sits on.
+  //
+  // The pin-1 marker used `rowSpanMm`, the WIDEST row, so on a quad whose first
+  // side is not the widest the marker was placed beside a different side's
+  // lands. `quadSides[0]` is the side pin 1 is on by construction, and on every
+  // dual, single and square-sided package this is the same number as
+  // `rowSpanMm`, which is why nothing noticed.
+  const firstRowSpanMm = quad
+    ? (quadSides![0] - 1) * definition.pitchMm
+    : rowSpanMm;
+
   const push = (number: number | null, xMm: number, yMm: number, along: "x" | "y") => {
     // A vacant grid position gets no pad. The slot still consumes its place in
     // the row, which is the whole point: the leads either side of it keep their
@@ -1574,9 +1882,20 @@ function assemble(
       throw error;
     }
 
-    const designator = part.pins.find((pin) => !/^\d+$/.test(pin.number))?.number;
+    // THE PAD'S NUMBER IS ONE PAST THE LAST LEAD, and it is not looked up.
+    //
+    // This searched `part.pins` for a non-numeric designator (`EP`, `PAD`,
+    // `TAB`) and fell back. The search can never match: `normalizeModelPins`
+    // removes every non-numeric row before it reaches `part.pins` and records
+    // the fact as `exposedPad`, which is the flag this branch is guarded on. So
+    // the lookup was dead and the fallback was the whole behaviour, while the
+    // line read as though a vendor's own label could survive into the file.
+    //
+    // The fallback is also the right answer on its own terms: `geometryViolations`
+    // expects exactly `pinCount + 1` for the pad, and a vendor label like `EP`
+    // would fail that check.
     pads.push({
-      number: designator ?? String(part.pinCount + 1),
+      number: String(part.pinCount + 1),
       centre: { xMm: 0, yMm: 0 },
       widthMm: thermal.widthMm,
       heightMm: thermal.heightMm,
@@ -1640,7 +1959,12 @@ function assemble(
       ...adjacent.map(([a, b]) => Math.min(extentMm(a.length), extentMm(b.length)))
     );
     const needsMm = bindingMm + land.padWidthMm + land.padLengthMm;
-    const centreSpanMm = land.padCentreMm * 2;
+    // THE SMALLER of the two axes, because a corner is where they meet and the
+    // tighter one decides. On a square quad the two are the same number and this
+    // is the check it always was; on a rectangle, testing only the long axis
+    // would pass a footprint whose short axis shorts.
+    const crossCentreMm = land.padCentreCrossMm ?? land.padCentreMm;
+    const centreSpanMm = Math.min(land.padCentreMm, crossCentreMm) * 2;
     if (needsMm > centreSpanMm) {
       throw new FootprintInvalidError([
         `the corner lands of this quad would short: two adjacent sides put lands ${bindingMm.toFixed(2)} mm ` +
@@ -1655,11 +1979,16 @@ function assemble(
     // Counterclockwise from the top of the left side. `+y` is DOWN here, so the
     // left side runs down the page, the bottom runs left to right, and the right
     // and top run back the other way; see `quadRowSides`.
+    // The left and right rows sit on the axis `landSpanMm` measures, which is the
+    // one `landPadLengthMm` runs along. The top and bottom rows sit on the OTHER
+    // axis, and until 2026-08-17 they used the same number, which is correct only
+    // for a square. `padCentreCrossMm` is absent for two-sided packages and for
+    // square quads, where falling back to `padCentreMm` is exactly right.
     const at = (side: number[], index: number) => alongSide(side.length, index);
     left.forEach((number, index) => push(number, -land.padCentreMm, at(left, index), "x"));
-    bottom.forEach((number, index) => push(number, at(bottom, index), land.padCentreMm, "y"));
+    bottom.forEach((number, index) => push(number, at(bottom, index), crossCentreMm, "y"));
     right.forEach((number, index) => push(number, land.padCentreMm, -at(right, index), "x"));
-    top.forEach((number, index) => push(number, -at(top, index), -land.padCentreMm, "y"));
+    top.forEach((number, index) => push(number, -at(top, index), -crossCentreMm, "y"));
   } else if (definition.arrangement === "single") {
     // ONE LINE OF PINS, which is what a TO-220, TO-92 or SIP is.
     //
@@ -1719,14 +2048,21 @@ function assemble(
   // The silkscreen body follows the extracted dimensions where they are known and
   // the land extents otherwise. It is decoration; the pads are the instruction.
   //
-  // A quad package is square by construction here, and BOTH of its extents are
-  // bounded by lands rather than by one row of them, so the dual fallbacks do not
-  // describe it: `rowSpanMm` is one side's lead span, which is smaller than the
-  // body, and `gMinMm` is the gap between two opposing rows in one axis only.
-  // The inner gap is the right fallback for both axes on a quad, because all four
-  // rows sit the same distance out.
+  // A quad's two extents are each bounded by LANDS rather than by one row of
+  // them, so the dual fallbacks do not describe it: `rowSpanMm` is one side's
+  // lead span, which is smaller than the body, and `gMinMm` is the inner gap
+  // between one opposing pair.
+  //
+  // AND THE TWO AXES ARE NOT THE SAME NUMBER. This said "a quad package is
+  // square by construction here" and used `gMinMm`, the main axis's gap, as the
+  // fallback for both. That stopped being true when the cross span was read: on
+  // a rectangular quad the silkscreen came out square around rectangular copper.
+  // The cross axis's own inner gap is `2 * padCentreCrossMm - padLengthMm`, by
+  // the same arithmetic that produced `gMinMm` for the main one.
+  const crossGapMm =
+    land.padCentreCrossMm !== undefined ? land.padCentreCrossMm * 2 - land.padLengthMm : land.gMinMm;
   const bodyHalfLengthMm = quad
-    ? (part.dimensions.bodyLengthMm ?? land.gMinMm) / 2
+    ? (part.dimensions.bodyLengthMm ?? crossGapMm) / 2
     : (part.dimensions.bodyLengthMm ?? rowSpanMm + definition.pitchMm) / 2;
   const bodyHalfWidthMm = (part.dimensions.bodyWidthMm ?? land.gMinMm) / 2;
 
@@ -1750,7 +2086,13 @@ function assemble(
     // know which one they are being handed.
     description:
       land.source === "printed"
-        ? `${part.partNumber} ${definition.family}. Lands are the RECOMMENDED FOOTPRINT PRINTED IN THIS DATASHEET (${land.padLengthMm} x ${land.padWidthMm} mm on a ${(land.padCentreMm * 2).toFixed(3)} mm centre span), not computed from a standard. Courtyard uses IPC-7351B density ${densityLevel}.`
+        ? `${part.partNumber} ${definition.family}. Lands are the RECOMMENDED FOOTPRINT PRINTED IN THIS DATASHEET (${land.padLengthMm} x ${land.padWidthMm} mm on a ${(land.padCentreMm * 2).toFixed(3)} mm centre span${
+            // Both spans, where the package has two. A description that names one
+            // is a wrong statement about a rectangular quad, not a short one.
+            land.padCentreCrossMm !== undefined
+              ? ` by ${(land.padCentreCrossMm * 2).toFixed(3)} mm across the other axis`
+              : ""
+          }), not computed from a standard. Courtyard uses IPC-7351B density ${densityLevel}.`
         : `${part.partNumber} ${definition.family}, IPC-7351B density level ${densityLevel}. Lead data: ${definition.source}`,
     partNumber: part.partNumber,
     pads,
@@ -1806,7 +2148,15 @@ function assemble(
           }
         : {
             xMm: -land.padCentreMm,
-            yMm: -rowSpanMm / 2 - definition.pitchMm * 0.7
+            // THE SIDE PIN 1 IS ON, not the widest side.
+            //
+            // `rowSpanMm` is the extent of the LONGEST row, which on a quad
+            // whose first side is not the longest put the marker beside a
+            // different side's lands. Pin 1 sits at the top of the left column,
+            // so the row that matters is the left one, and `firstRowSpanMm` is
+            // that row's own extent. They are the same number on every dual
+            // package and on a square quad, which is why this went unseen.
+            yMm: -firstRowSpanMm / 2 - definition.pitchMm * 0.7
           },
     thermalVias,
     provenance: {
@@ -1816,6 +2166,13 @@ function assemble(
       padWidthMm: Number(land.padWidthMm.toFixed(3)),
       padLengthMm: Number(land.padLengthMm.toFixed(3)),
       centreToCentreMm: Number((land.padCentreMm * 2).toFixed(3)),
+      // THE OTHER AXIS, when the two differ. The provenance block is what a
+      // reviewer reads six months later to see what was built, and on a
+      // rectangular quad it stated one span for a footprint with two: the file
+      // described itself as square while its own pads were not.
+      ...(land.padCentreCrossMm !== undefined
+        ? { centreToCentreCrossMm: Number((land.padCentreCrossMm * 2).toFixed(3)) }
+        : {}),
       pitchMm: definition.pitchMm
     }
   };
@@ -1926,9 +2283,16 @@ export async function createExportZip(
   // but it is now a default rather than a fact.
   const densityLevel = options.densityLevel ?? settingsDefault().densityLevel ?? "B";
 
-  // The user's answers are applied ONCE, here, so the footprint and the 3D body
-  // see the same record. They used to be applied inside the footprint builder,
-  // which meant a supplied body dimension never reached the solid.
+  // The user's answers are applied HERE, before anything reads the record, so
+  // the footprint and the 3D body see the same numbers. They used to be applied
+  // only inside the footprint builder, which meant a supplied body dimension
+  // never reached the solid.
+  //
+  // `buildFootprintGeometry` applies them again, and that is deliberate rather
+  // than a leftover: `packageOptions` reaches it directly and has answers of its
+  // own to pass. `withSupplied` fills BLANKS only, so applying it twice to the
+  // same record is the identity, and the alternative is one entry point silently
+  // ignoring what the caller typed.
   part = withSupplied(part, options.supplied);
 
   // EVERY question at once, rather than one per round trip.
@@ -2015,7 +2379,7 @@ export async function createExportZip(
   // travels with the files into someone else's library. A reviewer opening the
   // zip six months later can see which checks ran and which could not, without
   // re-reading the datasheet.
-  const checks = confidenceChecks(part, densityLevel);
+  const checks = confidenceChecks(part);
 
   zip.file(
     "manifest.json",
@@ -2191,6 +2555,13 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
   };
 }
 
+/** What the caller has already answered, carried into every option. */
+export interface OptionAnswers {
+  formedLeadSpanMm?: number;
+  formedLeadContactMm?: number;
+  supplied?: SuppliedDimensions;
+}
+
 /**
  * Runs the real footprint build for one designator and classifies the outcome.
  */
@@ -2198,7 +2569,16 @@ function optionFor(
   part: ResolvedPart,
   variant: { designator: string; family: string; leadCount: number | null },
   drawingIsThisPackage: boolean,
-  formedLeadSpanMm?: number
+  /**
+   * Everything the caller has ALREADY answered.
+   *
+   * The chooser exists so a click's outcome cannot drift from what the export
+   * does, and it was building each option as if nothing had been supplied: a
+   * package the user had already answered every question for was reported as
+   * `needs-input`, which is the exact drift `optionFor` documents itself as
+   * preventing.
+   */
+  answers: OptionAnswers = {}
 ): PackageOption {
   const candidate = drawingIsThisPackage
     ? { ...part, packageType: variant.designator }
@@ -2206,7 +2586,13 @@ function optionFor(
 
   const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
   try {
-    buildFootprintGeometry(candidate, "B", formedLeadSpanMm);
+    buildFootprintGeometry(
+      candidate,
+      "B",
+      answers.formedLeadSpanMm,
+      answers.supplied,
+      answers.formedLeadContactMm
+    );
     return { ...base, status: "ships", needs: [], reason: null };
   } catch (error) {
     if (error instanceof FootprintUnavailableError) {
@@ -2262,7 +2648,7 @@ function optionFor(
 function optionsFromPerPackageTables(
   record: PartRecord,
   resolved: Extract<ReturnType<typeof resolveForExport>, { ok: false }>,
-  formedLeadSpanMm?: number
+  answers: OptionAnswers = {}
 ): PackageChoice | null {
   const tables = record.pinTablesByPackage;
   if (!tables || tables.length === 0) return null;
@@ -2295,7 +2681,7 @@ function optionsFromPerPackageTables(
         reason: `${variant.designator}'s own pin table is on the record but cannot be used: ${why.join(", ")}.`
       };
     }
-    return optionFor(usable.part, variant, false, formedLeadSpanMm);
+    return optionFor(usable.part, variant, false, answers);
   });
 
   return { ok: true, options };
@@ -2332,10 +2718,10 @@ function withPinTable(
  * package equally, and reporting that against each option in turn would present
  * one problem as several and imply a different choice might avoid it.
  */
-export function packageOptions(record: PartRecord, formedLeadSpanMm?: number): PackageChoice {
+export function packageOptions(record: PartRecord, answers: OptionAnswers = {}): PackageChoice {
   const resolved = resolveForExport(record);
   if (!resolved.ok) {
-    const perPackage = optionsFromPerPackageTables(record, resolved, formedLeadSpanMm);
+    const perPackage = optionsFromPerPackageTables(record, resolved, answers);
     if (perPackage) return perPackage;
     const blocked = resolved.missing.length > 0 ? resolved.missing : (resolved.untraceable ?? []);
     return { ok: false, blockedBy: blocked };
@@ -2345,7 +2731,7 @@ export function packageOptions(record: PartRecord, formedLeadSpanMm?: number): P
   return {
     ok: true,
     options: record.packageVariants.map((variant) =>
-      optionFor(resolved.part, variant, variant.designator === chosen, formedLeadSpanMm)
+      optionFor(resolved.part, variant, variant.designator === chosen, answers)
     )
   };
 }

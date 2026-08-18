@@ -109,11 +109,13 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       leadCount: 8,
       leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
       leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+      leadSpanCrossMm: null,
       leadContactMm: { minMm: 0.4, maxMm: 0.625 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
+      landSpanCrossMm: null,
       leadSides: 2,
       leadForm: "gullwing",
       mounting: null,
@@ -359,6 +361,7 @@ test("a part with no land pattern read refuses the Altium export too", async () 
   unread.dimensions = {
     ...unread.dimensions,
     leadSpanMm: null,
+    leadSpanCrossMm: null,
     leadContactMm: null,
     leadWidthMm: null
   };

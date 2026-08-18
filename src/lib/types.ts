@@ -130,6 +130,25 @@ export const packageDimensionsSchema = z.object({
     citation: null
   }),
   /**
+   * The lead span across the OTHER axis, for a four-sided package.
+   *
+   * A rectangular quad's drawing prints TWO spans, one per axis, and this
+   * record carried one. `computeLandPattern` therefore placed all four sides at
+   * the same centre distance, which is correct only for a square: the drawing
+   * stated the second number and nothing asked for it. The printed-footprint
+   * path had already been given its own cross span (`landSpanCrossMm`) for
+   * exactly this reason; the DRAWING path had not.
+   *
+   * Null on every two-sided and one-sided package, which has only one span, and
+   * on a square quad where `leadSpanMm` already says it.
+   */
+  leadSpanCrossMm: extracted(leadWidthSchema).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
    * Lead contact length, drawing dimension L: the length of the foot that sits
    * on the land. Distinct from `leadLengthMm`, which is a single prose figure.
    *
@@ -188,6 +207,17 @@ export const packageDimensionsSchema = z.object({
   }),
   /** Centre to centre between opposing rows of lands. */
   landSpanMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
+  /**
+   * The same span across the OTHER axis, for a four-sided package that is not
+   * square. Null on every two-sided package and on a square quad, where the two
+   * axes are the same number and `landSpanMm` already says it.
+   */
+  landSpanCrossMm: extracted(z.number().positive()).default({
     value: null,
     confidence: null,
     method: null,
@@ -436,6 +466,23 @@ export const partSchema = z.object({
    * pattern the page contradicts. Defaulted, so a record stored before this field
    * existed is still valid.
    */
+  /**
+   * Packages this document PRINTS an outline drawing for, as each drawing labels
+   * itself.
+   *
+   * ON THE SCHEMA and not only on the type, for the reason `pinTablesByPackage`
+   * records two fields below: `/api/export` validates a POSTED record with this
+   * schema and zod strips keys it does not know about, so a field the TypeScript
+   * type carries and the schema does not is silently dropped on exactly the
+   * route that builds the footprint. `buildFootprintGeometry` reads this to
+   * decide whether the requested package was measurable at all, so losing it
+   * there disabled the check on every export.
+   *
+   * Optional rather than defaulted: absent means nobody answered, which must
+   * never on its own refuse a part, and is a different statement from "this
+   * document draws nothing".
+   */
+  drawnPackages: z.array(z.string().min(1).max(64)).max(32).optional(),
   vendorLandPattern: z
     .object({ page: z.number().int().positive(), valuesMm: z.array(z.number().positive()).max(64) })
     .nullable()
@@ -555,6 +602,8 @@ export type PackageDimensions = {
   leadCount: Extracted<number>;
   leadWidthMm: Extracted<LeadWidth>;
   leadSpanMm: Extracted<LeadWidth>;
+  /** The same span across the other axis, for a rectangular four-sided package. */
+  leadSpanCrossMm: Extracted<LeadWidth>;
   leadContactMm: Extracted<LeadWidth>;
   thermalPadLengthMm: Extracted<number>;
   thermalPadWidthMm: Extracted<number>;
@@ -567,6 +616,7 @@ export type PackageDimensions = {
   landPadWidthMm: Extracted<number>;
   /** Centre to centre between opposing rows of lands. */
   landSpanMm: Extracted<number>;
+  landSpanCrossMm: Extracted<number>;
   /** Sides of the package carrying leads: 2 for dual, 4 for quad. Read off the drawing. */
   leadSides: Extracted<1 | 2 | 4>;
   /** How the leads leave the package. Decides which land-pattern model applies. */
@@ -597,8 +647,6 @@ export type RadiationData = {
 
 export type PackageVariantRecord = z.infer<typeof packageVariantSchema>;
 
-/** One field, read two ways. Both sides carry the page so a reviewer can check both. */
-
 export type PartRecord = {
   id: string;
   partNumber: Extracted<string>;
@@ -615,6 +663,12 @@ export type PartRecord = {
    * unblocked it. The product deadlocked on its own question.
    */
   pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[]; exposedPad?: boolean; citation?: Citation | null }>;
+  /**
+   * Packages this document PRINTS an outline drawing for, as each drawing labels
+   * itself. Undefined means nobody answered, which is not the same as "none" and
+   * must never on its own refuse a part.
+   */
+  drawnPackages?: string[];
   /** JEDEC outline registration, e.g. `MO-153 AA`. Vendor-independent package identity. */
   jedecOutline: Extracted<string>;
   packageVariants: PackageVariantRecord[];
@@ -675,6 +729,12 @@ export interface ResolvedPart {
    * of value and was the one thing carried across unchanged.
    */
   pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[]; exposedPad?: boolean; citation?: Citation | null }>;
+  /**
+   * Packages this document PRINTS an outline drawing for, as each drawing labels
+   * itself. Undefined means nobody answered, which is not the same as "none" and
+   * must never on its own refuse a part.
+   */
+  drawnPackages?: string[];
   /** True when the part has an exposed thermal pad; `buildFootprintGeometry` refuses. */
   exposedPad: boolean;
   dimensions: {
@@ -686,12 +746,14 @@ export interface ResolvedPart {
     leadCount: number | null;
     leadWidthMm: LeadWidth | null;
     leadSpanMm: LeadWidth | null;
+    leadSpanCrossMm: LeadWidth | null;
     leadContactMm: LeadWidth | null;
     thermalPadLengthMm: number | null;
     thermalPadWidthMm: number | null;
     landPadLengthMm: number | null;
     landPadWidthMm: number | null;
     landSpanMm: number | null;
+    landSpanCrossMm: number | null;
     leadSides: 1 | 2 | 4 | null;
     leadForm: "gullwing" | "nolead" | "straight" | null;
     mounting: "smd" | "through-hole" | null;
@@ -830,6 +892,7 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
       pinCount: pinCount as number,
       pins,
       pinTablesByPackage: part.pinTablesByPackage,
+      drawnPackages: part.drawnPackages,
       exposedPad: part.exposedPad,
       dimensions: {
         bodyLengthMm: part.dimensions.bodyLengthMm.value,
@@ -840,12 +903,14 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
         leadCount: part.dimensions.leadCount.value,
         leadWidthMm: part.dimensions.leadWidthMm.value,
         leadSpanMm: part.dimensions.leadSpanMm.value,
+        leadSpanCrossMm: part.dimensions.leadSpanCrossMm.value,
         leadContactMm: part.dimensions.leadContactMm.value,
         thermalPadLengthMm: part.dimensions.thermalPadLengthMm.value,
         thermalPadWidthMm: part.dimensions.thermalPadWidthMm.value,
         landPadLengthMm: part.dimensions.landPadLengthMm.value,
         landPadWidthMm: part.dimensions.landPadWidthMm.value,
         landSpanMm: part.dimensions.landSpanMm.value,
+        landSpanCrossMm: part.dimensions.landSpanCrossMm.value,
         leadSides: part.dimensions.leadSides.value,
         leadForm: part.dimensions.leadForm.value,
         mounting: part.dimensions.mounting.value,

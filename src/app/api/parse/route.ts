@@ -24,7 +24,7 @@ import {
 } from "../../../lib/extraction/budget";
 import { type PackageDrawing } from "../../../lib/packagedrawing";
 import { type ReviewItem } from "../../../lib/review";
-import { renderPages, type RenderedPage } from "../../../lib/pagerender";
+import { type RenderedPage } from "../../../lib/pagerender";
 import { type PackageChoice } from "../../../lib/exporters";
 import { type ConfidenceCheck } from "../../../lib/confidence";
 import { buildReadout } from "../../../lib/readout";
@@ -128,8 +128,15 @@ export async function POST(request: Request) {
     throw error;
   }
 
-  // Deterministic pass ALWAYS runs first and always wins. A model is only ever
-  // asked about fields the code could not read off the page.
+  // The record the document STARTS as: the part number from the file the user
+  // named, the package from the one they picked, and everything else honestly
+  // unknown.
+  //
+  // This said "the deterministic pass ALWAYS runs first and always wins", which
+  // described a 7,500-line reader deleted on 2026-08-14 after measurement showed
+  // it contributed nothing to any dimension. What runs here fills two fields
+  // from the CALLER, so the sentence was telling a reader the model is a
+  // gap-filler behind a parser that no longer exists.
   let doc;
   let part;
   try {
@@ -149,7 +156,7 @@ export async function POST(request: Request) {
     }
     throw error;
   }
-  let method = "deterministic";
+  let method = "text only";
   // Renders kept in scope past the model block. The review panel shows the user
   // the page a value came from, and re-rendering a page we already rasterised
   // for the model would be pure waste.
@@ -167,7 +174,7 @@ export async function POST(request: Request) {
         ...part,
         notes: [
           ...part.notes,
-          `Retrieval and text extraction used the request's time budget, so the ${model.name} extraction pass was skipped. Only text extraction was applied.`
+          `Retrieval and text extraction used the request's time budget, so the ${model.name} extraction pass was skipped. Nothing was read off the document.`
         ]
       };
     } else {
@@ -180,10 +187,14 @@ export async function POST(request: Request) {
         );
         if (outcome) {
           part = outcome.part;
-          // Rendered pages are needed by the review panel, which shows a
-          // reviewer the page a value was read from.
-          rendered = await renderPages(ref.bytes, outcome.renderedPages, { maxPages: 8 });
-          if (outcome.filled.length > 0) method = `deterministic+${model.name}`;
+          // THE RENDERS THE MODEL WAS ALREADY SHOWN, not a second pass over the
+          // same pages. This called `renderPages` again on `outcome.renderedPages`
+          // under a comment saying re-rendering them would be pure waste; the
+          // images had been produced inside `runExtraction` and only their page
+          // numbers came back. Rasterising is the most expensive thing this route
+          // does to an untrusted PDF and it was being done twice per part.
+          rendered = outcome.renderedImages;
+          if (outcome.filled.length > 0) method = `read by ${model.name}`;
         }
       } catch (error) {
         // A model failure must never cost the user the deterministic record.
@@ -197,8 +208,8 @@ export async function POST(request: Request) {
           notes: [
             ...part.notes,
             timedOut
-              ? `The ${model.name} extraction pass did not answer within its ${Math.round(budgetMs / 1000)}s budget and was abandoned; only text extraction was applied.`
-              : `The ${model.name} extraction pass failed; only text extraction was applied.`
+              ? `The ${model.name} extraction pass did not answer within its ${Math.round(budgetMs / 1000)}s budget and was abandoned, so nothing was read off the document.`
+              : `The ${model.name} extraction pass failed, so nothing was read off the document.`
           ]
         };
       }

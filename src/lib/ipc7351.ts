@@ -157,6 +157,16 @@ export interface Range {
 export interface LeadDimensions {
   form: LeadForm;
   span: Range;
+  /**
+   * The span across the OTHER axis, for a package with leads on all four sides
+   * whose two axes are not equal.
+   *
+   * Absent means the two are the same, which is every two-sided package and
+   * every square quad. Present, it places the second pair of rows: without it
+   * `padCentreMm` placed all four sides at one distance, which is correct only
+   * for a square, and a rectangular quad's own drawing prints both numbers.
+   */
+  spanCross?: Range;
   /** The seated foot that lies on the land, read off the drawing. */
   contact: Range;
   width: Range;
@@ -169,6 +179,26 @@ export interface LandPattern {
   padLengthMm: number;
   /** Distance from package centre line to land centre, mm. */
   padCentreMm: number;
+  /**
+   * The SAME distance measured across the other axis, for a package whose four
+   * sides do not sit on a square.
+   *
+   * `padCentreMm` places the left and right rows; this places the top and
+   * bottom. Undefined means the two are equal, which is every two-sided package
+   * and every square quad, so nothing that already worked has to state it.
+   *
+   * Added 2026-08-17. A quad carried ONE span and both axes used it, which is
+   * correct only for a square. ADXL345 is a 3 x 5 mm LGA-14 with sides of
+   * 6, 2, 4, 2: placing its long axis at the short axis's span pushed the corner
+   * lands into each other, and the corner check refused the part. That refusal
+   * was right, and the cause was not a misreading. The document states both
+   * numbers; the prompt asked for one and told the model to discard the other.
+   *
+   * The refusal only fires when the error is large enough to SHORT two lands. A
+   * mildly rectangular package would have been placed slightly wrong and shipped,
+   * which is why this is fixed rather than left to the guard.
+   */
+  padCentreCrossMm?: number;
   /** Outer toe-to-toe extent of the lands, mm. */
   zMaxMm: number;
   /** Inner heel-to-heel gap between opposing lands, mm. */
@@ -276,13 +306,49 @@ export function computeLandPattern(lead: LeadDimensions, options: LandPatternOpt
     ]);
   }
 
+  // THE OTHER AXIS, by the same arithmetic, when the drawing states it.
+  //
+  // Only the CENTRE distance is recomputed. The pad's length and width come from
+  // the fillet goals and the lead itself, which are the same lead on all four
+  // sides of a quad; the two axes differ only in how far apart the rows sit.
+  // Both spans go through the identical Zmax/Gmin derivation, so nothing here is
+  // a second rule to keep in step with the first.
+  //
+  // A cross span that will not compute is DROPPED rather than fatal: the main
+  // axis is still a correct answer for the rows it places, and refusing the
+  // whole part over the second number would lose a footprint that was fine
+  // before this field existed.
+  let padCentreCrossMm: number | undefined;
+  let zMaxCross = zMax;
+  if (lead.spanCross && isUsableRange(lead.spanCross)) {
+    const innerMinCross = lead.spanCross.minMm - 2 * lead.contact.maxMm;
+    const innerMaxCross = lead.spanCross.maxMm - 2 * lead.contact.minMm;
+    const zMaxC =
+      lead.spanCross.minMm + 2 * goal.toe + rss(lead.spanCross.maxMm - lead.spanCross.minMm, fabrication, placement);
+    const gMinC = innerMaxCross - 2 * goal.heel - rss(innerMaxCross - innerMinCross, fabrication, placement);
+    if (innerMinCross > 0 && gMinC > 0 && zMaxC > gMinC) {
+      padCentreCrossMm = (zMaxC + gMinC) / 4;
+      zMaxCross = zMaxC;
+    }
+  }
+
   return {
     padWidthMm: xMax,
     padLengthMm: (zMax - gMin) / 2,
     padCentreMm: (zMax + gMin) / 4,
+    // Only when the two axes actually differ. Equal spans are what every
+    // two-sided package and every square quad already said with one number, and
+    // repeating it would make a square look like a special case.
+    ...(padCentreCrossMm !== undefined && padCentreCrossMm !== (zMax + gMin) / 4
+      ? { padCentreCrossMm }
+      : {}),
     zMaxMm: zMax,
     gMinMm: gMin,
-    courtyardHalfMm: zMax / 2 + COURTYARD_EXCESS[densityLevel],
+    // The WIDER axis governs the courtyard, which is a single half-extent. The
+    // printed-land path already reasons this way: a keep-out drawn from the
+    // narrower axis does not contain its own lands, which is what
+    // `validateGeometry` refuses.
+    courtyardHalfMm: Math.max(zMax, zMaxCross) / 2 + COURTYARD_EXCESS[densityLevel],
     densityLevel
   };
 }

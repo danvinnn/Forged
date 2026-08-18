@@ -142,13 +142,21 @@ function partFrom(label: string, values: Record<string, CachedValue>): ResolvedP
       leadCount: asNumber(at("dimensions.leadCount")),
       leadWidthMm: asRange(at("dimensions.leadWidthMm")),
       leadSpanMm: asRange(at("dimensions.leadSpanMm")),
+      leadSpanCrossMm: asRange(at("dimensions.leadSpanCrossMm")),
       leadContactMm: asRange(at("dimensions.leadContactMm")),
       thermalPadLengthMm: asNumber(at("dimensions.thermalPadLengthMm")),
       thermalPadWidthMm: asNumber(at("dimensions.thermalPadWidthMm")),
       landPadLengthMm: asNumber(at("dimensions.landPadLengthMm")),
       landPadWidthMm: asNumber(at("dimensions.landPadWidthMm")),
       landSpanMm: asNumber(at("dimensions.landSpanMm")),
-      leadSides: sides === 2 || sides === 4 ? (sides as 2 | 4) : null,
+      // THE CROSS FIELD, not the main one. This read `dimensions.landSpanMm`
+      // into the cross span until 2026-08-18, so every part this bench built was
+      // a SQUARE quad by construction whatever its document said, and a
+      // rectangular package could not be measured here at all.
+      landSpanCrossMm: asNumber(at("dimensions.landSpanCrossMm")),
+      // 1 is a real answer, and dropping it made every single-row package
+      // (TO-220, TO-92, SIP) unbuildable in this bench alone.
+      leadSides: sides === 1 || sides === 2 || sides === 4 ? (sides as 1 | 2 | 4) : null,
       leadForm:
         leadForm === "gullwing" || leadForm === "nolead" || leadForm === "straight" ? leadForm : null,
       mounting: at("dimensions.mounting") === "through-hole" ? "through-hole" : at("dimensions.mounting") === "smd" ? "smd" : null,

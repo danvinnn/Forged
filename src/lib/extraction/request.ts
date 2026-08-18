@@ -206,7 +206,13 @@ export async function withRenderedPages(
    * selection it replaced, so the pages are required rather than defaulted.
    */
   pages: readonly number[],
-  limits: Partial<RenderLimits> = {}
+  limits: Partial<RenderLimits> = {},
+  /**
+   * The package the FIRST pass reported, when it reported one. See the note at
+   * the return statement: without it the second pass is asked about a document
+   * it cannot see, with no package named, and correctly declines.
+   */
+  resolvedPackage?: string | null
 ): Promise<ExtractionRequest> {
   if (pages.length === 0) return { ...request, images: [], pages: [] };
   const images = await renderPages(pdfBytes, [...pages], { maxPages: MAX_PAGES_TO_MODEL, ...limits });
@@ -220,5 +226,24 @@ export async function withRenderedPages(
   // and captions, and because a page claim is checked against the document
   // server-side regardless of what was sent.
   const shown = new Set(images.map((image) => image.page));
-  return { ...request, images, pages: request.pages.filter((page) => shown.has(page.page)) };
+  return {
+    ...request,
+    images,
+    pages: request.pages.filter((page) => shown.has(page.page)),
+    // THE PACKAGE PASS 1 SETTLED ON, carried forward.
+    //
+    // This spread the pass-1 request unchanged, so `packageType` was still
+    // whatever the RECORD held, which is null unless the user named one. Pass 2
+    // sees only the rendered drawing pages and no whole-document context, and
+    // that is exactly the state the contract records as producing a total
+    // refusal: "asked about an LM358 without it, the model correctly returned
+    // NULL for every dimension and said the document describes several
+    // packages". Pass 2 is the pass that reads every land and drawing dimension,
+    // so the refusal lands on the values that place copper.
+    //
+    // Pass 1's own answer, not a guess: it read the whole document and reported
+    // which package the requested part number is supplied in. Only used when the
+    // caller supplied nothing, so a package the USER picked still wins.
+    ...(request.packageType ? {} : resolvedPackage ? { packageType: resolvedPackage } : {})
+  };
 }

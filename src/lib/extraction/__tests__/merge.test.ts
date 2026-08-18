@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { datasheetTextFromPages } from "../../pdftext";
 import { buildPartRecord } from "../../datasheet";
 import { partSchema, resolveForExport, type PartRecord } from "../../types";
-import { mergeModelValues, unresolvedFields, verifyCitation } from "../merge";
+import { mergeModelValues, RANGE_FIELDS, unresolvedFields, verifyCitation } from "../merge";
 import { buildExtractionRequest } from "../request";
 import type { ExtractionResult } from "../contracts";
 
@@ -723,7 +723,8 @@ test("a value read off a RENDERED page is held to the same rule", () => {
     },
     dimensions: {
       ...base.dimensions,
-      landSpanMm: { value: 5.8, confidence: 0.4, method: "vlm-drawing", citation: null }
+      landSpanMm: { value: 5.8, confidence: 0.4, method: "vlm-drawing", citation: null },
+      landSpanCrossMm: { value: null, confidence: null, method: null, citation: null },
     }
   };
 
@@ -799,8 +800,10 @@ test("EVERY extraction field can actually be stored on the record", async () => 
   // of the thing being tested.
   const sample = (field: string): unknown => {
     if (field === "pins") return [{ number: "1", name: "OUT", electricalType: "output", description: "" }];
-    if (field === "dimensions.leadWidthMm" || field === "dimensions.leadSpanMm" || field === "dimensions.leadContactMm")
-      return { minMm: 0.3, maxMm: 0.5 };
+    // Taken from `merge.ts` rather than listed again. Listed twice, adding a
+    // range field to one and not the other feeds a scalar to a range field, the
+    // validation correctly drops it, and this test reports the merge broken.
+    if ((RANGE_FIELDS as readonly string[]).includes(field)) return { minMm: 0.3, maxMm: 0.5 };
     if (field === "dimensions.leadSides") return 2;
     if (field === "dimensions.leadForm") return "gullwing";
     if (field === "dimensions.mounting") return "smd";

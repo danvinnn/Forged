@@ -1,4 +1,4 @@
-import { computeLandPattern, COURTYARD_EXCESS, type DensityLevel } from "./ipc7351";
+import { computeLandPattern, COURTYARD_EXCESS } from "./ipc7351";
 import type { ResolvedPart } from "./types";
 import type { FootprintGeometry } from "./geometry";
 
@@ -111,23 +111,43 @@ function landsFitThePitch(part: ResolvedPart): ConfidenceCheck {
   };
 }
 
-/** Opposing rows of lands cannot meet at the centre of the package. */
+/**
+ * Opposing rows of lands cannot meet at the centre of the package.
+ *
+ * BOTH AXES. A four-sided package has two centre spans and this checked one, so
+ * a reviewer looking at a rectangular quad was told the pattern was clear when
+ * the axis nobody checked could have its rows through each other. The output
+ * invariant catches the resulting overlap at build time, which is why this was
+ * a visibility gap rather than wrong copper, and a check that reports on half a
+ * footprint is worse than one that says it could not run.
+ */
 function landsClearTheCentre(part: ResolvedPart): ConfidenceCheck {
   const length = part.dimensions.landPadLengthMm;
   const span = part.dimensions.landSpanMm;
+  const crossSpan = part.dimensions.landSpanCrossMm;
   const base = { id: "lands-clear-centre", label: "Opposing lands do not overlap" };
   if (length === null || span === null) {
     return { ...base, state: "unavailable", detail: "No printed land pattern was read." };
   }
-  const gap = span - length;
-  if (gap > 0) {
-    return { ...base, state: "pass", detail: `${gap.toFixed(3)} mm of clear board between the two rows.` };
+  const axes: Array<{ what: string; span: number }> = [{ what: "the two rows", span }];
+  if (crossSpan !== null) axes.push({ what: "the other two rows", span: crossSpan });
+
+  for (const axis of axes) {
+    const gap = axis.span - length;
+    if (gap <= 0) {
+      return {
+        ...base,
+        state: "fail",
+        detail: `A ${length} mm land on a ${axis.span} mm centre span puts ${axis.what} ${(-gap).toFixed(3)} mm into each other.`,
+        consequence: "Every pin on one side would be shorted to the pin opposite it."
+      };
+    }
   }
+  const gaps = axes.map((axis) => `${(axis.span - length).toFixed(3)} mm`).join(" and ");
   return {
     ...base,
-    state: "fail",
-    detail: `A ${length} mm land on a ${span} mm centre span puts the two rows ${(-gap).toFixed(3)} mm into each other.`,
-    consequence: "Every pin on one side would be shorted to the pin opposite it."
+    state: "pass",
+    detail: `${gaps} of clear board between the opposing rows.`
   };
 }
 
@@ -225,7 +245,7 @@ function sidesAddUp(part: ResolvedPart): ConfidenceCheck {
  * well is not duplication: the generator's version decides whether to build, and
  * this one tells a reviewer why a part that built is worth trusting.
  */
-function printedPatternInBand(part: ResolvedPart, densityLevel: DensityLevel): ConfidenceCheck {
+function printedPatternInBand(part: ResolvedPart): ConfidenceCheck {
   const base = { id: "printed-in-band", label: "Printed footprint agrees with IPC-7351B" };
   const padLength = part.dimensions.landPadLengthMm;
   const centreSpan = part.dimensions.landSpanMm;
@@ -276,12 +296,15 @@ function printedPatternInBand(part: ResolvedPart, densityLevel: DensityLevel): C
       consequence: "Either a dimension was misread or this vendor's house rule is well outside normal practice. Both are worth a look before the board is cut."
     };
   } catch {
-    return { ...base, state: "unavailable", detail: `The lead dimensions do not compute a land pattern to compare against (density ${densityLevel}).` };
+    // The BAND, not one level, so the message must not name one. It said
+    // "(density B)", which told a reviewer a level had been applied when the
+    // check computes levels A and C and compares against the range between them.
+    return { ...base, state: "unavailable", detail: "The lead dimensions do not compute a land pattern to compare against." };
   }
 }
 
 /** Every check, in the order a reviewer should read them. */
-export function confidenceChecks(part: ResolvedPart, densityLevel: DensityLevel = "B"): ConfidenceCheck[] {
+export function confidenceChecks(part: ResolvedPart): ConfidenceCheck[] {
   return [
     pinTableMatchesCount(part),
     pinNumbersAreComplete(part),
@@ -290,7 +313,7 @@ export function confidenceChecks(part: ResolvedPart, densityLevel: DensityLevel 
     landsFitThePitch(part),
     spanCoversBody(part),
     thermalPadFitsBody(part),
-    printedPatternInBand(part, densityLevel)
+    printedPatternInBand(part)
   ];
 }
 
@@ -495,9 +518,19 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
   // solder with nowhere to wet, and it is what bridges to the perimeter pins.
   for (const pad of lands) {
     for (const aperture of pad.pasteApertures ?? []) {
+      // MEASURED FROM THE PAD, in the footprint frame both emitters write.
+      //
+      // This compared the aperture's absolute coordinate against half the pad's
+      // size, i.e. treated the centre as a pad-relative offset. Every exposed
+      // pad this generator builds sits on the origin, so the two readings
+      // coincided and the check appeared to work; on an off-centre pad it would
+      // have passed apertures lying entirely outside the copper. See
+      // `Pad.pasteApertures`, which now states the frame.
+      const offsetXMm = aperture.centre.xMm - pad.centre.xMm;
+      const offsetYMm = aperture.centre.yMm - pad.centre.yMm;
       const inside =
-        Math.abs(aperture.centre.xMm) + aperture.widthMm / 2 <= pad.widthMm / 2 + TOUCHING_MM &&
-        Math.abs(aperture.centre.yMm) + aperture.heightMm / 2 <= pad.heightMm / 2 + TOUCHING_MM;
+        Math.abs(offsetXMm) + aperture.widthMm / 2 <= pad.widthMm / 2 + TOUCHING_MM &&
+        Math.abs(offsetYMm) + aperture.heightMm / 2 <= pad.heightMm / 2 + TOUCHING_MM;
       if (!inside) problems.push(`a paste aperture on land ${pad.number} reaches past the copper`);
     }
   }

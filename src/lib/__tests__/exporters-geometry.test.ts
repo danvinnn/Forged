@@ -53,11 +53,13 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       leadDiameterMm: null,
       leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
       leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+      leadSpanCrossMm: null,
       leadContactMm: { minMm: 0.4, maxMm: 0.625 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
+      landSpanCrossMm: null,
       vacantLeadSlot: null,
       leadsPerSide: null,
       solderMaskExpansionMm: null,
@@ -441,11 +443,13 @@ function lqfpPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       leadCount: 80,
       leadWidthMm: { minMm: 0.17, maxMm: 0.27 },
       leadSpanMm: { minMm: 13.8, maxMm: 14.2 },
+      leadSpanCrossMm: null,
       leadContactMm: { minMm: 0.45, maxMm: 0.6 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null,
       landPadWidthMm: null,
       landSpanMm: null,
+      landSpanCrossMm: null,
       leadSides: 4,
       leadForm: "gullwing",
       mounting: null,
@@ -675,7 +679,8 @@ test("the exposed pad lies along the SAME axis as the body it is on the undersid
       thermalPadWidthMm: 1.6,
       landPadLengthMm: 1.4,
       landPadWidthMm: 0.6,
-      landSpanMm: 5.0
+      landSpanMm: 5.0,
+      landSpanCrossMm: null,
     }
   });
 
@@ -720,6 +725,7 @@ function printedFixture(overrides: Partial<ResolvedPart["dimensions"]> = {}): Re
       landPadLengthMm: 1.5,
       landPadWidthMm: 0.45,
       landSpanMm: 5.8,
+      landSpanCrossMm: null,
       ...overrides
     }
   };
@@ -836,11 +842,13 @@ function printedPart(overrides: Partial<ResolvedPart["dimensions"]> = {}): Resol
       // span would put a 6 mm gull-wing's dimensions on a SOT-23, and the IPC
       // band check would then correctly refuse the very pattern under test.
       leadSpanMm: null,
+      leadSpanCrossMm: null,
       leadContactMm: null,
       leadWidthMm: null,
       landPadLengthMm: 1.1,
       landPadWidthMm: 0.6,
       landSpanMm: 1.9,
+      landSpanCrossMm: null,
       leadSides: 2,
       ...overrides
     }
@@ -891,7 +899,8 @@ test("a datasheet that prints no footprint ASKS, rather than refusing or inventi
   const silent = printedPart({
     landPadLengthMm: null,
     landPadWidthMm: null,
-    landSpanMm: null
+    landSpanMm: null,
+    landSpanCrossMm: null,
   });
   await assert.rejects(
     () => createExportZip(silent, "kicad"),
@@ -930,6 +939,7 @@ test("an odd lead count is refused on the datasheet path too, not just the table
       landPadLengthMm: 1.1,
       landPadWidthMm: 0.6,
       landSpanMm: 1.9,
+      landSpanCrossMm: null,
       leadSides: 2
     }
   });
@@ -987,6 +997,7 @@ function drawnPart(overrides: Partial<ResolvedPart["dimensions"]> = {}): Resolve
       mounting: null,
       leadDiameterMm: null,
       leadSpanMm: { minMm: 2.6, maxMm: 3.0 },
+      leadSpanCrossMm: null,
       leadWidthMm: { minMm: 0.3, maxMm: 0.5 },
       leadContactMm: { minMm: 0.3, maxMm: 0.6 },
       ...overrides
@@ -1026,7 +1037,8 @@ test("a no-lead package that DOES print its footprint still builds from it", asy
       leadDiameterMm: null,
       landPadLengthMm: 0.8,
       landPadWidthMm: 0.3,
-      landSpanMm: 2.6
+      landSpanMm: 2.6,
+      landSpanCrossMm: null,
     }),
     "kicad"
   );
@@ -1116,6 +1128,7 @@ test("thermal vias the datasheet dimensions are emitted, and carry no pin number
       mounting: null,
       leadDiameterMm: null,
       leadSpanMm: { minMm: 4.9, maxMm: 5.1 },
+      leadSpanCrossMm: null,
       leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
       leadContactMm: { minMm: 0.4, maxMm: 0.6 },
       thermalPadLengthMm: 2.15,
@@ -1183,7 +1196,8 @@ function unequalQuadPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       leadsPerSide: "12,7,12,7",
       landPadLengthMm: 0.8,
       landPadWidthMm: 0.2,
-      landSpanMm: 4.0
+      landSpanMm: 4.0,
+      landSpanCrossMm: null,
     },
     sourceFileName: "ACME38.pdf",
     ...overrides
@@ -1230,4 +1244,56 @@ test("a quad whose count does not divide by four, with nothing read, asks rather
       return true;
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// RECTANGULAR quads: two spans, not one.
+//
+// A four-sided package carried ONE centre span and both axes used it, which is
+// correct only for a square. Most are not: ADXL345 is a 3 x 5 mm LGA-14 with
+// sides of 6, 2, 4, 2. Placing its long axis at the short axis's span drove the
+// corner lands into each other and the corner check refused the whole part.
+//
+// The refusal was right and the cause was not a misreading. The document states
+// both numbers; the prompt asked for one and told the model to discard the
+// other, so the record described a square package that does not exist.
+//
+// Worth stating what the guard could NOT do: it only fires when the error is
+// large enough to short two lands. A mildly rectangular package was placed
+// slightly wrong and shipped, which is why this is fixed rather than guarded.
+// ---------------------------------------------------------------------------
+
+test("a rectangular quad places each axis on its own span", async () => {
+  const part = unequalQuadPart({
+    dimensions: {
+      ...unequalQuadPart().dimensions,
+      // 12 lands down each long side, 7 across each short one.
+      landSpanMm: 4.0,
+      landSpanCrossMm: 6.0
+    }
+  });
+
+  const files = await filesFrom(part);
+  const footprint = files.get("acme38.pretty/acme38-qfn-38.kicad_mod");
+  assert.ok(footprint, "a footprint is emitted");
+  const at = padPositions(footprint);
+
+  // Left and right sit on landSpanMm, the axis landPadLengthMm runs along.
+  assert.equal(at.get("1")?.x, -2, "the left row sits at half the main span");
+  assert.equal(at.get("20")?.x, 2, "and the right row opposite it");
+
+  // Top and bottom sit on the OTHER span, which is what used to be lost.
+  assert.equal(at.get("16")?.y, 3, "the bottom row sits at half the CROSS span, not the main one");
+  assert.equal(at.get("35")?.y, -3, "and the top row opposite it");
+});
+
+test("a square quad still places both axes on the one span it has", async () => {
+  // The control. `landSpanCrossMm` is null on every two-sided package and on a
+  // square quad, and falling back to the single span is exactly right there.
+  const files = await filesFrom(unequalQuadPart());
+  const footprint = files.get("acme38.pretty/acme38-qfn-38.kicad_mod");
+  assert.ok(footprint);
+  const at = padPositions(footprint);
+  assert.equal(at.get("1")?.x, -2);
+  assert.equal(at.get("16")?.y, 2, "with no cross span, the second axis uses the first");
 });

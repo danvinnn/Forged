@@ -163,9 +163,18 @@ interface DesignatorForm {
 /**
  * A material qualifier a vendor prints ahead of the package designator.
  *
- * Kept because `packages.ts` refuses a CERAMIC part the plastic JEDEC families by
- * testing the designator string for this word. It is the difference between an
- * `SO48` that may take plastic geometry and a `Ceramic SO48` that may not.
+ * Kept because it is what the vendor PRINTED, and the designator travels into
+ * the model's prompt, the package chooser and the footprint's own name. A
+ * `Ceramic SO48` reduced to `SO48` reads as an ordinary plastic SO everywhere
+ * downstream.
+ *
+ * It used to be justified by a guard in `packages.ts` that "refuses a ceramic
+ * part the plastic JEDEC families by testing the designator string for this
+ * word". That module was the hand-typed family table, deleted on 2026-08-14, and
+ * nothing tests a designator for this word any more; lead form is read off the
+ * drawing instead. The qualifier still earns its place, the guard it named does
+ * not exist, and a comment that keeps naming it tells a reader they are
+ * protected.
  */
 const MATERIAL_QUALIFIER = /\b(ceramic|hermetic)\s+$/i;
 
@@ -285,15 +294,14 @@ export function findPackageVariants(text: string, frontMatterEnd: number): Packa
       const printedDesignator = match[0].replace(/^[^-\w.]/, "").replace(/\s+/g, " ").trim();
 
       // A MATERIAL qualifier printed ahead of the designator is part of it, and
-      // dropping it is not cosmetic: the guard in `packages.ts` that keeps a
-      // hermetic part off plastic JEDEC geometry tests the designator STRING for
-      // the word `ceramic`, so a designator that loses the word loses the guard.
+      // dropping it is not cosmetic: the designator is what reaches the model's
+      // prompt, the package chooser and the footprint name, and `Ceramic SO48`
+      // reduced to `SO48` reads as an ordinary plastic SO in all three.
       //
       // Only the forms that capture an adjective of their own keep it today, and
       // the glued form is not one of them. RHF1201 is sold as a `Ceramic SO48`
-      // and came back as `SO48`, which is safe only for as long as no 48-pin SO
-      // family is characterised. The moment one is, a hermetic part takes plastic
-      // dimensions, which is the failure this project exists to prevent.
+      // and came back as `SO48`. See `MATERIAL_QUALIFIER` for what this no
+      // longer protects.
       const start = (match.index ?? 0) + (match[0].length - match[0].replace(/^[^-\w.]/, "").length);
       const qualifier = MATERIAL_QUALIFIER.exec(text.slice(Math.max(0, start - 16), start))?.[1];
       const designator = qualifier ? `${qualifier} ${printedDesignator}` : printedDesignator;
@@ -350,6 +358,19 @@ export function declaredLeadCount(designator: string): number | null {
 export function designatorToken(packageName: string): string | null {
   const match = /\(([A-Za-z][A-Za-z0-9-]{0,7})\)/.exec(packageName);
   return match ? match[1].toUpperCase() : null;
+}
+
+/**
+ * A package name reduced to letters and digits, upper case.
+ *
+ * For comparing a drawing's self-applied label against a caller's package name,
+ * which are two different strings for the same thing: `SOIC (DW)` against
+ * `SOICDW`, `SO-8` against `SO8`. Matching on the raw strings refuses correct
+ * parts, and refusing correct parts is how the two earlier attempts at this
+ * check failed.
+ */
+export function normaliseForMatch(name: string): string {
+  return name.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
 /**

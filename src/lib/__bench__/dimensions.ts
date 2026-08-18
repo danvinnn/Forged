@@ -85,6 +85,13 @@ function compare(part: string, outline: string, entry: DimensionOracleEntry, val
   const at = (key: string) => values[key]?.value;
 
   if (entry.leadSpanMm) add("leadSpanMm", rangeMatches(at("dimensions.leadSpanMm"), entry.leadSpanMm), at("dimensions.leadSpanMm"), entry.leadSpanMm);
+  if (entry.leadSpanCrossMm)
+    add(
+      "leadSpanCrossMm",
+      rangeMatches(at("dimensions.leadSpanCrossMm"), entry.leadSpanCrossMm),
+      at("dimensions.leadSpanCrossMm"),
+      entry.leadSpanCrossMm
+    );
   if (entry.leadWidthMm) add("leadWidthMm", rangeMatches(at("dimensions.leadWidthMm"), entry.leadWidthMm), at("dimensions.leadWidthMm"), entry.leadWidthMm);
   if (entry.leadContactMm) add("leadContactMm", rangeMatches(at("dimensions.leadContactMm"), entry.leadContactMm), at("dimensions.leadContactMm"), entry.leadContactMm);
   if (entry.pitchMm !== undefined) add("pitchMm", scalarMatches(at("dimensions.pitchMm"), entry.pitchMm), at("dimensions.pitchMm"), entry.pitchMm);
@@ -100,6 +107,14 @@ function compare(part: string, outline: string, entry: DimensionOracleEntry, val
     add("landPadLengthMm", scalarMatches(at("dimensions.landPadLengthMm"), entry.land.padLengthMm), at("dimensions.landPadLengthMm"), entry.land.padLengthMm);
     add("landPadWidthMm", scalarMatches(at("dimensions.landPadWidthMm"), entry.land.padWidthMm), at("dimensions.landPadWidthMm"), entry.land.padWidthMm);
     add("landSpanMm", scalarMatches(at("dimensions.landSpanMm"), entry.land.spanMm), at("dimensions.landSpanMm"), entry.land.spanMm);
+    if (entry.land.spanCrossMm !== undefined) {
+      add(
+        "landSpanCrossMm",
+        scalarMatches(at("dimensions.landSpanCrossMm"), entry.land.spanCrossMm),
+        at("dimensions.landSpanCrossMm"),
+        entry.land.spanCrossMm
+      );
+    }
   }
 
   // A dimension the drawing does NOT print. Reading one anyway is an invention,

@@ -148,7 +148,8 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   { partNumber: "DAC8552", manufacturer: "Texas Instruments", kind: "converter" },
   { partNumber: "PCM1808", manufacturer: "Texas Instruments", kind: "converter" },
   { partNumber: "TPS62130", manufacturer: "Texas Instruments", kind: "power" },
-  { partNumber: "TPS7A4700", manufacturer: "Texas Instruments", kind: "power" },
+  // TPS7A4700 removed 2026-08-17 for the same reason: it was in BENCH_CORPUS too.
+  { partNumber: "TPS7A4901", manufacturer: "Texas Instruments", kind: "power" },
   // TPS54360 was PROMOTED to the tuned corpus on 2026-08-17: it produced an
   // invalid footprint, and a defect that cannot be opened cannot be fixed.
   // Replaced here so the hold-out keeps its size and its shape.
@@ -174,7 +175,10 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   { partNumber: "TS922", manufacturer: "STMicroelectronics", kind: "opamp" },
   { partNumber: "TSZ121", manufacturer: "STMicroelectronics", kind: "opamp" },
   { partNumber: "TSB611", manufacturer: "STMicroelectronics", kind: "opamp" },
-  { partNumber: "L7805", manufacturer: "STMicroelectronics", kind: "power" },
+  // L7805 was PROMOTED to the tuned corpus on 2026-08-17: it read no pins and no
+  // pin count, and why could not be established without opening it. Replaced
+  // blind, by vendor and kind, datasheet unopened.
+  { partNumber: "LM317", manufacturer: "STMicroelectronics", kind: "power" },
   { partNumber: "LD39050", manufacturer: "STMicroelectronics", kind: "power" },
   { partNumber: "ST1S10", manufacturer: "STMicroelectronics", kind: "power" },
   { partNumber: "VIPER22A", manufacturer: "STMicroelectronics", kind: "power" },
@@ -193,7 +197,10 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   { partNumber: "AD620", manufacturer: "Analog Devices", kind: "opamp" },
   { partNumber: "AD8221", manufacturer: "Analog Devices", kind: "opamp" },
   { partNumber: "OP07", manufacturer: "Analog Devices", kind: "opamp" },
-  { partNumber: "LT1013", manufacturer: "Analog Devices", kind: "opamp" },
+  // LT1013 was PROMOTED to the tuned corpus on 2026-08-17. It was the only part
+  // in the corpus reading a pin COUNT but no pins, a category of one, which is
+  // exactly the kind that stays unexplained forever unless it is promoted.
+  { partNumber: "OP27", manufacturer: "Analog Devices", kind: "opamp" },
   { partNumber: "ADA4522-2", manufacturer: "Analog Devices", kind: "opamp" },
   { partNumber: "AD7124-8", manufacturer: "Analog Devices", kind: "converter" },
   { partNumber: "AD7606", manufacturer: "Analog Devices", kind: "converter" },
@@ -206,7 +213,9 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   // ADXL345 was PROMOTED to the tuned corpus on 2026-08-17, same reason.
   { partNumber: "ADXL362", manufacturer: "Analog Devices", kind: "sensor" },
   { partNumber: "AD8495", manufacturer: "Analog Devices", kind: "sensor" },
-  { partNumber: "LTC3105", manufacturer: "Analog Devices", kind: "power" }
+  // LTC3105 removed 2026-08-17: it was ALSO in BENCH_CORPUS, so it had been tuned
+  // against while counting toward the unseen number. Replaced blind.
+  { partNumber: "LT3080", manufacturer: "Analog Devices", kind: "power" }
 ];
 
 function cachePath(partNumber: string): string {
@@ -529,4 +538,11 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+// REPORTED, not swallowed. A bare `main()` turned any throw outside the guarded
+// blocks into an unhandled rejection: on the PAID run that is money spent and no
+// figure printed, which is the same shape as the `shipOutcome` rethrow that
+// ended a 56-part run one level down.
+main().catch((error) => {
+  console.error("hold-out run failed:", error);
+  process.exitCode = 1;
+});

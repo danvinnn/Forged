@@ -179,6 +179,28 @@ function readPackageCode(page: PageText): PackageCode | null {
   return { code: match[0], prefix: match[1], leadCount };
 }
 
+/**
+ * Whether a page names this family, allowing for how a vendor punctuates it.
+ *
+ * `\bLQFP64\b` cannot match a page that prints `LQFP-64` or `LQFP 64`, because
+ * the digits are part of the needle and the separator is not. LEARNINGS records
+ * the mirror of this trap (`\bLQFP\b` cannot match `LQFP64`, three instances in
+ * two days); this is the same word-boundary problem with the digits on the other
+ * side. The cost is not a refusal but something quieter: `namesPackage` is the
+ * first ranking key, so a miss drops the page that describes the requested
+ * package below whichever drawing simply carries more numbers, which the comment
+ * on `findPackageDrawing` records as measurably picking the WRONG package.
+ *
+ * So the family word and its digits are matched with any punctuation or space
+ * between them, and with a boundary on each end so `SO` still cannot match
+ * `SOIC`.
+ */
+function namesFamily(text: string, family: string): boolean {
+  const split = /^([A-Z]+)(\d+)$/.exec(family);
+  const pattern = split ? `${split[1]}[\\s-]?${split[2]}` : family;
+  return new RegExp(`\\b${pattern}\\b`, "i").test(text);
+}
+
 /** Distinct columns per value. Low means the values are stacked in a table. */
 function columnsPerValue(values: PageText["items"]): number {
   if (values.length === 0) return 0;
@@ -214,7 +236,7 @@ export function findPackageDrawing(
         page: page.page,
         valueCount: values.length,
         columnsPerValue: columnsPerValue(values),
-        namesPackage: families.some((family) => new RegExp(`\\b${family}\\b`, "i").test(page.text)),
+        namesPackage: families.some((family) => namesFamily(page.text, family)),
         code: readPackageCode(page)
       };
     })

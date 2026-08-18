@@ -263,7 +263,7 @@ test("a quad whose lands cannot fit its span is refused by NAMING the span", asy
       exposedPad: false,
       dimensions: {
         bodyLengthMm: 5, bodyWidthMm: 5, bodyHeightMm: 1, pitchMm: 0.5, leadLengthMm: null,
-        leadCount: 24, leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+        leadCount: 24, leadWidthMm: null, leadSpanMm: null, leadSpanCrossMm: null, leadContactMm: null,
         thermalPadLengthMm: null, thermalPadWidthMm: null,
         landPadLengthMm: 0.9, landPadWidthMm: 0.28, landSpanMm,
         leadSides: 4, leadForm: "nolead", mounting: "smd", leadDiameterMm: null,
@@ -311,7 +311,7 @@ test("an UNEQUAL quad is not refused just because its long side is long", async 
     exposedPad: false,
     dimensions: {
       bodyLengthMm: 6, bodyWidthMm: 4, bodyHeightMm: 1, pitchMm: 0.4, leadLengthMm: null,
-      leadCount: 38, leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      leadCount: 38, leadWidthMm: null, leadSpanMm: null, leadSpanCrossMm: null, leadContactMm: null,
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: 0.8, landPadWidthMm: 0.2, landSpanMm: 4,
       leadSides: 4, leadForm: "nolead", mounting: "smd", leadDiameterMm: null,
@@ -350,7 +350,7 @@ test("a single-row through-hole package builds one line of pins", async () => {
     exposedPad: false,
     dimensions: {
       bodyLengthMm: 10, bodyWidthMm: 4.6, bodyHeightMm: 15, pitchMm: 2.54, leadLengthMm: null,
-      leadCount: 3, leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      leadCount: 3, leadWidthMm: null, leadSpanMm: null, leadSpanCrossMm: null, leadContactMm: null,
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null, landPadWidthMm: null, landSpanMm: null,
       leadSides: 1, leadForm: "straight", mounting: "through-hole", leadDiameterMm: 0.9,
@@ -398,7 +398,7 @@ test("a through-hole package whose row count was never read still refuses", asyn
     exposedPad: false,
     dimensions: {
       bodyLengthMm: 10, bodyWidthMm: 4.6, bodyHeightMm: 15, pitchMm: 2.54, leadLengthMm: null,
-      leadCount: 3, leadWidthMm: null, leadSpanMm: null, leadContactMm: null,
+      leadCount: 3, leadWidthMm: null, leadSpanMm: null, leadSpanCrossMm: null, leadContactMm: null,
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null, landPadWidthMm: null, landSpanMm: null,
       leadSides: null, leadForm: "straight", mounting: "through-hole", leadDiameterMm: 0.9,

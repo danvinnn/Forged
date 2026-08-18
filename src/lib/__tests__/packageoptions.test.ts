@@ -49,12 +49,14 @@ function record(overrides: Partial<PartRecord> = {}): PartRecord {
       leadCount: cited(8),
       leadWidthMm: cited({ minMm: 0.31, maxMm: 0.51 }),
       leadSpanMm: cited({ minMm: 5.8, maxMm: 6.2 }),
+      leadSpanCrossMm: nothing<{ minMm: number; maxMm: number }>(),
       leadContactMm: cited({ minMm: 0.4, maxMm: 0.625 }),
       thermalPadLengthMm: nothing(),
       thermalPadWidthMm: nothing(),
       landPadLengthMm: nothing(),
       landPadWidthMm: nothing(),
       landSpanMm: nothing(),
+      landSpanCrossMm: nothing(),
       leadSides: cited<2 | 4>(2),
       leadForm: cited<"gullwing" | "nolead" | "straight">("gullwing"),
       mounting: nothing<"smd" | "through-hole">(),
@@ -143,8 +145,8 @@ test("supplying the number turns that same package into one that ships", () => {
     packageVariants: variants
   });
 
-  assert.equal(packageOptions(part, 12.4).ok, true);
-  const answered = packageOptions(part, 12.4);
+  assert.equal(packageOptions(part, { formedLeadSpanMm: 12.4 }).ok, true);
+  const answered = packageOptions(part, { formedLeadSpanMm: 12.4 });
   if (!answered.ok) return;
   assert.equal(answered.options[0].status, "ships");
 });
@@ -237,7 +239,8 @@ test("a sibling package does not inherit the resolved package's printed land pat
       leadSides: cited<2 | 4>(2),
       landPadLengthMm: cited(1.95),
       landPadWidthMm: cited(0.6),
-      landSpanMm: cited(4.95)
+      landSpanMm: cited(4.95),
+      landSpanCrossMm: nothing<number>(),
     },
     packageVariants: [
       { designator: "SOIC-8", family: "SOIC", leadCount: 8, inFrontMatter: true },
@@ -273,7 +276,8 @@ test("an exposed pad belongs to the package that has one, not to its siblings", 
       thermalPadWidthMm: cited(1.68),
       landPadLengthMm: cited(0.825),
       landPadWidthMm: cited(0.25),
-      landSpanMm: cited(2.925)
+      landSpanMm: cited(2.925),
+      landSpanCrossMm: nothing<number>(),
     },
     pinCount: cited(16),
     pins: cited(pins(16)),

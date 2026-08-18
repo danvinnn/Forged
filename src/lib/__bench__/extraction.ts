@@ -154,7 +154,25 @@ async function benchModel(): Promise<CachingModel | null> {
 const SCORED = {
   identity: ["partNumber", "manufacturer"],
   package: ["packageType", "pinCount", "pins"],
-  geometry: ["dimensions.bodyLengthMm", "dimensions.bodyWidthMm", "dimensions.pitchMm"],
+  // THE FIELDS THAT ACTUALLY PLACE COPPER.
+  //
+  // This was body length, body width and pitch. Since 2026-08-12 the pads come
+  // off the datasheet's own printed footprint (`landPad*`, `landSpan*`) and are
+  // arranged by `leadSides` and `leadForm`, and none of those was scored: the
+  // `geom` column, and every "fields complete" figure quoted from this bench,
+  // described three numbers that no longer build the footprint. That is verbatim
+  // the defect `untraceableDimensions` in types.ts was rewritten to remove,
+  // surviving in the instrument that measures the fix.
+  geometry: [
+    "dimensions.bodyLengthMm",
+    "dimensions.bodyWidthMm",
+    "dimensions.pitchMm",
+    "dimensions.landPadLengthMm",
+    "dimensions.landPadWidthMm",
+    "dimensions.landSpanMm",
+    "dimensions.leadSides",
+    "dimensions.leadForm"
+  ],
   radiation: ["radiation.tid", "radiation.see", "radiation.sel", "radiation.qmlClass"]
 } as const;
 
@@ -826,4 +844,10 @@ async function main() {
   }
 }
 
-main();
+// REPORTED, not swallowed. This ended with a bare `main()`, so a throw anywhere
+// outside the two guarded blocks became an unhandled rejection with no summary.
+// `coverage.ts` has always caught; the two benches that can spend money did not.
+main().catch((error) => {
+  console.error("benchmark failed:", error);
+  process.exitCode = 1;
+});

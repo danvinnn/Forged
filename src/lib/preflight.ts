@@ -37,14 +37,29 @@ export async function runPreflight(): Promise<PreflightFinding[]> {
     });
   }
 
-  // 2. A cloud key present on an air-gapped deploy is ignored by the factory,
-  // but its presence usually means someone believed it would be used.
-  if (mode === "air-gapped" && process.env.GOOGLE_GEMINI_API_KEY) {
+  // 2. Cloud credentials present on an air-gapped deploy are ignored by the
+  // factory, but their presence usually means someone believed they would be
+  // used.
+  //
+  // BOTH PROVIDERS, not just the API key. This named `GOOGLE_GEMINI_API_KEY`
+  // alone, so a deploy carrying Vertex service-account credentials got no
+  // warning at all, on the side where silence is the dangerous answer. That is
+  // the same allowlist-of-known-providers shape as the billing hole that
+  // disabled the spend ceiling when Vertex was added, and the factory PREFERS
+  // Vertex, so it is the more likely of the two to be configured.
+  const cloudCredentials = [
+    process.env.GOOGLE_GEMINI_API_KEY ? "GOOGLE_GEMINI_API_KEY" : null,
+    process.env.GOOGLE_APPLICATION_CREDENTIALS && process.env.FORGE_VERTEX_PROJECT
+      ? "GOOGLE_APPLICATION_CREDENTIALS with FORGE_VERTEX_PROJECT"
+      : null
+  ].filter((name): name is string => name !== null);
+  if (mode === "air-gapped" && cloudCredentials.length > 0) {
     findings.push({
       level: "warn",
       code: "CLOUD_KEY_IN_AIRGAP",
-      message:
-        "GOOGLE_GEMINI_API_KEY is set but the deployment is air-gapped. The cloud model is never loaded in this mode and the key is ignored. Remove it to avoid implying a capability this deploy does not have."
+      message: `${cloudCredentials.join(" and ")} ${
+        cloudCredentials.length === 1 ? "is" : "are"
+      } set but the deployment is air-gapped. No cloud model is ever loaded in this mode, so these are ignored. Remove them to avoid implying a capability this deploy does not have.`
     });
   }
 
@@ -110,7 +125,16 @@ export async function reportPreflight(): Promise<void> {
       event: "startup",
       mode,
       lookupEnabled: mode === "commercial",
-      modelConfigured: Boolean(process.env.GOOGLE_GEMINI_API_KEY || process.env.FORGE_LOCAL_MODEL_URL),
+      // Every provider `makeExtractionModel` can actually construct, in the
+      // order it tries them. This asked about the API key and the local endpoint
+      // and knew nothing about Vertex, which the factory prefers over both, so a
+      // Vertex-only deploy reported `modelConfigured: false` in the one log line
+      // whose job is to say what this process will do.
+      modelConfigured: Boolean(
+        (process.env.GOOGLE_APPLICATION_CREDENTIALS && process.env.FORGE_VERTEX_PROJECT) ||
+          process.env.GOOGLE_GEMINI_API_KEY ||
+          process.env.FORGE_LOCAL_MODEL_URL
+      ),
       findings: findings.length
     });
 

@@ -67,6 +67,9 @@ export const BENCH_CORPUS: BenchPart[] = [
   { partNumber: "OPA333", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   // Promoted out of the hold-out 2026-08-17, same reason as TPS54360.
   { partNumber: "ADXL345", manufacturer: "Analog Devices", category: "analog", expect: "hit", note: "promoted: invalid footprint" },
+  // Promoted out of the hold-out 2026-08-17: the only part reading a pin COUNT
+  // and no pins.
+  { partNumber: "LT1013", manufacturer: "Analog Devices", category: "analog", expect: "hit", note: "promoted: count but no pins" },
   { partNumber: "INA240", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   { partNumber: "ADS1115", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   {
@@ -136,6 +139,8 @@ export const BENCH_CORPUS: BenchPart[] = [
   // table reads nothing. MSP430FR2433 stays in the hold-out as the generality check.
   { partNumber: "DRV8825", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit" },
   { partNumber: "LD1117", manufacturer: "STMicroelectronics", category: "power-discrete", expect: "hit" },
+  // Was ALSO in the hold-out until 2026-08-17, so it had been tuned against and
+  // counted as unseen at the same time. Removed there, not here.
   { partNumber: "L7805", manufacturer: "STMicroelectronics", category: "power-discrete", expect: "hit" },
   { partNumber: "IRF540N", manufacturer: "Infineon", category: "power-discrete", expect: "miss" },
   { partNumber: "BSS138", manufacturer: "Infineon", category: "power-discrete", expect: "miss" },

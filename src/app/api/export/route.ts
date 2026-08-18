@@ -159,6 +159,10 @@ export async function POST(request: Request) {
     "landPadLengthMm",
     "landPadWidthMm",
     "landSpanMm",
+    // The cross-axis span. The generator asks for it on a four-sided package and
+    // this list is what makes the ask answerable; a field the exporter requests
+    // and the route rejects is a refusal with extra words.
+    "landSpanCrossMm",
     "leadDiameterMm",
     "pitchMm",
     "thermalPadLengthMm",
@@ -176,9 +180,17 @@ export async function POST(request: Request) {
   }
   const sides = (payload as Record<string, unknown>).leadSides;
   if (sides !== undefined) {
-    if (sides !== 2 && sides !== 4) {
+    // 1 IS VALID. It became a valid reading on 2026-08-17 so that a TO-220,
+    // TO-92 or SIP could be represented at all, and this validator was not
+    // updated: the generator asked for it, the UI offered a box that accepts it,
+    // and the route answered 400. Every value the record accepts has to be
+    // accepted everywhere it is asked for.
+    if (sides !== 1 && sides !== 2 && sides !== 4) {
       return NextResponse.json(
-        { error: "leadSides must be 2 (two opposing rows) or 4 (leads on all four sides)." },
+        {
+          error:
+            "leadSides must be 1 (a single line of leads, as on a TO-220 or SIP), 2 (two opposing rows) or 4 (leads on all four sides)."
+        },
         { status: 400 }
       );
     }
@@ -206,9 +218,16 @@ export async function POST(request: Request) {
   // is what makes it an ask rather than a refusal with extra words.
   const perSide = (payload as Record<string, unknown>).leadsPerSide;
   if (perSide !== undefined) {
-    if (typeof perSide !== "string" || !/^\d{1,3}(,\d{1,3}){3}$/.test(perSide)) {
+    // ONE COUNT PER SIDE, for the side counts this generator can build: 1, 2 or
+    // 4. This demanded exactly FOUR, so a two-sided package with unequal rows
+    // had a question the route could not accept an answer to. Three is still
+    // rejected, because a package with leads on three sides is refused by the
+    // pad placer rather than approximated, and `sidesFrom` in the generator does
+    // the rest: it checks the length against `leadSides` and the sum against the
+    // pin count, and refuses a list that does neither.
+    if (typeof perSide !== "string" || !/^\d{1,3}(?:,\d{1,3})?$|^\d{1,3}(?:,\d{1,3}){3}$/.test(perSide)) {
       return NextResponse.json(
-        { error: "leadsPerSide must be four comma-separated counts from pin 1, e.g. 6,6,6,5." },
+        { error: "leadsPerSide must be comma-separated whole counts from pin 1, one per side, e.g. 6,6,6,5." },
         { status: 400 }
       );
     }

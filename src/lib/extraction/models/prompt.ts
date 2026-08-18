@@ -25,7 +25,13 @@ const FIELD_GUIDE: Record<ExtractionField, string> = {
   "dimensions.leadContactMm":
     "lead contact length in millimetres, drawing dimension L, the length of the foot that sits on the pad (NOT the whole lead), as {\"minMm\": <number>, \"maxMm\": <number>}",
   "dimensions.leadSpanMm":
-    "lead span in millimetres, tip to tip across the package including the leads (NOT the body), as printed on the package drawing, as {\"minMm\": <number>, \"maxMm\": <number>}",
+    "lead span in millimetres, tip to tip across the package including the leads (NOT the body), as printed on the package drawing, as {\"minMm\": <number>, \"maxMm\": <number>}. On a package with leads on all four sides the drawing prints TWO of these, one per axis: report this one here and the other in leadSpanCrossMm.",
+  // The second span off the package OUTLINE, the drawing counterpart of
+  // landSpanCrossMm. Asked for from 2026-08-18: a rectangular quad's outline
+  // prints both, the record carried one, and the computed land pattern placed
+  // all four sides at the same centre distance as a result.
+  "dimensions.leadSpanCrossMm":
+    "ONLY for a package with leads or pads on all four sides: the lead span across the OTHER axis, i.e. the direction perpendicular to leadSpanMm, tip to tip including the leads, as printed on the same package outline drawing, as {\"minMm\": <number>, \"maxMm\": <number>}. Most four-sided packages are rectangular and the two differ; where they are equal report the same pair in both rather than null. Null for a package with leads on two sides or one, which has only one span.",
   // The AXIS is stated, on both, and it is not a pedantic detail. These two were
   // asked for as "D2 or E2" and as a bare "width", which names no axis at all,
   // so nothing downstream could know which way round the answers came and the
@@ -50,7 +56,14 @@ const FIELD_GUIDE: Record<ExtractionField, string> = {
   "dimensions.landPadWidthMm":
     "from the same RECOMMENDED FOOTPRINT drawing: the width of ONE land, in millimetres, measured ACROSS the row, i.e. the direction in which neighbouring lands are separated by the pitch. It is always smaller than the pitch, because neighbouring lands do not touch. On a gull-wing package (SOIC, TSSOP, QFP) it is the smaller of the two land dimensions; on a no-lead package (QFN, DFN, SON) the two can be close to equal, so use the direction rather than the size to tell them apart. Null if the datasheet prints no such drawing.",
   "dimensions.landSpanMm":
-    "from the same RECOMMENDED FOOTPRINT drawing: the CENTRE-TO-CENTRE distance between two OPPOSING rows of lands, in millimetres. A package with two rows has one such distance. A package with lands on all four sides has two, one per axis; if they differ, report the one measured across the same axis as landPadLengthMm, and if the footprint is square they are the same number. Vendors dimension this three ways: some print the centre-to-centre distance directly, some print the INNER GAP between the two rows and the OUTER extent across them, in which case it is the average of those two, and some print only the outer extent, in which case it is the outer extent minus one land length. Null if the datasheet prints no such drawing.",
+    "from the same RECOMMENDED FOOTPRINT drawing: the CENTRE-TO-CENTRE distance between two OPPOSING rows of lands, in millimetres, measured across the SAME axis as landPadLengthMm. A package with two rows has one such distance. A package with lands on all four sides has two, one per axis: report this one here and the other in landSpanCrossMm, and where the footprint is square report the same number in both. Vendors dimension this three ways: some print the centre-to-centre distance directly, some print the INNER GAP between the two rows and the OUTER extent across them, in which case it is the average of those two, and some print only the outer extent, in which case it is the outer extent minus one land length. Null if the datasheet prints no such drawing.",
+  // The second span, and it used to be thrown away. The guide above told the
+  // model that a four-sided package has two and to report only one of them, so a
+  // rectangular quad arrived describing a square. ADXL345 is a 3 x 5 mm LGA-14:
+  // both axes were placed at the short axis's span, and the corner lands
+  // collided. The document states both numbers.
+  "dimensions.landSpanCrossMm":
+    "from the same RECOMMENDED FOOTPRINT drawing, and ONLY for a package with lands on all four sides: the centre-to-centre distance between the OTHER pair of opposing rows, i.e. the axis perpendicular to landSpanMm, in millimetres. Most four-sided footprints are rectangular rather than square and the two differ; where they are equal, report the same number in both rather than null. Null for any package with lands on two sides or one, which has only one such distance, and null if the datasheet prints no recommended footprint.",
   "dimensions.leadSides":
     "how many SIDES of the package carry leads or pads: 1 for a single line of leads along one edge (TO-220, TO-92, SIP, most voltage regulators and transistors), 2 for two opposing rows (SOIC, TSSOP, SOT-23, DFN, SON), 4 for leads or pads on all four sides (QFP, QFN, LFCSP). Return the number 1, 2 or 4. THREE separate drawings answer this and any one of them is enough, so check all three before answering null: the package outline, the recommended footprint, and the PINOUT or pin-configuration figure, which shows directly whether the pins run along one edge, down two sides, or around all four. A package with leads on exactly three sides is none of these; return null for that rather than rounding.",
   "dimensions.leadForm":
@@ -106,18 +119,56 @@ const PAGE_MARK = (page: number) => `[[PAGE ${page}]]`;
  * render as nothing while changing how the surrounding text is read.
  */
 export function neutralizeUntrustedText(text: string): string {
-  return text
-    .replace(/<<<\s*(BEGIN|END)_UNTRUSTED_DATASHEET\s*>>>/gi, "(removed)")
-    .replace(/\[\[\s*PAGE\s+\d+\s*\]\]/gi, "(removed)")
-    .replace(/<<</g, "<​<<")
-    .replace(/>>>/g, ">​>>")
-    // Strip bidi overrides and zero-width joiners used to hide text.
-    .replace(/[‪-‮⁦-⁩​-‏﻿]/g, "");
+  return (
+    text
+      // STRIPPED FIRST, and the order is the whole of it.
+      //
+      // This ran LAST until 2026-08-18, after the two replacements below had
+      // inserted U+200B into every `<<<` and `>>>` to break them. U+200B is
+      // inside the class, so the strip removed the separator again and both
+      // sequences came out of this function unchanged: the generic fence break
+      // had never once done anything, while the comment above said it did.
+      // Verified by running the four replacements over "<<<", which returned
+      // "<<<".
+      .replace(/[\u202a-\u202e\u2066-\u2069\u200b-\u200f\ufeff]/g, "")
+      .replace(/<<<\s*(BEGIN|END)_UNTRUSTED_DATASHEET\s*>>>/gi, "(removed)")
+      .replace(/\[\[\s*PAGE\s+\d+\s*\]\]/gi, "(removed)")
+      .replace(/<<</g, "<​<<")
+      .replace(/>>>/g, ">​>>")
+  );
 }
 
 /** A part number reaches this from a request body, so it is untrusted too. */
 function sanitizePartNumber(value: string): string {
   return value.replace(/[^A-Za-z0-9\-._/+]/g, "").slice(0, 64);
+}
+
+/**
+ * A PACKAGE DESIGNATOR, which is a different string from a part number and was
+ * being sanitised as one until 2026-08-18.
+ *
+ * `sanitizePartNumber` keeps only `[A-Za-z0-9-._/+]`, so `SOIC (D)` reached the
+ * model as `SOICD`, `CFP (14)` as `CFP14` and `PDIP (N)` as `PDIPN`. The model
+ * was then asked to find a designator the document does not print, and the
+ * parenthesised outline code, which is the half that tells a narrow SOIC from a
+ * wide one, was glued to the family word.
+ *
+ * `vendorland.ts:forRegex` had already learned this on the same input: it
+ * ESCAPES rather than strips, because "the word boundaries around this are
+ * load-bearing and removing the punctuation to sanitise it would remove the
+ * boundary with it". Same reasoning here. A designator is printed text, so the
+ * punctuation a vendor prints in one is kept: brackets, spaces and hyphens.
+ *
+ * What is removed is what could forge prompt structure or fence tokens, which
+ * is the actual hazard: angle brackets, square brackets, braces, quotes,
+ * backslashes and control characters. Everything else is the document's own.
+ */
+function sanitizeDesignator(value: string): string {
+  return value
+    .replace(/[<>\[\]{}"'`\\|\u0000-\u001f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
 }
 
 /**
@@ -188,7 +239,17 @@ number does not tell you which package it is, that is fine here: report them all
 choose. Omit this when the document describes only one pinout.
 `
     : ""
-}`;
+}
+Also return "drawnPackages": the packages this document actually prints a MECHANICAL OUTLINE DRAWING
+for, one entry per drawing, exactly as that drawing labels itself. A page headed "PACKAGE OUTLINE
+DW0016A" gives "DW0016A"; a page headed "8-Lead Plastic Small Outline (SO-8)" gives "SO-8".
+
+This is a question about the DOCUMENT and not about the part number you were asked for. List the
+drawings that are physically present, whether or not any of them is the package in the request, and
+do NOT add an entry for a package the document merely mentions in an ordering table or a feature
+list. A datasheet often sells a package whose drawing it does not print, and reporting one of those
+here is worse than reporting nothing: it is used to decide whether a requested package could be
+measured at all. If you are unsure whether a page is an outline drawing, leave it out.`;
 }
 
 function imageGuidance(pageNumbers: number[]): string {
@@ -224,16 +285,18 @@ export function buildPrompt(request: ExtractionRequest): string {
   const askPages = request.images.length === 0 ? pageRequestGuidance(request.fields) : "";
   // Sanitised the same way the part number is: it reaches here from a request
   // body on the package-chooser path, so it is untrusted input too.
-  const packageType = request.packageType ? sanitizePartNumber(request.packageType) : "";
+  const packageType = request.packageType ? sanitizeDesignator(request.packageType) : "";
   // Sanitised like everything else that reaches the prompt from the document.
   // These designators are read off an untrusted PDF, so they are content.
   const candidates = (request.packageCandidates ?? [])
-    .map((designator) => sanitizePartNumber(designator))
+    .map((designator) => sanitizeDesignator(designator))
     .filter((designator) => designator.length > 0);
 
   const contract = `Respond with JSON only, no markdown fences and no commentary, in exactly this shape:
 {"values": {"<field>": {"value": <value or null>, "page": <page number or null>}}, "notes": ["<observation>"]${
-    askPages ? ', "pagesWorthRendering": [<page number>, ...], "pinTablesByPackage": [{"packageType": "<designator>", "pins": [...]}, ...]' : ""
+    askPages
+      ? ', "pagesWorthRendering": [<page number>, ...], "pinTablesByPackage": [{"packageType": "<designator>", "pins": [...]}, ...], "drawnPackages": ["<as the drawing labels itself>", ...]'
+      : ""
   }}`;
 
   return `You are extracting structured data from an electronics datasheet for a rad-hard component intake tool. Accuracy matters more than completeness: a wrong value is far worse than no value.
@@ -371,10 +434,10 @@ function closeTruncatedJson(text: string): string | null {
  * Light coercion for a per-package pin table.
  *
  * Deliberately permissive about everything except shape: `merge.ts` runs the
- * strict reader when one of these is actually selected, and duplicating that
- * here would give two places to disagree about what a valid pin is. All this
- * does is drop rows that are not {number, name} so a malformed entry cannot
- * masquerade as a table.
+ * strict reader (`normalizeModelPins` plus the gap-free 1..N proof) over every
+ * one of these as it STORES them, and duplicating that here would give two
+ * places to disagree about what a valid pin is. All this does is drop rows that
+ * are not {number, name} so a malformed entry cannot masquerade as a table.
  */
 function coercePinRows(rows: unknown[]): PinRecord[] {
   const out: PinRecord[] = [];
@@ -427,6 +490,7 @@ export function parseModelResponse(text: string): ExtractionResult {
     notes?: unknown;
     pagesWorthRendering?: unknown;
     pinTablesByPackage?: unknown;
+    drawnPackages?: unknown;
   };
   const values: Partial<Record<ExtractionField, ModelValue>> = {};
   // Fields the model explicitly answered null on. See `declined` in the
@@ -464,7 +528,15 @@ export function parseModelResponse(text: string): ExtractionResult {
 
     const usable =
       typeof value === "string" || typeof value === "number" || Array.isArray(value) || isRange;
-    if (!usable) continue;
+    // RECORDED, not dropped on the floor. An object we do not understand is not
+    // a reading and must not become one, but losing the fact that the model
+    // ANSWERED is the same mistake the bare-answer branch above was fixed for:
+    // it makes a shape we cannot parse indistinguishable from a field nobody
+    // asked about. `declined` is the diagnostic channel for exactly that.
+    if (!usable) {
+      declined.push(key);
+      continue;
+    }
 
     values[key] = { value: value as ModelValue["value"], page: coercePage(entry.page) };
   }
@@ -496,5 +568,18 @@ export function parseModelResponse(text: string): ExtractionResult {
         .filter((entry): entry is { packageType: string; pins: PinRecord[] } => entry !== null)
     : undefined;
 
-  return { values, declined, notes, pagesWorthRendering, pinTablesByPackage };
+  // Which packages the document PRINTS a drawing for. Strings only, trimmed,
+  // deduplicated, and capped: this is evidence for a refusal, so a malformed or
+  // enormous list must not become one.
+  const drawnPackages = Array.isArray(root.drawnPackages)
+    ? [
+        ...new Set(
+          root.drawnPackages
+            .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+            .filter((entry) => entry.length > 0 && entry.length <= 64)
+        )
+      ].slice(0, 24)
+    : undefined;
+
+  return { values, declined, notes, pagesWorthRendering, pinTablesByPackage, drawnPackages };
 }
