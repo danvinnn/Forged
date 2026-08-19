@@ -495,3 +495,74 @@ object.
 answered "does asking for the cross span cost any parts" in ninety seconds: five
 parts gained the question and all five were already asking three others, so no
 shipping part was lost. **Measure a trade before defending it.**
+
+## 10. Measuring, and getting the measurement wrong first, 2026-08-18
+
+Four lessons from the session that moved the bottleneck. Every one of them cost
+real time, and three of them nearly produced a fix to a defect that did not
+exist.
+
+**A new instrument is wrong until it is validated against a case you already
+understand.** `bench:copper` measures the emitted pads back out and compares them
+with the record. Its first run reported **454 findings**. Every one was the bench:
+it grouped lands by the wrong axis, so for an SOIC-8 it treated one land from
+each row as a "row" and reported the SPAN as a failed pitch check. Fixed, it
+reported 15. Of those, 14 were the bench comparing against a printed land the
+generator had deliberately DISCARDED in favour of IPC. Fixed, it reported 1. That
+last one was the bench rounding coordinates to a hundredth and then reporting its
+own rounding as a 0.005 mm defect in the product. The true count was **zero**.
+
+Nothing in the product was wrong. Had I reported the first number, the day would
+have gone into "fixing" correct copper. **Before believing an instrument, run it
+on something whose answer you already know.**
+
+**A cache holds answers to questions you no longer ask.** Counting how often the
+model answered a field, over every entry in `.model-cache`, said the model read a
+printed land pattern for **39 of 57** hold-out parts while only 16 reached the
+record. That looks exactly like a merge throwing half of everything away, and I
+was three minutes from hunting it. The cache holds up to sixteen entries per
+part, going back to older prompts. Restricted to the entries the CURRENT prompt
+actually hits, the model answered 19 and the record kept 16, which is nearly all
+of them. **Filter a cache measurement to the entries the current run would hit,
+or you are measuring history.**
+
+**"The model cannot read it" has still never once been the cause.** Half the
+hold-out corpus returned NOT ONE dimension from either pass. The model said why
+in its own notes, in the same words each time: the part number does not specify a
+package designator. The pinout was asked per package and everything else was
+asked once, so on a family datasheet the question had no answer and declining was
+correct. The same session, the dimension oracle marked a body height WRONG; the
+drawing prints the ceramic thickness with a dimension line and the seated height
+in the title block, and the model returned the one the FIELD GUIDE asked for.
+**Two for two, again. Read the question before doubting the answer.**
+
+**A recorded value that nothing compares against is a comment.**
+`DIMENSION_ORACLE` has carried `bodyLengthMm`, `bodyWidthMm` and
+`bodyHeightMaxMm` since it was created, hand-read off rendered drawings, and
+`bench:dimensions` never looked at any of them. Wiring the three in took ten
+minutes and immediately found the wrong body height above. **When you add a field
+to a fixture, add the assertion in the same edit, or it is documentation.**
+
+### What actually moved the product
+
+Not the reader. Two orderings and one question:
+
+- `/api/export` ran the traceability gate BEFORE the function that supplies the
+  pinout, so a family datasheet was refused one step early. The chooser had done
+  it in the right order for two days, so the two halves disagreed about the same
+  click.
+- `shipOutcome` in the hold-out bench had the identical defect, which is why
+  nobody saw the first one. **A bench that stops before the product does measures
+  a product that does not exist.**
+- The dimensions were asked for once, for a document that describes several
+  packages. Asked per package, six tuned family datasheets went from 0 shipping
+  to 4 shipping on one click.
+
+### Asking for a value and then refusing to use it
+
+`withSupplied` filled BLANKS only, for a good reason written above it: a user
+must not silently redefine a value the document states. The quad corner check can
+PROVE a read span wrong, and when it did, the product asked the user for the
+span, with the drawing's page beside it, and then kept the wrong value because it
+was not blank. Same refusal, twice. **Whenever you add a question, follow the
+answer all the way to the thing it is supposed to change.**

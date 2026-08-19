@@ -189,6 +189,23 @@ export type ReplayOutcome =
   | { part: string; status: "refused"; reason: string }
   | { part: string; status: "no-record"; reason: string };
 
+/**
+ * Every cached answer as a record the generator will accept.
+ *
+ * Split out so a second bench can measure the COPPER these produce without
+ * rebuilding the cache reader beside it. Two readers of the same cache would
+ * drift, and the one that drifted would be the one making the correctness
+ * claim.
+ */
+export function replayRecords(): ResolvedPart[] {
+  const out: ResolvedPart[] = [];
+  for (const [label, values] of [...cachedAnswers()].sort()) {
+    const part = partFrom(label, values);
+    if (part) out.push(part);
+  }
+  return out;
+}
+
 export async function replay(): Promise<ReplayOutcome[]> {
   const outcomes: ReplayOutcome[] = [];
   for (const [label, values] of [...cachedAnswers()].sort()) {

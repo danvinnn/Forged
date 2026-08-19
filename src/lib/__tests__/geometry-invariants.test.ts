@@ -242,8 +242,7 @@ test("a quad whose lands cannot fit its span is refused by NAMING the span", asy
   // The placement arithmetic is correct. The span is what is wrong, and the
   // pitch and pin count corroborate each other while it does not, so the refusal
   // should say which number to check.
-  const { createExportZip } = await import("../exporters");
-  const { FootprintInvalidError } = await import("../confidence");
+  const { createExportZip, FootprintUnavailableError } = await import("../exporters");
 
   const quad = (landSpanMm: number) =>
     ({
@@ -282,13 +281,35 @@ test("a quad whose lands cannot fit its span is refused by NAMING the span", asy
   await assert.rejects(
     () => createExportZip(quad(3.4), "kicad", {}),
     (error: unknown) => {
-      assert.ok(error instanceof FootprintInvalidError);
+      // A QUESTION since 2026-08-18, not a verdict, and the change is the whole
+      // point of the test rather than a detail of it.
+      //
+      // `FootprintInvalidError` reaches the user as FOOTPRINT_INVALID with an
+      // EMPTY `needs`: nothing to type and nothing to do. It is the right error
+      // for a footprint Forge built wrong, and the wrong one here, because what
+      // is wrong is a READING that two other readings contradict. Measured over
+      // 61 cached records on 2026-08-18, five parts died on this and it was the
+      // only build failure in the corpus that was not a plain refusal.
+      assert.ok(error instanceof FootprintUnavailableError, "answerable, not a dead end");
+      assert.deepEqual(
+        error.needs.map((need) => need.field),
+        ["landSpanMm", "landSpanCrossMm"],
+        "both axes, because the check takes the smaller of the two and either could be the wrong one"
+      );
       assert.match(error.message, /3\.68 mm of centre span/, "states what the geometry needs");
       assert.match(error.message, /3\.40 mm/, "and what was read");
-      assert.match(error.message, /centre span is the value to check first/, "and which number to fix");
+      assert.match(error.message, /span is the value to take again/, "and which number to fix");
+      assert.ok(error.needs.every((need) => need.why.length > 0), "each with its reason");
       return true;
     }
   );
+
+  // AND SUPPLYING IT BUILDS THE PART. A question whose answer changes nothing
+  // is a refusal wearing a prompt, which is what this whole change is against.
+  const answered = await createExportZip(quad(3.4), "kicad", {
+    supplied: { landSpanMm: 5.0, landSpanCrossMm: 5.0 }
+  });
+  assert.ok(answered.buffer.byteLength > 0, "the same part builds once the span is corrected");
 });
 
 test("an UNEQUAL quad is not refused just because its long side is long", async () => {

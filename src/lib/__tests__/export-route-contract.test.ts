@@ -427,3 +427,108 @@ test("a footprint that fails its own invariants is refused, not a 500", async ()
   assert.ok(Array.isArray(payload.violations) && payload.violations.length > 0, "what failed, itemised");
   assert.match(payload.error, /not valid and was not written/, "and the guard's own words reach the user");
 });
+
+// ---------------------------------------------------------------------------
+// Naming a package is what supplies the pinout, so it has to happen first
+// ---------------------------------------------------------------------------
+
+/**
+ * The half-fixed deadlock, closed 2026-08-18.
+ *
+ * A family datasheet that tabulates a pinout per package gets `pins` and
+ * `pinCount` null on purpose: the model is told not to pick among several, and
+ * returns them all labelled in `packagesInThisDocument`. The CHOOSER learned to read
+ * those on 2026-08-16 and duly reported `ships` for each package. Pressing one
+ * exported nothing.
+ *
+ * The route ran `resolveForExport` first and `asPackage` second, so the
+ * traceability gate refused the record for having no pins one step before the
+ * function that would have supplied them. Ten of the fifty-six hold-out parts
+ * were reported as "missing pinCount,pins" with their pinouts sitting on the
+ * record.
+ *
+ * The two halves must agree about the same click, which is what these assert.
+ */
+function familyRecord(): PartRecord {
+  const base = exportablePart("SOIC-8", 8);
+  const located = { page: 3, snippet: "PIN CONFIGURATION", region: null };
+  return {
+    ...base,
+    // The part number names no package, so neither does the record.
+    packageType: unknown<string>(),
+    pins: unknown<PinRecord[]>(),
+    pinCount: unknown<number>(),
+    packageVariants: [
+      { designator: "SOIC-8", family: "SOIC", leadCount: 8, inFrontMatter: true },
+      { designator: "SOIC-14", family: "SOIC", leadCount: 14, inFrontMatter: true }
+    ],
+    // Each package carries its OWN pinout and its OWN measurements, which is
+    // what the document prints: one outline drawing and one recommended
+    // footprint per package it sells.
+    packagesInThisDocument: [
+      { packageType: "SOIC-8", pins: pins(8), exposedPad: false, citation: located, dimensions: soicDimensions(4.9) },
+      { packageType: "SOIC-14", pins: pins(14), exposedPad: false, citation: located, dimensions: soicDimensions(8.65) }
+    ]
+  };
+}
+
+/** The fields a narrow SOIC's two drawings state, as the reader returns them. */
+function soicDimensions(bodyLengthMm: number): Partial<PartRecord["dimensions"]> {
+  return {
+    bodyLengthMm: citedValue(bodyLengthMm),
+    bodyWidthMm: citedValue(3.9),
+    bodyHeightMm: citedValue(1.5),
+    pitchMm: citedValue(1.27),
+    leadSides: citedValue<2 | 4>(2),
+    leadForm: citedValue<"gullwing" | "nolead" | "straight">("gullwing"),
+    landPadLengthMm: citedValue(1.55),
+    landPadWidthMm: citedValue(0.6),
+    landSpanMm: citedValue(5.4)
+  };
+}
+
+test("a family datasheet exports once the caller names which package", async () => {
+  const part = familyRecord();
+
+  const unnamed = await POST(post({ part, format: "kicad" }));
+  assert.equal(unnamed.status, 422, "with no package named there is still nothing to build");
+  assert.equal((await unnamed.json()).code, "INCOMPLETE_EXTRACTION");
+
+  // Naming one is not new information about the part. It says WHICH of the
+  // readings already on the record is the one being ordered, and NOTHING else is
+  // supplied: the pinout, the drawings and the printed footprint were all read
+  // for this package and stored against it.
+  const named = await POST(post({ part, format: "kicad", packageType: "SOIC-8" }));
+
+  assert.equal(named.status, 200, "one click, no questions: it was all on the record");
+  assert.equal(named.headers.get("Content-Type"), "application/zip");
+});
+
+test("the pins that get built are the named package's own, not the other's", async () => {
+  // The failure this rules out is worse than a refusal: a fourteen-pin table
+  // reaching an eight-pin footprint. `asPackage` refuses a pinout that
+  // contradicts the designator, so the wrong table cannot silently become pads.
+  const part = familyRecord();
+
+  const fourteen = await POST(post({ part, format: "kicad", packageType: "SOIC-14" }));
+  assert.equal(fourteen.status, 200, "the fourteen-pin package builds from the fourteen-pin table");
+
+  // A package this document tabulates nothing for is refused rather than given
+  // whichever table happened to be first.
+  const absent = await POST(post({ part, format: "kicad", packageType: "VQFN-16" }));
+  assert.equal(absent.status, 422, "no table for it means no pinout, and no footprint");
+  assert.equal((await absent.json()).code, "INCOMPLETE_EXTRACTION");
+});
+
+test("naming a package cannot substitute a pinout past an unrelated gap", async () => {
+  // The substitution is allowed only when the pinout is the ONLY thing missing.
+  // A record short of a part number has a different problem, and filling in pins
+  // would move the refusal rather than answer it.
+  const part = { ...familyRecord(), partNumber: unknown<string>() };
+  const response = await POST(post({ part, format: "kicad", packageType: "SOIC-8" }));
+
+  assert.equal(response.status, 422);
+  const payload = await response.json();
+  assert.equal(payload.code, "INCOMPLETE_EXTRACTION");
+  assert.ok(payload.missing.includes("partNumber"), "and it still says what is actually wrong");
+});

@@ -45,6 +45,24 @@ function rangeMatches(read: unknown, expected: OracleRange): boolean | null {
   return near(minMm, expected.minMm) && near(maxMm, expected.maxMm);
 }
 
+/**
+ * A SCALAR reading against a range the drawing prints.
+ *
+ * The body size, the seated height and the exposed pad are all dimensioned as
+ * min/max on the drawing and stored on the record as one number, because that is
+ * what a 3D solid and a paste aperture are built from. Equality is therefore the
+ * wrong test and the range is the right one: any value the drawing permits is a
+ * correct reading, and one outside it is not.
+ *
+ * `EPSILON_MM` is applied at both ends, so a reading of exactly the printed
+ * maximum is not failed by floating point.
+ */
+function withinRange(read: unknown, expected: OracleRange): boolean | null {
+  if (read === null || read === undefined) return null;
+  if (typeof read !== "number") return false;
+  return read >= expected.minMm - EPSILON_MM && read <= expected.maxMm + EPSILON_MM;
+}
+
 function scalarMatches(read: unknown, expected: number): boolean | null {
   if (read === null || read === undefined) return null;
   if (typeof read !== "number") return false;
@@ -103,6 +121,30 @@ function compare(part: string, outline: string, entry: DimensionOracleEntry, val
     const read = at("dimensions.leadForm");
     add("leadForm", read === null || read === undefined ? null : read === entry.leadForm, read, entry.leadForm);
   }
+  // THE BODY, which the oracle has recorded since it existed and nothing ever
+  // compared. A hand-read number nobody checks against is a comment.
+  //
+  // Checked as a scalar INSIDE the printed range rather than against a midpoint:
+  // RULES.md 2 is explicit that choosing the midpoint is an assumption about
+  // what an engineer wants, so any value the drawing permits is correct here.
+  if (entry.bodyLengthMm) add("bodyLengthMm", withinRange(at("dimensions.bodyLengthMm"), entry.bodyLengthMm), at("dimensions.bodyLengthMm"), entry.bodyLengthMm);
+  if (entry.bodyWidthMm) add("bodyWidthMm", withinRange(at("dimensions.bodyWidthMm"), entry.bodyWidthMm), at("dimensions.bodyWidthMm"), entry.bodyWidthMm);
+  if (entry.bodyHeightMm) {
+    // A max/nom/min drawing. Any value it permits is a correct reading, and the
+    // prompt asks for the nominal.
+    add("bodyHeightMm", withinRange(at("dimensions.bodyHeightMm"), entry.bodyHeightMm), at("dimensions.bodyHeightMm"), entry.bodyHeightMm);
+  } else if (entry.bodyHeightMaxMm !== undefined) {
+    // The drawing prints ONE number and calls it MAX, so that is the reading:
+    // there is no other stated value for the envelope, and a smaller answer is
+    // a different feature of the package rather than a tighter tolerance.
+    add("bodyHeightMm", scalarMatches(at("dimensions.bodyHeightMm"), entry.bodyHeightMaxMm), at("dimensions.bodyHeightMm"), entry.bodyHeightMaxMm);
+  }
+  // THE EXPOSED PAD, and the AXIS as much as the size. It shipped rotated ninety
+  // degrees from its own body on 2026-08-16, which still fits between the lead
+  // rows and so passes every geometric invariant there is.
+  if (entry.thermalPadLengthMm) add("thermalPadLengthMm", withinRange(at("dimensions.thermalPadLengthMm"), entry.thermalPadLengthMm), at("dimensions.thermalPadLengthMm"), entry.thermalPadLengthMm);
+  if (entry.thermalPadWidthMm) add("thermalPadWidthMm", withinRange(at("dimensions.thermalPadWidthMm"), entry.thermalPadWidthMm), at("dimensions.thermalPadWidthMm"), entry.thermalPadWidthMm);
+
   if (entry.land) {
     add("landPadLengthMm", scalarMatches(at("dimensions.landPadLengthMm"), entry.land.padLengthMm), at("dimensions.landPadLengthMm"), entry.land.padLengthMm);
     add("landPadWidthMm", scalarMatches(at("dimensions.landPadWidthMm"), entry.land.padWidthMm), at("dimensions.landPadWidthMm"), entry.land.padWidthMm);

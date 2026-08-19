@@ -832,34 +832,47 @@ export function mergeModelValues(
   // exposed pad belongs to one package of a family and not to its siblings: an
   // SOIC and a QFN of the same part disagree about it, and a single flag has to
   // be wrong for one of them.
-  if (result.pinTablesByPackage && result.pinTablesByPackage.length > 0) {
-    const usable: NonNullable<PartRecord["pinTablesByPackage"]> = [];
-    for (const table of result.pinTablesByPackage) {
-      const normalized = normalizeModelPins(table.pins);
-      if (!normalized.ok) {
-        merged.notes.push(
-          `${modelName} returned a ${table.packageType} pin table that was discarded, so that package stays ` +
-            `honestly unread: ${normalized.reason}.`
-        );
-        continue;
+  if (result.packagesInThisDocument && result.packagesInThisDocument.length > 0) {
+    const usable: NonNullable<PartRecord["packagesInThisDocument"]> = [];
+    for (const table of result.packagesInThisDocument) {
+      // AN ENTRY CAN CARRY EITHER HALF, and the two are judged separately.
+      //
+      // A pin table that fails the shape proof is discarded; that says nothing
+      // about the measurements printed on that package's outline drawing, and
+      // discarding the entry whole would throw them away with it.
+      let pins: PinRecord[] | undefined;
+      let exposedPad: boolean | undefined;
+      let citation: Citation | null | undefined;
+      if (table.pins !== undefined) {
+        const normalized = normalizeModelPins(table.pins);
+        if (!normalized.ok) {
+          merged.notes.push(
+            `${modelName} returned a ${table.packageType} pin table that was discarded, so that package stays ` +
+              `honestly unread: ${normalized.reason}.`
+          );
+        } else if (!isGapFreeSequence(normalized.pins)) {
+          merged.notes.push(
+            `${modelName} returned a ${table.packageType} pin table whose rows do not number 1..` +
+              `${normalized.pins.length} without gaps or repeats, so it was discarded rather than built from.`
+          );
+        } else {
+          pins = normalized.pins;
+          exposedPad = normalized.exposedPad;
+          // Located on the NORMALISED rows, which is what a later package choice
+          // actually puts on the record.
+          citation = locatePinTable(doc, normalized.pins);
+        }
       }
-      if (!isGapFreeSequence(normalized.pins)) {
-        merged.notes.push(
-          `${modelName} returned a ${table.packageType} pin table whose rows do not number 1..` +
-            `${normalized.pins.length} without gaps or repeats, so it was discarded rather than built from.`
-        );
-        continue;
-      }
+
+      const dimensions = packageDimensions(doc, table.dimensions, renderedPages);
+      if (pins === undefined && dimensions === undefined) continue;
       usable.push({
         packageType: table.packageType,
-        pins: normalized.pins,
-        exposedPad: normalized.exposedPad,
-        // Located on the NORMALISED rows, which is what a later package choice
-        // actually puts on the record.
-        citation: locatePinTable(doc, normalized.pins)
+        ...(pins ? { pins, exposedPad, citation } : {}),
+        ...(dimensions ? { dimensions } : {})
       });
     }
-    if (usable.length > 0) merged.pinTablesByPackage = usable;
+    if (usable.length > 0) merged.packagesInThisDocument = usable;
   }
 
   // Which packages the document actually DRAWS. Stored unfiltered: it is checked
@@ -871,3 +884,64 @@ export function mergeModelValues(
 
   return { part: merged, filled, uncited, rejected };
 }
+
+/**
+ * One package's own measurements, verified exactly as the flat block is.
+ *
+ * ## The rule, and why it is the same rule
+ *
+ * These values place copper. They arrive by a different route from the flat
+ * `values` block and there is no defensible reason for them to face a weaker
+ * check, so they face the same one, in the same order: range fields must be a
+ * positive min/max pair, a value is cited against the document's text first and
+ * against a rendered page second, and a value that can be placed nowhere is
+ * stored uncited and refused downstream by `resolveForExport`.
+ *
+ * Stored uncited rather than dropped, for the reason the flat block records: an
+ * uncited value is visible to the user as a value we could not place, while a
+ * dropped one is indistinguishable from a document that was silent. The refusal
+ * happens at the gate either way.
+ *
+ * Only the dimension fields. A model that returns `packageType` or `pins` inside
+ * a package's own dimension block is answering a different question, and the
+ * record has one place for each of those already.
+ */
+function packageDimensions(
+  doc: DatasheetText,
+  raw: Record<string, { value: unknown; page: number | null }> | undefined,
+  renderedPages: readonly number[]
+): Partial<PartRecord["dimensions"]> | undefined {
+  if (!raw) return undefined;
+  const out: Record<string, Extracted<unknown>> = {};
+  for (const [field, entry] of Object.entries(raw)) {
+    const claimed = entry as { value: ModelValue["value"]; page: number | null };
+    if (!field.startsWith("dimensions.")) continue;
+    if (!(extractionFields as readonly string[]).includes(field)) continue;
+    if (!claimed || claimed.value === null || claimed.value === undefined) continue;
+
+    let value: ModelValue["value"] = claimed.value;
+    if ((RANGE_FIELDS as readonly string[]).includes(field)) {
+      const range = asRange(value);
+      if (!range) continue;
+      value = range;
+    }
+
+    let citation = verifyCitation(doc, { value, page: claimed.page });
+    let method: ExtractionMethod = "vlm";
+    if (!citation && renderedPages.length > 0) {
+      const drawn = citeRenderedPage(doc, { value, page: claimed.page }, renderedPages);
+      if (drawn) {
+        citation = drawn;
+        method = "vlm-drawing";
+      }
+    }
+    out[field.slice("dimensions.".length)] = {
+      value,
+      confidence: citation ? (method === "vlm-drawing" ? 0.4 : 0.5) : null,
+      method,
+      citation
+    };
+  }
+  return Object.keys(out).length > 0 ? (out as Partial<PartRecord["dimensions"]>) : undefined;
+}
+

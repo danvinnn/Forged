@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildExtractionRequest } from "../request";
 import { buildPrompt } from "../models/prompt";
+import { MAX_PAGES_TO_MODEL } from "../contracts";
 import { extractDatasheetText, datasheetTextFromPages } from "../../pdftext";
 import { buildPartRecord } from "../../datasheet";
 import { unresolvedFields } from "../merge";
@@ -98,7 +99,10 @@ test("the first pass asks the model which pages to render, and attaches none", (
   assert.equal(request.images.length, 0, "the first pass is text only");
   const prompt = buildPrompt(request);
   assert.match(prompt, /pagesWorthRendering/, "and it asks which pages to look at");
-  assert.match(prompt, /at most 8 pages/);
+  // The NUMBER comes from the one constant, not from a word typed here: it was
+  // written out in four places and raising the budget without raising the
+  // sentence would have changed nothing, because the model reads the sentence.
+  assert.match(prompt, new RegExp(`at most ${MAX_PAGES_TO_MODEL} pages`));
 });
 
 // --- selecting the page a DRAWING is on -------------------------------------
@@ -165,4 +169,69 @@ test("an explicit part number still wins over the record's", () => {
   const request = buildExtractionRequest(part, doc, "OPA2189.pdf", "OPA4189");
 
   assert.equal(request?.partNumber, "OPA4189", "the caller knows something the record does not");
+});
+
+// ---------------------------------------------------------------------------
+// The question that had no answer
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a per-package measurement is asked for, and where it is not.
+ *
+ * Measured over the hold-out on 2026-08-18: 27 of 57 parts returned NOT ONE
+ * dimension from either pass. The model's own notes say why, and they say it in
+ * the same words each time: the part number does not specify a package
+ * designator. The prompt told it not to pick a package and gave it nowhere to
+ * put a per-package answer, so the honest reply was nothing at all.
+ *
+ * Two properties, and the second matters as much as the first: the ask appears
+ * where the drawings are, and does NOT appear where the package is already
+ * settled, because there it would invite a list for a document with nothing to
+ * list.
+ */
+
+const familyDoc = () =>
+  datasheetTextFromPages([
+    "ACME358 Data Sheet\nAvailable in SOIC-8 (D) and VSSOP-8 (DGK).",
+    "PACKAGE OUTLINE D0008A\nBody length D 4.90 mm",
+    "PACKAGE OUTLINE DGK0008A\nBody length D 3.00 mm"
+  ]);
+
+test("the pass that can see the drawings is asked for measurements PER PACKAGE", () => {
+  const doc = familyDoc();
+  const request = buildExtractionRequest(buildPartRecord(doc, "ACME358.pdf"), doc, "ACME358.pdf");
+  assert.ok(request);
+
+  const textPass = buildPrompt(request);
+  assert.doesNotMatch(
+    textPass,
+    /report them PER\nPACKAGE/,
+    "the text pass cannot read a dimension line, so it is not asked to"
+  );
+
+  // The second pass, as `withRenderedPages` builds it: images attached and no
+  // package settled, which is the state the refusal was measured in.
+  const imagePass = buildPrompt({
+    ...request,
+    packageType: null,
+    images: [{ page: 2, mimeType: "image/png", base64: "", widthPx: 1, heightPx: 1 }]
+  });
+  assert.match(imagePass, /packagesInThisDocument/, "and it has somewhere to put the answer");
+  assert.match(imagePass, /one entry per package/);
+});
+
+test("a settled package is asked for one answer, not a list", () => {
+  // The ask exists because the question had no answer. Where the part number
+  // decides, it has exactly one, and asking both ways would let a package
+  // disagree with itself.
+  const doc = familyDoc();
+  const request = buildExtractionRequest(buildPartRecord(doc, "ACME358.pdf"), doc, "ACME358.pdf");
+  assert.ok(request);
+
+  const settled = buildPrompt({
+    ...request,
+    packageType: "SOIC-8",
+    images: [{ page: 2, mimeType: "image/png", base64: "", widthPx: 1, heightPx: 1 }]
+  });
+  assert.doesNotMatch(settled, /one entry per package/);
 });

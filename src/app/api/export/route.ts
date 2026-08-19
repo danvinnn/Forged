@@ -4,6 +4,7 @@ import {
   createExportZip,
   FootprintUnavailableError,
   GeneratorUnavailableError,
+  recordForPackage,
   type SuppliedDimensions
 } from "../../../lib/exporters";
 import { FootprintInvalidError } from "../../../lib/confidence";
@@ -76,9 +77,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unsupported export format." }, { status: 400 });
   }
 
+  // Most datasheets offer a part in several packages (UCC27524 is SOIC-8,
+  // HVSSOP-8 and WSON-8), and a footprint is per package. The extracted
+  // designator is a default, not an answer, so the caller may name the one they
+  // are actually ordering.
+  //
+  // Read BEFORE the traceability gate, because on a family datasheet the named
+  // package is what supplies the pinout the gate is about to check for. See
+  // `recordForPackage`.
+  const requestedPackage = payload.packageType;
+  if (requestedPackage !== undefined && typeof requestedPackage !== "string") {
+    return NextResponse.json({ error: "packageType must be a string." }, { status: 400 });
+  }
+  const named = requestedPackage ? requestedPackage.slice(0, 64) : null;
+
   // Refuse to generate CAD geometry from values nobody actually read off the
   // datasheet. A guessed pin count becomes guessed pads on a flight part.
-  const resolved = resolveForExport(partResult.data);
+  const forResolution = named ? recordForPackage(partResult.data, named) : partResult.data;
+  const resolved = resolveForExport(forResolution);
   if (!resolved.ok) {
     if (resolved.untraceable?.length) {
       return NextResponse.json(
@@ -102,22 +118,12 @@ export async function POST(request: Request) {
     );
   }
 
-  // Most datasheets offer a part in several packages (UCC27524 is SOIC-8,
-  // HVSSOP-8 and WSON-8), and a footprint is per package. The extracted
-  // designator is a default, not an answer, so the caller may name the one they
-  // are actually ordering.
-  const requestedPackage = payload.packageType;
-  if (requestedPackage !== undefined && typeof requestedPackage !== "string") {
-    return NextResponse.json({ error: "packageType must be a string." }, { status: 400 });
-  }
   // Naming a DIFFERENT package discards the drawing evidence, and it has to:
   // every geometric value on the record was read off the drawings for the
   // package the document resolved to. `asPackage` is the one place that rule is
   // written, shared with the chooser so the two can never disagree about what a
   // click will build. Naming the package it already is changes nothing.
-  const part = requestedPackage
-    ? asPackage(resolved.part, requestedPackage.slice(0, 64))
-    : resolved.part;
+  const part = named ? asPackage(resolved.part, named) : resolved.part;
 
   // Ceramic flat packs ship with straight leads that the assembler trims and
   // forms, so their seated span is a board-process input rather than a datasheet

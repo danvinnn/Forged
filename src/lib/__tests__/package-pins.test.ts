@@ -144,11 +144,11 @@ test("a sibling with a different lead count does not build from the record's pin
 });
 
 test("with the document's own table for that package, the sibling builds from IT", async () => {
-  // This is what `pinTablesByPackage` was read for, and until 2026-08-16 nothing
+  // This is what `packagesInThisDocument` was read for, and until 2026-08-16 nothing
   // consumed it: the model returned one table per package on 22 of 56 hold-out
   // documents and every one was discarded.
   const record = familyRecord({
-    pinTablesByPackage: [
+    packagesInThisDocument: [
       { packageType: "SSOP-20", pins: pins(20) },
       { packageType: "SSOP-28", pins: pins(28) }
     ]
@@ -188,7 +188,7 @@ test("the chooser reports the sibling honestly rather than offering a wrong buil
 test("and it ships once the document's own table for it is on the record", async () => {
   const choice = packageOptions(
     familyRecord({
-      pinTablesByPackage: [
+      packagesInThisDocument: [
         { packageType: "SSOP-20", pins: pins(20) },
         { packageType: "SSOP-28", pins: pins(28) }
       ]
@@ -236,7 +236,7 @@ test("the per-package tables survive the export route's schema", async () => {
   // `asPackage` would find the right table everywhere except where it matters.
   const { partSchema } = await import("../types");
   const record = familyRecord({
-    pinTablesByPackage: [
+    packagesInThisDocument: [
       { packageType: "SSOP-20", pins: pins(20) },
       { packageType: "SSOP-28", pins: pins(28) }
     ]
@@ -245,8 +245,8 @@ test("the per-package tables survive the export route's schema", async () => {
   const parsed = partSchema.safeParse(JSON.parse(JSON.stringify(record)));
   assert.ok(parsed.success, `the record must validate: ${parsed.success ? "" : parsed.error.message}`);
   if (!parsed.success) return;
-  assert.equal(parsed.data.pinTablesByPackage?.length, 2, "and both tables survive");
-  assert.equal(parsed.data.pinTablesByPackage?.[1].pins.length, 28);
+  assert.equal(parsed.data.packagesInThisDocument?.length, 2, "and both tables survive");
+  assert.equal(parsed.data.packagesInThisDocument?.[1].pins?.length, 28);
 });
 
 // ---------------------------------------------------------------------------
@@ -270,7 +270,7 @@ test("a record with no single pinout still offers a chooser, one option per pack
   const record = familyRecord({
     pinCount: unknown<number>(),
     pins: unknown<PinRecord[]>(),
-    pinTablesByPackage: [
+    packagesInThisDocument: [
       { packageType: "SSOP-20", pins: pins(20), citation: { page: 4, snippet: "20-row pin table", region: null } },
       { packageType: "SSOP-28", pins: pins(28), citation: { page: 5, snippet: "28-row pin table", region: null } }
     ]
@@ -294,7 +294,7 @@ test("an unlocated table is not evidence and does not unblock anything", () => {
   const record = familyRecord({
     pinCount: unknown<number>(),
     pins: unknown<PinRecord[]>(),
-    pinTablesByPackage: [
+    packagesInThisDocument: [
       { packageType: "SSOP-20", pins: pins(20), citation: null },
       { packageType: "SSOP-28", pins: pins(28), citation: null }
     ]
@@ -320,7 +320,7 @@ test("a designator is matched to its table through the document's own punctuatio
     ],
     pinCount: unknown<number>(),
     pins: unknown<PinRecord[]>(),
-    pinTablesByPackage: [
+    packagesInThisDocument: [
       { packageType: "VQFNRGE", pins: pins(24), citation: { page: 6, snippet: "t", region: null } },
       { packageType: "TSSOPPW", pins: pins(24), citation: { page: 7, snippet: "t", region: null } }
     ]

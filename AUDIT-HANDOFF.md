@@ -1,129 +1,115 @@
-# AUDIT HANDOFF, 2026-08-18 (read this first, then AUDIT-FINDINGS.md)
+# Handoff, 2026-08-18 evening
 
-## What Anthony asked for, in this session, verbatim in substance
+The line-by-line audit is finished and closed. This session was the follow-on:
+finishing the product against the three-number definition of done.
 
-Manually read EVERY SINGLE LINE of the codebase (no scripts to find defects;
-`cat`/`sed` to READ is fine). Find every instance of the recurring stupid
-problems: assuming everything is square and storing one value where the document
-gives two, collecting information and throwing it away, guards that cannot fire,
-questions the product cannot express, allowlists broken by the next case,
-comments asserting behaviour the code lacks. Record every defect in a file so
-none are lost. Then FIX them all, the way he would want them fixed, following
-RULES.md at all times.
+**Nothing is committed.** 26 files modified, 2 new (`src/lib/__bench__/copper.ts`,
+this file's sibling `AUDIT-FINDINGS.md` was already tracked). Anthony's
+instruction, twice: do not commit during this effort. Ask each time.
 
-**Do not stop until every line is read, every problem recorded, and every problem
-fixed.** He has been interrupted-and-abandoned before and hated it. After the
-fixes, one hold-out run is allowed, MAXIMUM FOUR this session, so make each count.
+## Where it stands
 
-**DO NOT COMMIT ANYTHING during this whole effort.** Local edits only.
+    READ    49/54  (91%)   hold-out run 5, the current tree
+    SHIPS   34/54  (63%)   was 14/54 (26%) at the start of the session
+    copper  56/56 emitted footprints agree with their records
+    suite   661 tests green, 20/20 mutations killed (was 17/20)
+    oracle  10 drawings, 145 hand-checked values, 2 known-wrong pending re-read
+    server  built, started, real export POSTed and read back
 
-## His principles for every fix
+Definition of done:
 
-1. General, never per-case. If it cannot be stated without naming a part or a
-   vendor it is tailoring. The proof of generality is a fix that also corrects
-   something it was not aimed at.
-2. Do not invent. Name the source: a page, a standard, or the user.
-3. Read correctly, then use correctly. Not workarounds. If information is
-   missing, first ask whether we asked for it properly.
-4. Measure, do not reason. Record rejected approaches so nobody retries them.
-5. Refusing is a safety net, not an achievement. A refusal that loses a correct
-   part is a defect, not a fix.
-6. Plus every rule in RULES.md, and the working style in LEARNINGS.md section 7
-   (no em dashes, short answers, work directly in the repo).
+    SHIPS >= 60%              MET, 63%
+    zero wrong-copper         MET
+    one click, one number     MET on the family path (4 of 6 tuned parts)
 
-## How he wants each defect SHAPE solved (stated by him 2026-08-18)
+## Spend
 
-1. We had it and threw it away -> CONSUME it, do not re-read it. Never add a call
-   to recover something already on the record. Where two readings conflict, name
-   the CONFLICT rather than ranking readers.
-2. Fixed in one place, not the other -> ONE function, both callers. Delete the
-   second copy, do not patch it. Check the BENCHES too.
-3. Allowlist broken by the next case -> INVERT so the unknown case lands on the
-   safe side, and say in the comment which side that is and why.
-4. The unanswerable question -> check the QUESTION before blaming the reader.
-   Every enum the record accepts must be offered everywhere it is asked.
-5. Null treated as a default -> refuse or ask, never default. If the user can
-   answer it, make it both ASKABLE and SUPPLIABLE, and keep the lists in step.
-6. A guard that cannot fire -> test the VALUE not the sentinel, and add a test
-   proving the guard fires.
-7. A comment asserting behaviour the code lacks -> make the code true or delete
-   the claim. Never leave an aspirational comment.
+    ~$23.23 cumulative, over 1092 billed calls. Five runs; the fifth was
+    authorised separately after the four.
 
-## Non-negotiables
+The ceiling in `spendLimitUsd()` is a LIFETIME total defaulting to $10, and
+lifetime spend passed it before this session began. It therefore cannot be
+reached without being exceeded, and every run now pays for one call per part
+before throwing. Raised per-command to $20, then $22 with Anthony's approval for
+run 4. **Never persisted.** This is his guard and his money; ask.
 
-- Nothing in `holdout.ts` is ever tuned against, opened to diagnose a failure, or
-  run as a subset. A hold-out part that must be examined is PROMOTED into
-  `BENCH_CORPUS` and replaced with a blind pick.
-- Do not commit. Not this session.
-- Typecheck every change (`./node_modules/.bin/tsc --noEmit`), affected tests
-  while iterating, full suite before declaring done.
-- `nvm use 22`. `./node_modules/.bin/tsc`, not `npx tsc`.
-- Model key: `set -a && . ./.env.local && set +a && npm run bench:holdout`
-- Spend was $14.08 cumulative at the start of this session. Ceiling defaults to
-  $10, so a paid run needs `FORGE_SPEND_LIMIT_USD=` set higher, deliberately.
+## Which number describes this tree
 
-## READING PROGRESS
+Neither run does, exactly. After the F83 revert the prompt is run 3's prompt plus
+the one-field `bodyHeightMm` wording correction, so **run 3's 93% / 57% is the
+best available figure** and that single field is unmeasured. Two prompt changes
+rode on run 4 and cannot be separated by measurement; that was my error, and the
+rule it produces is in `AUDIT-FINDINGS.md`: one hypothesis per paid run.
 
-Findings live in `AUDIT-FINDINGS.md` (F1..F58 so far). Read that file.
+## The one thing left, and it is measured
 
-DONE (read line by line this session):
-  types.ts 898, confidence.ts 545, geometry.ts 192, vendorland.ts 226,
-  packagedrawing.ts 242, extraction/merge.ts 852, extraction/contracts.ts 355,
-  extraction/models/prompt.ts 533, extraction/run.ts 223,
-  extraction/request.ts 224, extraction/untrusted.ts 136, budget.ts 89,
-  sections.ts 50, factory.ts 76, index.ts 21,
-  models/{transport 157, gemini 117, vertex 188, local 277, local-focused 264},
-  provenance.ts 40, readout.ts 187, datasheet.ts 230, review.ts 299,
-  packagevariants.ts 565, pdftext.ts 416, fontdecode.ts 202, pagerender.ts 184,
-  preflight.ts 127, emitters/kicad.ts 491, emitters/altium/* (all 8 files),
-  app/api/{config,parse,export,lookup}/route.ts 815, app/page.tsx 1216,
-  app/layout.tsx 17, instrumentation.ts 13,
-  retrieval/** except __bench__ (2,591), retrieval/__bench__/{corpus,coverage}.
+Ten of the twenty-three parts that do not ship are blocked on the LAND PATTERN.
+That is the single remaining bottleneck and it is much smaller than the one it
+replaced.
 
-DONE in the PREVIOUS session (findings F1-F17 carried over, trust them but
-re-read while fixing): exporters.ts 2436, ipc7351.ts 496.
+`pageRequestGuidance` was generalised (F83) on the same principle that moved the
+session, run 4 measured it, and **it was worse on every field**: READ 93% to 91%,
+SHIPS 57% to 54%, `landPadLengthMm` 15 to 13. Run 4 had zero failed calls where
+run 3 had three, so the comparison favours run 4 and the result still went down.
+**Reverted**, with the numbers written into the function so nobody retries it.
 
-REMAINING TO READ:
-  src/lib/__bench__/modelcache.ts       978
-  src/lib/__bench__/extraction.ts       829
-  src/lib/__bench__/pinout-oracle.ts    691
-  src/lib/__bench__/holdout.ts          541
-  src/lib/__bench__/dimension-oracle.ts 292
-  src/lib/__bench__/mutation.ts         323
-  src/lib/__bench__/guards.ts           276
-  src/lib/__bench__/replay.ts           255
-  src/lib/__bench__/dimensions.ts       177
-  src/lib/__bench__/packagehint.ts       91
-  src/lib/__bench__/env.ts               38
-  src/types/pdf-parse.d.ts               56
-  (then re-read exporters.ts + ipc7351.ts while fixing F1-F17)
+The finding that replaces it: **the eight-page render cap is the binding
+constraint, not the wording.** Spreading eight pages across six packages buys a
+thinner look at each and squeezes the pinout page out. A future attempt has to
+raise the budget or choose pages better.
 
-## FIXING PROGRESS
+## What moved the product, so it is not re-derived
 
-READING COMPLETE. FIXING COMPLETE. See `AUDIT-FINDINGS.md` for F1..F69, the
-fixes and the measurements.
+Not the reader. READ was 93% before and 93% after.
 
-[x] A. Rectangular quads end to end (F1 F2 F11 F12 F17 F19 F22 F23 F25 F51 F55
-       F65 F67 F68) plus F9, the band check that could never run on a
-       straight-lead package.
-[x] B. F54 asPackage now runs on the export path; F16 examined and shown not to
-       be live once F54 is fixed.
-[x] C. F7 drawnPackages refuses only what it can prove; F18 drawnPackages on the
-       zod schema.
-[x] D. F33/F34 combine carries declined and attempts.
-[x] E. F29 fence order; F30 designators escaped not stripped.
-[x] F. F8/F50/F52/F57 the unanswerable questions.
-[x] G. F49 lookup budget; F48 no double render.
-[x] H. F35 pass 2 is told the package.
-[x] I. F3 F4 F5 F6 F10 F14 F15 F20 F21 F26 F27 F28 F31 F32 F36 F37 F38 F39 F41
-       F42 F43 F44 F45 F47 F53 F56 F58 F59 F60 F61 F63 F64 F66 F69.
+1. **Ordering.** `/api/export` ran the traceability gate before `asPackage`, which
+   is the function that supplies a family datasheet's pinout, so it refused for
+   "missing pins" one step early. The chooser had done it right for two days: the
+   two halves of the product disagreed about the same click.
+2. **The hold-out bench had the identical defect**, which is why nobody saw the
+   first one. `shipOutcome` returned on `!resolved.ok` and never reached route
+   two, where the chooser runs.
+3. **Dimensions asked per package.** 27 of 57 hold-out parts returned not one
+   dimension from either pass, the model's own notes explaining that the part
+   number does not specify a package designator. Six tuned family datasheets went
+   0-of-6 shipping to 4-of-6 on one click.
+4. **Two refusals made answerable**: the quad corner short, and the body size the
+   chooser never asked for but the export did.
+5. **`withSupplied` refused to use the answer it asked for.** The four land fields
+   are now CORRECTED by a supplied value; every other field is still only filled
+   when blank.
 
-Verification run: `./node_modules/.bin/tsc --noEmit` clean; `npm test` green
-twice at 648, and again after the later exporters work; all 20 mutations still
-match their target line exactly once; `bench:replay` (free) measured the
-cross-span ask as costing zero shipping parts.
+## Known-open, in priority order
 
-DONE: two hold-out runs of the four allowed. READ 50/54 (93%), SHIPS 14/54
-(26%), both a floor because one call failed on an unrecoverable Vertex 429.
-Cumulative spend across every run ever is now ~$16.39. See the HOLD-OUT RESULT
-section of AUDIT-FINDINGS.md, including what the numbers do NOT establish.
+1. **The land pattern, ten parts.** Run 4 answered the first question: the render
+   BUDGET is the binding constraint, not the wording of the page request. Raising
+   `MAX_PAGES_TO_MODEL` above 8, or choosing pages better, is the next thing to
+   measure. Asking for more pages inside the same cap is measured and rejected.
+2. **ADC128S102QML-SP body height** reads 1.778 (the ceramic) where the drawing's
+   title block says 2.33 max (the seated envelope). Fixed at the source: the
+   FIELD GUIDE now asks for the seated height, because `buildStepModel` stands
+   the solid on the board. The cached answer predates the fix, so `bench:dimensions`
+   still shows it WRONG. A tuned re-read of that one part (~$0.05) proves it.
+3. **Two parts: "drawings read, no pin table for that package."** Created by the
+   per-package work and visible in the run 3 buckets. A reading gap, not a
+   structural one.
+4. **Cadence.** Still refuses honestly. NOT delivered and named rather than
+   dropped: emitting an Allegro library without the format spec means guessing at
+   a binary padstack format, and a wrong CAD file that opens is worse than an
+   honest refusal.
+5. **README.** Anthony deferred it until the product is done. Two known-stale
+   claims are recorded in `CLAUDE.md`.
+6. **`packageOutlineCode` and `jedecOutline`** come back inside the per-package
+   dimension block and are filtered out by the `dimensions.` prefix check. We
+   have the data and drop it. Unblocks no part.
+
+## New instrument
+
+`npm run bench:copper` builds every cached record's footprint and measures the
+PADS back out: pitch, both centre spans, land size, and the exposed pad's axis,
+against the record and against the oracle's printed footprint where one exists.
+Free, offline.
+
+Its first three runs reported 454, then 15, then 1 finding, every one of them the
+instrument being wrong. **Validate a new bench on a case whose answer you already
+know before believing it.** Written up in LEARNINGS section 10.

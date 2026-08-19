@@ -261,7 +261,7 @@ function classify(record: PartRecord): string {
   //
   // Only tables that were LOCATED count. An entry that matched no page in the
   // document is not evidence, and `resolveForExport` refuses it downstream.
-  const located = (record.pinTablesByPackage ?? []).filter((table) => table.citation).length;
+  const located = (record.packagesInThisDocument ?? []).filter((table) => table.citation).length;
   if (pins.length === 0 && count === null && located > 0) {
     return "read (one pinout per package, user picks)";
   }
@@ -296,42 +296,53 @@ function classify(record: PartRecord): string {
  */
 async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: string }> {
   const resolved = resolveForExport(record);
-  if (!resolved.ok) {
-    // A part `resolveForExport` declines never reached the exporter, so it was
-    // landing in NEITHER bucket: ten parts of one run were invisible, and SHIPS
-    // looked like it had regressed when the parts were in fact being HELD. A
-    // refusal nobody can see is the one kind mistaken for a coverage loss.
-    const why =
-      resolved.untraceable && resolved.untraceable.length > 0
-        ? `held: uncitable ${[...new Set(resolved.untraceable)].join(",")}`
-        : `held: missing ${resolved.missing.join(",")}`;
-    return { ships: false, why };
-  }
 
   // ROUTE ONE: the record as it stands, which is what the user gets when the
   // document names one package and there is no choice to make.
   let direct: FootprintUnavailableError | null = null;
-  try {
-    await createExportZip(resolved.part, "kicad");
-    return { ships: true, why: "" };
-  } catch (error) {
-    // ONE PART MUST NEVER KILL THE RUN.
-    //
-    // This rethrew anything that was not a `FootprintUnavailableError`, and on
-    // 2026-08-17 a `FootprintInvalidError` from the output invariant ("the pin
-    // table lists pin 9 and no land was placed for it") ended a paid 56-part
-    // run partway through. $0.57 of answers were bought and no figure was
-    // produced. `shipCheck` in `extraction.ts` has recorded any error as a
-    // non-ship for months; this is the same rule with only one of its two
-    // copies hardened.
-    //
-    // An invalid footprint IS a non-ship, and saying so is strictly more
-    // informative than a stack trace: it is the output invariant doing its job.
-    if (!(error instanceof FootprintUnavailableError)) {
-      const why = error instanceof Error ? error.message.split("\n")[0].slice(0, 60) : "unknown";
-      return { ships: false, why: `invalid: ${why}` };
+  // What route one refused with, when it could not even be attempted.
+  //
+  // A record `resolveForExport` declines used to RETURN here, which put this
+  // bench one step ahead of the product in exactly the way `/api/export` was:
+  // the chooser has read per-package pin tables since 2026-08-16, and route two
+  // below is where that happens, and neither was ever reached. Ten of the
+  // fifty-six parts of the 2026-08-17 run were reported `held: missing
+  // pinCount,pins` with their pinouts sitting on the record, labelled and
+  // located. A bench that stops before the product does measures a product that
+  // does not exist.
+  //
+  // Kept as the fallback reason rather than discarded: where route two offers
+  // nothing either, "the reading is missing pins" is still the truest thing to
+  // say about the part.
+  let held: string | null = null;
+  if (!resolved.ok) {
+    held =
+      resolved.untraceable && resolved.untraceable.length > 0
+        ? `held: uncitable ${[...new Set(resolved.untraceable)].join(",")}`
+        : `held: missing ${resolved.missing.join(",")}`;
+  } else {
+    try {
+      await createExportZip(resolved.part, "kicad");
+      return { ships: true, why: "" };
+    } catch (error) {
+      // ONE PART MUST NEVER KILL THE RUN.
+      //
+      // This rethrew anything that was not a `FootprintUnavailableError`, and on
+      // 2026-08-17 a `FootprintInvalidError` from the output invariant ("the pin
+      // table lists pin 9 and no land was placed for it") ended a paid 56-part
+      // run partway through. $0.57 of answers were bought and no figure was
+      // produced. `shipCheck` in `extraction.ts` has recorded any error as a
+      // non-ship for months; this is the same rule with only one of its two
+      // copies hardened.
+      //
+      // An invalid footprint IS a non-ship, and saying so is strictly more
+      // informative than a stack trace: it is the output invariant doing its job.
+      if (!(error instanceof FootprintUnavailableError)) {
+        const why = error instanceof Error ? error.message.split("\n")[0].slice(0, 60) : "unknown";
+        return { ships: false, why: `invalid: ${why}` };
+      }
+      direct = error;
     }
-    direct = error;
   }
 
   // ROUTE TWO: whatever the chooser offers. Empty when the document names no
@@ -346,15 +357,19 @@ async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: s
   const asks: RequiredInput[][] = choice.ok
     ? choice.options.filter((option) => option.status === "needs-input").map((option) => option.needs)
     : [];
-  if (direct.needs.length > 0) asks.push(direct.needs);
+  if (direct && direct.needs.length > 0) asks.push(direct.needs);
 
   if (asks.length === 0) {
     // Nothing anywhere is answerable. Prefer route one's own words: it is about
     // the package actually read, and an option's reason is about a sibling.
     const unsupported = choice.ok ? choice.options.find((option) => option.status === "unsupported") : undefined;
+    const reason = direct?.reason ?? unsupported?.reason ?? null;
+    // The traceability refusal is the truest answer only when nothing else has
+    // one: a record with no pins and no offered package really is unread.
+    if (reason === null && held !== null) return { ships: false, why: held };
     return {
       ships: false,
-      why: `unsupported: ${(direct.reason ?? unsupported?.reason ?? "no land pattern").slice(0, 60)}`
+      why: `unsupported: ${(reason ?? "no land pattern").slice(0, 60)}`
     };
   }
   const fewest = asks.reduce((best, needs) => (needs.length < best.length ? needs : best));

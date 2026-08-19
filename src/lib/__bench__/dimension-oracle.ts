@@ -99,8 +99,37 @@ export interface DimensionOracleEntry {
   bodyLengthMm?: OracleRange;
   /** Body, across that axis. */
   bodyWidthMm?: OracleRange;
-  /** Maximum seated height. */
+  /**
+   * Seated height where the drawing prints ONLY a maximum, which is common on a
+   * package whose standoff varies: "CFP - 2.33mm max height" and nothing else.
+   * The reading should be that number, because the drawing states no other value
+   * for the envelope.
+   */
   bodyHeightMaxMm?: number;
+  /**
+   * Seated height where the drawing prints a max/nom/min, e.g. 0.80 / 0.75 /
+   * 0.70. Any value inside is a correct reading.
+   *
+   * Both forms exist because the drawings do. Checking a max-only drawing
+   * against a range would accept anything below it, and checking a
+   * three-value drawing against its maximum alone marks the NOMINAL wrong, which
+   * is the value the prompt asks for. AD8232 was marked WRONG at 0.75 against a
+   * 0.80 max on the first run that checked it, and 0.75 is what its drawing
+   * prints as nominal.
+   */
+  bodyHeightMm?: OracleRange;
+  /**
+   * The exposed thermal pad on the underside, along the SAME axis as
+   * `bodyLengthMm`. Absent on a package that has none.
+   *
+   * Here because the pad is copper and a wrong one is a wrong footprint: it
+   * shipped rotated ninety degrees from its own body on 2026-08-16, which fits
+   * between the lead rows and so passes every invariant. Nothing checked the
+   * number until this, so the axis has to be asserted and not just the size.
+   */
+  thermalPadLengthMm?: OracleRange;
+  /** The same pad, across that axis. */
+  thermalPadWidthMm?: OracleRange;
   /** Sides carrying leads. 1 for a single line, as on a TO-220 or a SIP. */
   leadSides?: 1 | 2 | 4;
   /** The JEDEC registration the drawing cites, exactly as printed. */
@@ -132,6 +161,207 @@ export interface DimensionOracleEntry {
  * as every line of it was read by a person.
  */
 export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
+  // Ceramic flat pack, 10 lead, dimensioned in INCHES with no millimetre
+  // equivalents. Read 2026-08-18 off the rendered page.
+  //
+  // THIN ON PURPOSE, and the absences are the point. This drawing prints:
+  //
+  //   no tip-to-tip span   the leads are dimensioned from the body edge outward
+  //                        (5X .32 +/- .01 each side) and the body separately, so
+  //                        a span exists only as arithmetic over three toleranced
+  //                        numbers. RULES.md 2: a derivation needs a reason from
+  //                        practice, not from arithmetic being available. Absent.
+  //   no seated foot       unformed leads, as on every CFP here. Absent, and that
+  //                        absence is what `bench:dimensions` checks: a reader
+  //                        returning a contact length for this package invented it.
+  //   two body numbers     ".27 MAX GLASS" on both axes and ".241 +.019/-.003"
+  //                        across the middle. Which of them `bodyLengthMm` means
+  //                        is not decidable from the page, so neither is claimed.
+  //
+  // This is the rad-hard ceramic segment, which is the customer, so a thin honest
+  // entry here is worth more than a full guessed one.
+  //
+  // NOTE, unresolved: the record read this code as `HKU0010A` and the drawing
+  // titles itself `U0010A`. Keyed on the drawing's own spelling and matched via
+  // `parts`, so the discrepancy cannot silently attach this to the wrong drawing.
+  U0010A: {
+    packageType: "CFP (10)",
+    parts: ["TPS7A4501-SP"],
+    source: "TPS7A4501-SP datasheet, page 28, PACKAGE OUTLINE U0010A, rev 4225582/A 01/2020",
+    leadForm: "straight",
+    // 10X .017 +/- .002 inch.
+    leadWidthMm: { minMm: 0.381, maxMm: 0.4826 },
+    // 8X .050 +/- .005 inch. Eight gaps across ten leads, five a side.
+    pitchMm: 1.27,
+    // From the drawing's own title block, "CFP - 2.03 mm max height".
+    bodyHeightMaxMm: 2.03,
+    leadSides: 2
+  },
+  // LFCSP-20, 4 x 4 mm. Read 2026-08-18 off the rendered page. The first
+  // NO-LEAD package in this file, and the first square quad WITH an exposed pad.
+  //
+  // Two absences here are statements rather than gaps, which is the whole point
+  // of partial entries:
+  //
+  //   leadSpanMm       a no-lead package has no leads to measure tip to tip. Its
+  //                    terminals are on the underside, so the drawing prints no
+  //                    such dimension and a reader returning one has invented it.
+  //   leadSpanCrossMm  the body is square (4.00 SQ), so one span governs both
+  //                    axes and a second entry would assert nothing.
+  //
+  // `leadContactMm` IS present: on a no-lead package the terminal length is what
+  // sits on the pad, which is the same thing dimension L means on a gull-wing
+  // drawing.
+  "CP-20-8": {
+    packageType: "LFCSP (20)",
+    // The ordering guide on this page lists CP-20-8 and nothing else.
+    parts: ["AD8232"],
+    source: "AD8232 datasheet, page 27, Figure 69, 20-Lead LFCSP (CP-20-8), rev 10-12-2017-C",
+    leadForm: "nolead",
+    leadWidthMm: { minMm: 0.18, maxMm: 0.3 },
+    leadContactMm: { minMm: 0.3, maxMm: 0.5 },
+    pitchMm: 0.5,
+    bodyLengthMm: { minMm: 3.9, maxMm: 4.1 },
+    bodyWidthMm: { minMm: 3.9, maxMm: 4.1 },
+    // 0.80 / 0.75 / 0.70 on the side view: an overall height with a nominal, so
+    // it is a RANGE and not a bare maximum.
+    bodyHeightMm: { minMm: 0.7, maxMm: 0.8 },
+    // 2.75 / 2.60 SQ / 2.35, square, so both axes carry the same pair.
+    thermalPadLengthMm: { minMm: 2.35, maxMm: 2.75 },
+    thermalPadWidthMm: { minMm: 2.35, maxMm: 2.75 },
+    leadSides: 4,
+    jedecOutline: "MO-220-WGGD-11"
+  },
+  // TSSOP-38. Read 2026-08-18 off the rendered pages, BOTH of them: the outline
+  // on page 65 and the printed land pattern on page 66.
+  //
+  // Entries carrying a `land` are the most valuable kind, because they are the
+  // only ones that close the loop from a vendor's printed footprint all the way
+  // to emitted copper (`bench:copper` compares the pads against this). Two of
+  // the seven entries had one before this.
+  DBT0038A: {
+    packageType: "TSSOP (38)",
+    // EMPTY: whether this datasheet offers only the DBT has not been checked by
+    // hand, and the outline code was read for this part so the match does not
+    // need the part name.
+    parts: [],
+    source: "ADS8688 datasheet, page 65, PACKAGE OUTLINE DBT0038A, rev 4220221/A 05/2020",
+    leadForm: "gullwing",
+    leadSpanMm: { minMm: 6.25, maxMm: 6.55 },
+    leadWidthMm: { minMm: 0.17, maxMm: 0.23 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 },
+    pitchMm: 0.5,
+    // D. Nineteen leads a side at 0.5 is eighteen gaps, which is the "2X 9" the
+    // drawing prints, so the row axis is fixed by the drawing and not by
+    // convention.
+    bodyLengthMm: { minMm: 9.65, maxMm: 9.75 },
+    bodyWidthMm: { minMm: 4.35, maxMm: 4.45 },
+    bodyHeightMaxMm: 1.2,
+    leadSides: 2,
+    jedecOutline: "MO-153",
+    land: {
+      source: "ADS8688 datasheet, page 66, LAND PATTERN EXAMPLE DBT0038A",
+      padLengthMm: 1.5,
+      padWidthMm: 0.3,
+      spanMm: 5.8,
+      // 0.05 MAX all around on the non-solder-mask-defined detail, which this
+      // drawing marks PREFERRED.
+      solderMaskExpansionMm: 0.05
+    }
+  },
+  // LQFP-80. Read 2026-08-18 off the rendered page, and the FIRST four-sided
+  // package in this file.
+  //
+  // That gap mattered: every defect the cross-axis work chased lives on a quad,
+  // and until now nothing hand-read could contradict a quad reading at all. This
+  // one is SQUARE, so `leadSpanCrossMm` is deliberately absent per the note on
+  // the field: the drawing prints one span and it governs both axes. A
+  // rectangular quad is still unrepresented and is the next entry worth reading.
+  //
+  // The row extent corroborates the arrangement without relying on convention:
+  // the drawing prints "4X 9.5", and twenty leads a side at 0.5 pitch is
+  // nineteen gaps of 0.5, which is 9.5.
+  PN0080A: {
+    packageType: "LQFP (80)",
+    // EMPTY on purpose. This datasheet offers more than the LQFP and which
+    // package the record settles on has not been checked by hand, so claiming
+    // the part here could make the file assert nonsense. `bench:dimensions`
+    // matches on the outline code, which is what identifies the drawing.
+    parts: [],
+    source: "MSP430F5529 datasheet, page 141, PACKAGE OUTLINE PN0080A, rev 4215166/A 08/2022",
+    leadForm: "gullwing",
+    // Tip to tip, 14.2/13.8 TYP. The 12.2/11.8 pair on the other two edges is the
+    // BODY, and confusing the two is a 2 mm error in the land pattern.
+    leadSpanMm: { minMm: 13.8, maxMm: 14.2 },
+    leadWidthMm: { minMm: 0.17, maxMm: 0.27 },
+    leadContactMm: { minMm: 0.45, maxMm: 0.75 },
+    pitchMm: 0.5,
+    bodyLengthMm: { minMm: 11.8, maxMm: 12.2 },
+    bodyWidthMm: { minMm: 11.8, maxMm: 12.2 },
+    bodyHeightMaxMm: 1.6,
+    leadSides: 4,
+    jedecOutline: "MS-026"
+  },
+  // PowerPAD SOIC-8. Read 2026-08-18 off the rendered page. The second entry
+  // with an exposed pad, and deliberately a SOIC rather than another TSSOP: the
+  // pad's long axis runs along the body's long axis on both, which is the thing
+  // that shipped ninety degrees out on 2026-08-16, and one drawing cannot show
+  // that it generalises.
+  //
+  // TPS54360 was promoted into the tuned corpus on 2026-08-17 for producing an
+  // invalid footprint, so it is exactly the part that should have a hand-read
+  // entry.
+  DDA0008B: {
+    packageType: "PowerPAD SOIC (8)",
+    // The only package this datasheet offers.
+    parts: ["TPS54360"],
+    source: "TPS54360 datasheet, page 47, PACKAGE OUTLINE DDA0008B, rev 4214849/B 09/2025",
+    leadForm: "gullwing",
+    leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+    leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
+    leadContactMm: { minMm: 0.4, maxMm: 1.27 },
+    pitchMm: 1.27,
+    // D, the axis the two rows of four run along: 3 gaps of 1.27 is the 3.81 the
+    // drawing prints, which fixes the orientation without relying on convention.
+    bodyLengthMm: { minMm: 4.8, maxMm: 5.0 },
+    bodyWidthMm: { minMm: 3.8, maxMm: 4.0 },
+    bodyHeightMaxMm: 1.7,
+    thermalPadLengthMm: { minMm: 2.8, maxMm: 3.4 },
+    thermalPadWidthMm: { minMm: 2.11, maxMm: 2.71 },
+    leadSides: 2,
+    jedecOutline: "MS-012"
+    // No `land`: the recommended footprint is on another page and has not been
+    // read, and an entry claiming one nobody looked at is worse than none.
+  },
+  // PowerPAD TSSOP-28. Read 2026-08-18 off the rendered page. Chosen because it
+  // is the first entry with an EXPOSED PAD, which nothing here could check
+  // before, and because 28 leads at 0.65 make the row axis unmistakable: the
+  // drawing prints "2X 8.45" for the 14 spaces of one row, which fixes 9.6/9.8
+  // as the body length and 4.3/4.5 as the width rather than leaving it to a
+  // convention.
+  PWP0028C: {
+    packageType: "PowerPAD TSSOP (28)",
+    // The only package this datasheet offers.
+    parts: ["DRV8825"],
+    source: "DRV8825 datasheet, page 30, PACKAGE OUTLINE PWP0028C, rev 4223582/A 03/2017",
+    leadForm: "gullwing",
+    leadSpanMm: { minMm: 6.2, maxMm: 6.6 },
+    leadWidthMm: { minMm: 0.19, maxMm: 0.3 },
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 },
+    pitchMm: 0.65,
+    bodyLengthMm: { minMm: 9.6, maxMm: 9.8 },
+    bodyWidthMm: { minMm: 4.3, maxMm: 4.5 },
+    bodyHeightMaxMm: 1.2,
+    // Along the body's LENGTH, which is the axis the drawing dimensions it on:
+    // 5.18/4.48 runs parallel to the 9.6/9.8 body dimension on the bottom view.
+    thermalPadLengthMm: { minMm: 4.48, maxMm: 5.18 },
+    thermalPadWidthMm: { minMm: 2.4, maxMm: 3.1 },
+    leadSides: 2,
+    jedecOutline: "MO-153"
+    // No `land`: the recommended footprint is on a later page and has not been
+    // read, and an entry claiming one that was not looked at is worse than none.
+  },
+
   // Ceramic flat pack, straight untrimmed leads. The part that exposed both the
   // `leadForm` prompt gap and my own misreading of the text layer.
   HBH0014A: {
@@ -289,7 +519,16 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     bodyLengthMm: { minMm: 9.754, maxMm: 9.906 },
     // .250 +.020 -.005 [6.35 +0.508 -0.127].
     bodyWidthMm: { minMm: 6.223, maxMm: 6.858 },
-    // From the drawing's own title block.
+    // From the drawing's own title block, "CFP - 2.33mm max height", which is
+    // the seated envelope.
+    //
+    // This drawing prints TWO heights and they are not the same measurement: the
+    // side view dimensions the ceramic at `.070 +.010 -.020 [1.778]`. The reader
+    // returned 1.778 and was marked WRONG on the first run that checked body
+    // height at all, which was the right verdict for the wrong reason: the model
+    // read the page correctly and the FIELD GUIDE asked for "body height". The
+    // guide now asks for the seated envelope, because that is what the 3D solid
+    // is stood on the board and clearance-checked as.
     bodyHeightMaxMm: 2.33,
     leadSides: 2,
     // Note 4: "No JEDEC registration as of December 2021".

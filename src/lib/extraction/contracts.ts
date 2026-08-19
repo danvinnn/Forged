@@ -11,6 +11,35 @@ import type { PinRecord } from "../types";
  */
 
 /** Fields a model may be asked to resolve. Dotted paths address nested values. */
+/**
+ * How many pages of a document may be RENDERED and sent to the model.
+ *
+ * ## One number, four copies
+ *
+ * This was written out separately in `run.ts` (`MAX_RENDERED_PAGES`),
+ * `request.ts` (`MAX_PAGES_TO_MODEL`), `pagerender.ts`
+ * (`DEFAULT_RENDER_LIMITS.maxPages`) and, as the English word "8", in the prompt
+ * that tells the model how many pages it may ask for. Four places that had to
+ * agree and nothing making them, which is the drift this codebase has been
+ * bitten by more than once. Raising the budget without raising the sentence in
+ * the prompt would have changed nothing at all, because the model would have
+ * gone on naming eight.
+ *
+ * ## Why it is the number it is
+ *
+ * Images are the expensive part of a call, so this is a real budget and not a
+ * safety rail. It was 8, which fits one outline drawing, one land pattern and a
+ * pinout for two or three packages. A document selling the same die in six
+ * packages has more drawings than that, and measured on 2026-08-18 the pages
+ * that got dropped were the ones carrying the recommended footprint: ten of the
+ * twenty-three hold-out parts that read but do not ship are blocked on it.
+ *
+ * Asking the model to spread EIGHT pages across every package was measured and
+ * lost on every field (see `pageRequestGuidance`). That is the evidence the cap
+ * binds rather than the wording.
+ */
+export const MAX_PAGES_TO_MODEL = 16;
+
 export const extractionFields = [
   "partNumber",
   "manufacturer",
@@ -268,7 +297,35 @@ export interface ExtractionResult {
    * real. One table per package means a later package choice selects one with no
    * further call.
    */
-  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[] }>;
+  packagesInThisDocument?: Array<{
+    packageType: string;
+    pins?: PinRecord[];
+    /**
+     * That package's OWN measurements, keyed by the same field names as the flat
+     * `values` block and read off that package's own drawings.
+     *
+     * ## The refusal this removes
+     *
+     * The pinout was asked per package and everything else was asked once. On a
+     * document whose part number does not name a package that is an
+     * unanswerable question, and the model answered it correctly: it declined.
+     * Measured over the hold-out on 2026-08-18, 27 of 57 parts came back with
+     * NOT ONE dimension from either pass, the model's own notes saying the part
+     * number does not specify a package designator. The 29 that did read say the
+     * opposite in the same field: "Selected the 16-pin VQFN (RGT) package
+     * option."
+     *
+     * So the reading was never the problem and neither was the document. Body
+     * length, pitch, lead span and the printed land pattern all differ between
+     * the packages one datasheet describes, exactly as the pin table does, and
+     * asking for one of each made half the corpus unanswerable.
+     *
+     * Absent per entry, and absent on entries that carry only a pin table: a
+     * document may tabulate a pinout for a package whose drawing it does not
+     * print, and the reverse. Nothing is inferred from one to the other.
+     */
+    dimensions?: Record<string, { value: unknown; page: number | null }>;
+  }>;
   /**
    * The packages this document PRINTS a mechanical outline drawing for, labelled
    * as each drawing labels itself.

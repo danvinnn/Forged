@@ -27,7 +27,7 @@ import {
   type SymbolPin,
   type ThermalVia
 } from "./geometry";
-import { confidenceChecks, FootprintInvalidError, summariseChecks, validateGeometry } from "./confidence";
+import { confidenceChecks, summariseChecks, validateGeometry } from "./confidence";
 import { emitKicadFootprint, emitKicadSymbol } from "./emitters/kicad";
 import { emitAltiumPcbLib, emitAltiumSchLib } from "./emitters/altium";
 
@@ -754,7 +754,12 @@ function symbolDescription(part: ResolvedPart): string {
  * (`padWidth = pitch * 0.55`), producing a file indistinguishable from a real one
  * for a part whose pitch nobody had read.
  */
-function buildFootprintGeometry(
+/**
+ * Exported so a bench can measure the PADS. `createExportZip` hands back only
+ * provenance, so nothing outside this file could see where a land was actually
+ * placed, which is the one thing no other check looks at. See `bench:copper`.
+ */
+export function buildFootprintGeometry(
   part: ResolvedPart,
   densityLevel: DensityLevel,
   formedLeadSpanMm?: number,
@@ -1490,6 +1495,27 @@ function withSupplied(part: ResolvedPart, supplied: SuppliedDimensions | undefin
   // typed one: the document is the authority, and a user answering a question
   // they were not asked must not be able to silently redefine a read value.
   const fill = <T,>(read: T | null, given: T | undefined): T | null => (read === null ? given ?? null : read);
+  /**
+   * The LAND PATTERN is the exception, and it is not a special case.
+   *
+   * `fill` is right wherever the product only ever asks about a blank, because
+   * there the two behaviours cannot be told apart. The land pattern is the one
+   * place that is not true: the quad corner check can PROVE a read span wrong,
+   * because the pitch and the pin count corroborate each other and it does not,
+   * and when that happens the user is asked for the span with the drawing's page
+   * beside it.
+   *
+   * Under `fill` that question was unanswerable. The user typed the number off
+   * the drawing, the read value was kept because it was not blank, and the same
+   * refusal came back. Asking for a value and then declining to use it is worse
+   * than not asking.
+   *
+   * Scoped to the four fields the product can ask about DESPITE having read
+   * them, so every other field behaves exactly as before. A typed value is
+   * traceable to the person who typed it, which is one of the three sources
+   * RULES.md allows.
+   */
+  const correct = <T,>(read: T | null, given: T | undefined): T | null => given ?? read;
   return {
     ...part,
     dimensions: {
@@ -1497,10 +1523,10 @@ function withSupplied(part: ResolvedPart, supplied: SuppliedDimensions | undefin
       bodyLengthMm: fill(part.dimensions.bodyLengthMm, supplied.bodyLengthMm),
       bodyWidthMm: fill(part.dimensions.bodyWidthMm, supplied.bodyWidthMm),
       bodyHeightMm: fill(part.dimensions.bodyHeightMm, supplied.bodyHeightMm),
-      landPadLengthMm: fill(part.dimensions.landPadLengthMm, supplied.landPadLengthMm),
-      landPadWidthMm: fill(part.dimensions.landPadWidthMm, supplied.landPadWidthMm),
-      landSpanMm: fill(part.dimensions.landSpanMm, supplied.landSpanMm),
-      landSpanCrossMm: fill(part.dimensions.landSpanCrossMm, supplied.landSpanCrossMm),
+      landPadLengthMm: correct(part.dimensions.landPadLengthMm, supplied.landPadLengthMm),
+      landPadWidthMm: correct(part.dimensions.landPadWidthMm, supplied.landPadWidthMm),
+      landSpanMm: correct(part.dimensions.landSpanMm, supplied.landSpanMm),
+      landSpanCrossMm: correct(part.dimensions.landSpanCrossMm, supplied.landSpanCrossMm),
       leadDiameterMm: fill(part.dimensions.leadDiameterMm, supplied.leadDiameterMm),
       pitchMm: fill(part.dimensions.pitchMm, supplied.pitchMm),
       leadSides: fill(part.dimensions.leadSides, supplied.leadSides),
@@ -1966,12 +1992,46 @@ function assemble(
     const crossCentreMm = land.padCentreCrossMm ?? land.padCentreMm;
     const centreSpanMm = Math.min(land.padCentreMm, crossCentreMm) * 2;
     if (needsMm > centreSpanMm) {
-      throw new FootprintInvalidError([
-        `the corner lands of this quad would short: two adjacent sides put lands ${bindingMm.toFixed(2)} mm ` +
-          `along at ${definition.pitchMm} mm pitch, and with a ${land.padWidthMm} mm land width and a ` +
-          `${land.padLengthMm} mm land length they need ${needsMm.toFixed(2)} mm of centre span to stay apart. ` +
-          `The span read for this package is ${centreSpanMm.toFixed(2)} mm. The centre span is the value to ` +
-          `check first: the pitch and the pin count corroborate each other and it does not.`
+      // A QUESTION, not a dead end, and the message already said so.
+      //
+      // This threw `FootprintInvalidError`, which the route answers with
+      // FOOTPRINT_INVALID and an EMPTY `needs`: nothing to type, nothing to fix,
+      // part lost. Its own last sentence names the value to check, and supplying
+      // that value rebuilds the footprint, which is the definition of an
+      // answerable refusal.
+      //
+      // The two error types are not interchangeable and the difference is real.
+      // `FootprintInvalidError` means Forge built something self-contradictory
+      // and the defect is ours. This is a READING that contradicts two other
+      // readings: the pitch and the pin count agree with each other and the span
+      // does not, so the span is what is wrong, and a person with the drawing in
+      // front of them can settle it in one number.
+      //
+      // Measured 2026-08-18 by `bench:copper` over 61 cached records: FIVE parts
+      // fail here, every one of them a quad, and it is the only build failure in
+      // the corpus that is not a plain refusal.
+      const why =
+        `The centre span read for ${part.packageType} contradicts its own pitch and pin count: two adjacent ` +
+        `sides put lands ${bindingMm.toFixed(2)} mm along at ${definition.pitchMm} mm pitch, and with a ` +
+        `${land.padWidthMm} mm land width and a ${land.padLengthMm} mm land length they need ` +
+        `${needsMm.toFixed(2)} mm of centre span to stay apart, against the ${centreSpanMm.toFixed(2)} mm read. ` +
+        `Built as read, the corner lands would touch. The pitch and the pin count corroborate each other, so ` +
+        `the span is the value to take again off the recommended-footprint drawing.`;
+      const landPage = part.vendorLandPattern?.page ?? null;
+      const ask = (field: "landSpanMm" | "landSpanCrossMm", label: string): RequiredInput => ({
+        field,
+        label,
+        why,
+        unit: "mm",
+        scope: "part",
+        page: landPage,
+        pageLabel: "Recommended footprint printed in this datasheet"
+      });
+      throw new FootprintUnavailableError(why, [
+        ask("landSpanMm", "Centre-to-centre span between opposing rows"),
+        // BOTH axes on a quad, because either could be the one that is wrong and
+        // the check takes the smaller of the two.
+        ask("landSpanCrossMm", "Centre-to-centre span across the other axis")
       ]);
     }
 
@@ -2529,11 +2589,12 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
   // Where the document printed a table for THIS package, it replaces the one
   // above. Where it did not, the pins are left alone and the count check in
   // `buildFootprintGeometry` refuses anything that still contradicts.
-  const table = pinTableFor(part.pinTablesByPackage, designator);
+  const entry = pinTableFor(part.packagesInThisDocument, designator);
+  const table = entry?.pins ? entry : null;
   return {
     ...part,
     packageType: designator,
-    ...(table ? { pins: table.pins, pinCount: table.pins.length } : {}),
+    ...(table ? { pins: table.pins!, pinCount: table.pins!.length } : {}),
     packageOutlineCode: null,
     jedecOutline: null,
     vendorLandPattern: null,
@@ -2550,9 +2611,71 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
     // Still false where the document printed no table for this package: nothing
     // states it either way, and `buildFootprintGeometry` refuses a pinout that
     // contradicts the designator regardless.
-    exposedPad: table?.exposedPad ?? false,
-    dimensions: blank
+    exposedPad: entry?.exposedPad ?? false,
+    // BLANK, EXCEPT WHERE THE DOCUMENT MEASURED THIS PACKAGE ITSELF.
+    //
+    // Blanking is right and stays the default: every dimension on the record was
+    // read off the drawings for whichever package the document resolved to, and
+    // against a different designator it describes the wrong page.
+    //
+    // But it was the only behaviour, and that turned a relabel into six
+    // questions for the user about numbers the datasheet prints. The document
+    // draws each package it sells; since 2026-08-18 the reader is asked for
+    // those drawings PER PACKAGE, and where it answered for this one the values
+    // are this package's own. They arrive as full `Extracted<T>`s with their own
+    // citations and are judged by exactly the rules the flat fields are.
+    //
+    // Nothing is inherited and nothing is inferred: a field the document did not
+    // state for THIS package stays blank and is asked for, as before.
+    dimensions: entry?.dimensions ? { ...blank, ...resolvedDimensions(entry.dimensions) } : blank
   };
+}
+
+/**
+ * One package's own measurements, flattened the way `resolveForExport` flattens
+ * the record's.
+ *
+ * Held to the SAME traceability rule rather than a softer one: a value with no
+ * citation is dropped here instead of being passed through as a bare number.
+ * `resolveForExport` has already run by the time `asPackage` is called, so a
+ * value smuggled in at this point would reach the footprint without ever facing
+ * the gate that refuses untraceable geometry. That is the one thing this must
+ * not do.
+ */
+function resolvedDimensions(
+  dimensions: NonNullable<NonNullable<PartRecord["packagesInThisDocument"]>[number]["dimensions"]>
+): Partial<ResolvedPart["dimensions"]> {
+  const out: Record<string, unknown> = {};
+  for (const [field, extracted] of Object.entries(citedDimensions(dimensions))) {
+    out[field] = (extracted as { value: unknown }).value;
+  }
+  return out as Partial<ResolvedPart["dimensions"]>;
+}
+
+/**
+ * One package's measurements, filtered to the ones that can be traced.
+ *
+ * The merge stores an uncited per-package value rather than dropping it, so the
+ * user can see what was read and could not be placed. That is right on the
+ * RECORD and wrong the moment it is copied onto the part being exported: a
+ * single uncited value would fail `resolveForExport`'s traceability check and
+ * refuse the WHOLE part, where the intended behaviour is to drop that one value
+ * and ask for it.
+ *
+ * So both places that lift these onto a part filter here, and they filter
+ * identically. Found by reading the diff rather than by a failing test: the
+ * chooser and the export would both have lost a part to one unplaceable number.
+ */
+function citedDimensions(
+  dimensions: NonNullable<NonNullable<PartRecord["packagesInThisDocument"]>[number]["dimensions"]>
+): Partial<PartRecord["dimensions"]> {
+  const out: Record<string, unknown> = {};
+  for (const [field, extracted] of Object.entries(dimensions)) {
+    if (!extracted || extracted.value === null || extracted.value === undefined) continue;
+    if (!extracted.citation) continue;
+    out[field] = extracted;
+  }
+  return out as Partial<PartRecord["dimensions"]>;
 }
 
 /** What the caller has already answered, carried into every option. */
@@ -2585,6 +2708,13 @@ function optionFor(
     : asPackage(part, variant.designator);
 
   const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
+  // WHAT `createExportZip` WOULD ALSO ASK FOR, which is what a click actually
+  // runs. This checked the footprint alone and reported `ships`, while the
+  // export then refused the same click for the body size the 3D solid is built
+  // from. The chooser exists so a click's outcome cannot drift from the export's,
+  // and this was the drift: on a relabel every dimension is blanked, so the
+  // package the user was told would ship asked three questions when pressed.
+  const body = askForBody(withSupplied(candidate, answers.supplied));
   try {
     buildFootprintGeometry(
       candidate,
@@ -2593,11 +2723,13 @@ function optionFor(
       answers.supplied,
       answers.formedLeadContactMm
     );
-    return { ...base, status: "ships", needs: [], reason: null };
+    return body.length > 0
+      ? { ...base, status: "needs-input", needs: body, reason: null }
+      : { ...base, status: "ships", needs: [], reason: null };
   } catch (error) {
     if (error instanceof FootprintUnavailableError) {
       return error.needs.length > 0
-        ? { ...base, status: "needs-input", needs: error.needs, reason: null }
+        ? { ...base, status: "needs-input", needs: [...error.needs, ...body], reason: null }
         : { ...base, status: "unsupported", needs: [], reason: error.reason };
     }
     // Anything else is a defect rather than a refusal, and reporting it as an
@@ -2612,6 +2744,64 @@ function optionFor(
   }
 }
 
+/**
+ * Is the ONLY thing blocking this record a pinout that a per-package table
+ * could supply?
+ *
+ * Written once because two callers ask it and they must not drift: the chooser,
+ * which decides whether to offer the packages at all, and `recordForPackage`,
+ * which decides whether naming one may fill the gap. If the chooser says a click
+ * ships and the export then refuses the same click, the user is told the reading
+ * is broken by the half of the product that could have used it.
+ *
+ * A record also short of a body size has a different problem and gets the plain
+ * refusal, so substituting a pin table cannot paper over an unrelated gap.
+ */
+function pinoutIsTheOnlyThingMissing(
+  resolved: Extract<ReturnType<typeof resolveForExport>, { ok: false }>
+): boolean {
+  const blocked = [...resolved.missing, ...(resolved.untraceable ?? [])];
+  if (blocked.length === 0) return false;
+  return blocked.every((field) => field === "pins" || field === "pinCount");
+}
+
+/**
+ * The record to resolve when the caller has NAMED a package.
+ *
+ * ## The half-fixed deadlock this closes
+ *
+ * `optionsFromPerPackageTables` below taught the CHOOSER to read a family
+ * datasheet's per-package pinouts, and the chooser duly reported `ships` for
+ * each package the document tabulates. Pressing one exported nothing.
+ *
+ * `/api/export` ran `resolveForExport` FIRST and `asPackage` second. The record
+ * has no top-level pins, so the traceability gate refused it with
+ * INCOMPLETE_EXTRACTION before reaching the one function that would have
+ * supplied them from `packagesInThisDocument`. The two halves of the product
+ * disagreed about the same click, and the half the user pressed was the one that
+ * said no.
+ *
+ * Measured over the hold-out on 2026-08-16: TEN of the fifty-six parts were
+ * reported as `held: missing pinCount,pins` while their pinouts sat on the
+ * record, labelled and located on a page.
+ *
+ * So naming a package now happens BEFORE the gate rather than after it, and the
+ * substitution is the chooser's own: same guard, same `withPinTable`, same
+ * citation requirement. A table the merge could not locate keeps a null citation
+ * and is refused here exactly as it would be anywhere else.
+ *
+ * Returns the record UNCHANGED whenever it already resolves, when something
+ * other than the pinout is missing, or when this document has no table for the
+ * package named. The gate then reports what it always would have.
+ */
+export function recordForPackage(record: PartRecord, designator: string): PartRecord {
+  const resolved = resolveForExport(record);
+  if (resolved.ok) return record;
+  if (!pinoutIsTheOnlyThingMissing(resolved)) return record;
+  const entry = pinTableFor(record.packagesInThisDocument, designator);
+  if (!entry || !entry.pins) return record;
+  return withPinTable(record, entry);
+}
 
 /**
  * The chooser for a document that gave a pinout PER PACKAGE and no single one.
@@ -2621,7 +2811,7 @@ function optionFor(
  * A family datasheet whose part number does not name a package gets `pins` and
  * `pinCount` null, correctly: the model is told not to pick among several
  * pinouts, because guessing one becomes a footprint. It returns them all,
- * labelled, in `pinTablesByPackage`.
+ * labelled, in `packagesInThisDocument`.
  *
  * `resolveForExport` then refused the record for having no pins, `packageOptions`
  * returned `ok: false`, and the user was shown "the reading is missing pins" for
@@ -2650,27 +2840,32 @@ function optionsFromPerPackageTables(
   resolved: Extract<ReturnType<typeof resolveForExport>, { ok: false }>,
   answers: OptionAnswers = {}
 ): PackageChoice | null {
-  const tables = record.pinTablesByPackage;
+  const tables = record.packagesInThisDocument;
   if (!tables || tables.length === 0) return null;
 
-  const blocked = [...resolved.missing, ...(resolved.untraceable ?? [])];
-  if (blocked.length === 0) return null;
-  if (!blocked.every((field) => field === "pins" || field === "pinCount")) return null;
+  if (!pinoutIsTheOnlyThingMissing(resolved)) return null;
 
   const options = record.packageVariants.map((variant) => {
     const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
-    const table = pinTableFor(tables, variant.designator);
-    if (!table) {
+    const entry = pinTableFor(tables, variant.designator);
+    // Two different absences, and telling the user they are the same misdirects
+    // them: no entry at all means the reading never covered this package, while
+    // an entry carrying only measurements means its drawings were read and its
+    // pinout was not. Only the second says where to look.
+    if (!entry || !entry.pins) {
       return {
         ...base,
         status: "unsupported" as const,
         needs: [],
-        reason:
-          `This document gives a pinout for each package it describes, and none of them matches ` +
-          `${variant.designator}. Re-reading the datasheet for this package is what would settle it.`
+        reason: entry
+          ? `This datasheet's drawings for ${variant.designator} were read, but no pin table was found ` +
+            `for it, and a footprint cannot be numbered without one. Re-reading the datasheet for this ` +
+            `package is what would settle it.`
+          : `This document gives a pinout for each package it describes, and none of them matches ` +
+            `${variant.designator}. Re-reading the datasheet for this package is what would settle it.`
       };
     }
-    const forThisPackage = withPinTable(record, table);
+    const forThisPackage = withPinTable(record, entry);
     const usable = resolveForExport(forThisPackage);
     if (!usable.ok) {
       const why = usable.missing.length > 0 ? usable.missing : (usable.untraceable ?? []);
@@ -2690,7 +2885,13 @@ function optionsFromPerPackageTables(
 /** The record as it stands for ONE package, carrying that package's own pinout. */
 function withPinTable(
   record: PartRecord,
-  table: { packageType: string; pins: PinRecord[]; exposedPad?: boolean; citation?: Citation | null }
+  table: {
+    packageType: string;
+    pins?: PinRecord[];
+    exposedPad?: boolean;
+    citation?: Citation | null;
+    dimensions?: Partial<PartRecord["dimensions"]>;
+  }
 ): PartRecord {
   // `vlm`, because a model read it, and the citation is the page the merge
   // LOCATED it on rather than one the model claimed. A null citation leaves the
@@ -2700,13 +2901,25 @@ function withPinTable(
     method: "vlm" as const,
     citation: table.citation ?? null
   };
+  const pins = table.pins ?? [];
   return {
     ...record,
-    pins: { value: table.pins, ...provenance },
-    pinCount: { value: table.pins.length, ...provenance },
+    pins: { value: pins, ...provenance },
+    pinCount: { value: pins.length, ...provenance },
     // The pad this package has, rather than whatever the record carried from
     // whichever package the reading happened to settle on. See `asPackage`.
-    exposedPad: table.exposedPad ?? record.exposedPad
+    exposedPad: table.exposedPad ?? record.exposedPad,
+    // AND THIS PACKAGE'S OWN MEASUREMENTS, where the document stated them.
+    //
+    // The record's flat dimensions describe whichever package the reading
+    // settled on, which on this path is none of them: this is the family case,
+    // reached precisely because the part number named no package. Overlaying the
+    // entry's own values is the same substitution the pin table above is, and
+    // leaving them out is what made the chooser offer a package and then ask six
+    // questions about numbers printed on the drawing it was chosen from.
+    dimensions: table.dimensions
+      ? { ...record.dimensions, ...citedDimensions(table.dimensions) }
+      : record.dimensions
   };
 }
 

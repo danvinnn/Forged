@@ -29,6 +29,21 @@ import { type PackageChoice } from "../../../lib/exporters";
 import { type ConfidenceCheck } from "../../../lib/confidence";
 import { buildReadout } from "../../../lib/readout";
 
+/**
+ * How much of a route's remaining budget rendering may take.
+ *
+ * `renderPages` returns FEWER PAGES rather than throwing when it runs out of
+ * time, so an unbounded render inside a deadlined route does not fail loudly: it
+ * quietly thins the second pass, and the part reads worse for a reason nothing
+ * reports. That became live on 2026-08-18 when the page budget went from 8 to
+ * 16 and the render ceiling, which is sized from it, went to about 24 seconds
+ * inside a route allowed 30.
+ *
+ * A third leaves two thirds for the two model calls, which are the part of the
+ * work that cannot be made cheaper by doing less of it.
+ */
+const RENDER_SHARE_OF_BUDGET = 1 / 3;
+
 export const runtime = "nodejs";
 // Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
 export const maxDuration = 30;
@@ -182,7 +197,15 @@ export async function POST(request: Request) {
         // Rendered inside the try: a renderer failure is a model-pass failure,
         // and both must leave the deterministic record untouched.
         const outcome = await withDeadline(
-          runExtraction(part, doc, ref.bytes, model, ref.fileName),
+          runExtraction(
+            part,
+            doc,
+            ref.bytes,
+            model,
+            ref.fileName,
+            undefined,
+            Math.round(budgetMs * RENDER_SHARE_OF_BUDGET)
+          ),
           budgetMs
         );
         if (outcome) {

@@ -25,6 +25,7 @@
 //
 // Air-gap safe: no networking here. The model is injected.
 
+import { MAX_PAGES_TO_MODEL } from "./contracts";
 import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "./contracts";
 import type { DatasheetText } from "../pdftext";
 import type { PartRecord } from "../types";
@@ -32,8 +33,8 @@ import { buildExtractionRequest, withRenderedPages } from "./request";
 import type { RenderedPage } from "../pagerender";
 import { mergeModelValues, type MergeOutcome } from "./merge";
 
-/** How many pages a model may ask to have rendered. Images are the expensive part. */
-const MAX_RENDERED_PAGES = 8;
+// One budget, defined in `contracts.ts` beside the prompt that has to state it.
+const MAX_RENDERED_PAGES = MAX_PAGES_TO_MODEL;
 
 export interface ExtractionRun extends MergeOutcome {
   /** Pages that were rendered and sent, for the review panel and the record. */
@@ -93,6 +94,61 @@ export interface ExtractionRun extends MergeOutcome {
  * Pass 2 still fills pins the first pass did not read at all, which is most of
  * what the pin pass is for.
  */
+/**
+ * Two passes' views of the same package, joined on the designator.
+ *
+ * Matched on a letters-and-digits key so `VQFN (RGE)` from one pass and
+ * `VQFN-RGE` from the other are one package. A designator only one pass mentions
+ * keeps its own entry: a document can tabulate a pinout for a package whose
+ * drawing it does not print, and the reverse, and neither is a reason to drop
+ * what was read.
+ *
+ * Field by field rather than object by object, because the halves do not
+ * overlap: whichever pass answered a field is the one that could read it.
+ */
+function mergePackageEntries(
+  first: ExtractionResult["packagesInThisDocument"],
+  second: ExtractionResult["packagesInThisDocument"]
+): ExtractionResult["packagesInThisDocument"] {
+  if (!first && !second) return undefined;
+  const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const byKey = new Map<string, NonNullable<ExtractionResult["packagesInThisDocument"]>[number]>();
+  for (const entry of [...(first ?? []), ...(second ?? [])]) {
+    const existing = byKey.get(key(entry.packageType));
+    if (!existing) {
+      byKey.set(key(entry.packageType), { ...entry });
+      continue;
+    }
+    // WHICHEVER PASS COULD ACTUALLY SEE THE THING WINS, per half.
+    //
+    // Pass 1 has the whole document and is the authority on PIN TABLES: pass 2
+    // sees only a handful of rendered pages and cannot know it is looking at a
+    // partial table. Pass 2 has the drawings and is the authority on
+    // DIMENSIONS, for the reason the second pass exists at all, which is that a
+    // dimension line's meaning is carried by arrows and not by text.
+    //
+    // Written out rather than left to iteration order. The order happens to give
+    // the right answer today only because pass 1 is not asked for per-package
+    // dimensions, and a rule that holds by accident stops holding silently.
+    const fromFirst = first?.some((row) => key(row.packageType) === key(entry.packageType))
+      ? existing
+      : entry;
+    const fromSecond = fromFirst === existing ? entry : existing;
+    const pins = fromFirst.pins ?? fromSecond.pins;
+    const dimensions = { ...(fromFirst.dimensions ?? {}), ...(fromSecond.dimensions ?? {}) };
+    byKey.set(key(entry.packageType), {
+      packageType: existing.packageType,
+      ...(pins ? { pins } : {}),
+      ...(Object.keys(dimensions).length > 0 ? { dimensions } : {})
+    });
+  }
+  return byKey.size > 0 ? [...byKey.values()] : undefined;
+}
+
+/** Exported for the tests that pin the two-pass join. */
+export const combineForTest = (first: ExtractionResult, second: ExtractionResult): ExtractionResult =>
+  combine(first, second);
+
 function combine(first: ExtractionResult, second: ExtractionResult): ExtractionResult {
   const values = { ...first.values, ...second.values };
   const firstPins = first.values.pins;
@@ -123,9 +179,14 @@ function combine(first: ExtractionResult, second: ExtractionResult): ExtractionR
     values,
     ...(declined.length > 0 ? { declined } : {}),
     notes: [...(first.notes ?? []), ...(second.notes ?? [])],
-    // Read once, in the pass that already had the whole document. Carried through
-    // so a later package choice selects a table instead of paying for another call.
-    pinTablesByPackage: second.pinTablesByPackage ?? first.pinTablesByPackage,
+    // MERGED BY PACKAGE, not replaced.
+    //
+    // The two passes answer different halves of the same question. Pass 1 has
+    // the whole text and reports each package's PIN TABLE; pass 2 has the
+    // rendered drawings and reports each package's MEASUREMENTS, which is the
+    // only pass that can read them. Taking pass 2's list whole, as this did,
+    // threw away every pin table the moment the second half started arriving.
+    packagesInThisDocument: mergePackageEntries(first.packagesInThisDocument, second.packagesInThisDocument),
     // Same reasoning as the tables above: read once, by the pass that had the
     // whole document. Pass 2 sees only the rendered pages, so it cannot know
     // which drawings the rest of the document contains and must not overwrite a
@@ -168,7 +229,7 @@ function samePinNames(left: unknown, right: unknown): boolean {
   if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
   const key = (pin: unknown) => {
     const row = pin as { number?: unknown; name?: unknown };
-    return `${String(row.number ?? "")} ${String(row.name ?? "")}`;
+    return `${String(row.number ?? "")}\u0000${String(row.name ?? "")}`;
   };
   return left.every((pin, index) => key(pin) === key(right[index]));
 }
@@ -219,7 +280,23 @@ export async function runExtraction(
   pdfBytes: ArrayBuffer,
   model: ExtractionModel,
   fileName: string,
-  partNumber?: string
+  partNumber?: string,
+  /**
+   * How long RENDERING may take, when the caller is working to a deadline.
+   *
+   * The page budget was raised from 8 to 16 on 2026-08-18, and the render
+   * ceiling is sized from it, so the default is now about 24 seconds. A route
+   * with `maxDuration = 30` that let rendering run to that default would have
+   * about six seconds left for two model calls. `renderPages` does not throw
+   * when it runs out of time, it returns FEWER PAGES, so the failure would have
+   * been a quietly thinner second pass rather than an error anyone could see.
+   *
+   * Passed by the caller that HAS a deadline rather than hardcoded low, because
+   * capping it here would make the benches render fewer pages than the product
+   * is capable of, and a bench that measures a product that does not exist is
+   * the exact mistake `shipOutcome` was making this morning.
+   */
+  renderBudgetMs?: number
 ): Promise<ExtractionRun | null> {
   const request = buildExtractionRequest(part, doc, fileName, partNumber);
   if (!request) return null;
@@ -245,7 +322,13 @@ export async function runExtraction(
       // second pass sees only the drawing pages, and a pass asked to measure a
       // package nobody has named refuses the whole document and says so.
       const chosen = typeof first.values.packageType?.value === "string" ? first.values.packageType.value : null;
-      const withImages = await withRenderedPages(request, pdfBytes, pages, {}, chosen);
+      const withImages = await withRenderedPages(
+        request,
+        pdfBytes,
+        pages,
+        renderBudgetMs !== undefined ? { budgetMs: renderBudgetMs } : {},
+        chosen
+      );
       images = withImages.images;
       rendered = images.map((image) => image.page);
       if (rendered.length > 0) second = await model.extract(withImages);

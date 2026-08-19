@@ -213,7 +213,13 @@ test("drawing evidence is not carried onto a package it was never checked agains
   const tssop = choice.options.find((option) => option.designator === "TSSOP-8");
   assert.equal(tssop?.status, "needs-input");
   assert.ok(
-    tssop!.needs.every((need) => !/outline|DW0008A/i.test(need.why)),
+    // The OTHER PACKAGE'S CODE, which is the thing that must not be carried
+    // across. This matched a bare "outline" until 2026-08-18, and then caught the
+    // body-size question's own words: those name the package outline DRAWING as
+    // where a body size is dimensioned, which is a generic instruction about
+    // where to look and not a claim about the SOIC's code. Narrowed to the claim
+    // it was written to rule out.
+    tssop!.needs.every((need) => !/DW0008A/i.test(need.why)),
     "and the reason is its own missing pattern, not the other package's code"
   );
 });
@@ -295,5 +301,58 @@ test("an exposed pad belongs to the package that has one, not to its siblings", 
   assert.ok(
     !tssop.needs.some((need) => need.field.startsWith("thermalPad")),
     "the TSSOP is not asked for the VQFN's exposed pad"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A number we could not place must not take the whole part down
+// ---------------------------------------------------------------------------
+
+test("one unplaceable per-package measurement is dropped, not fatal to the package", () => {
+  // The merge stores a per-package value it could not locate on any page, with a
+  // null citation, so the user can see what was read and could not be placed.
+  // That is right on the RECORD and wrong the moment it is copied onto the part
+  // being exported: `resolveForExport` refuses an untraceable geometry value, so
+  // ONE unplaceable number would have refused the entire part rather than being
+  // dropped and asked for.
+  //
+  // Found by reading the diff. No test failed, because nothing in the corpus
+  // happened to have an uncited per-package value yet.
+  const uncited = <T,>(value: T): Extracted<T> => ({ value, confidence: null, method: "vlm", citation: null });
+
+  const part = record({
+    packageType: nothing<string>(),
+    pinCount: nothing<number>(),
+    pins: nothing<PinRecord[]>(),
+    packageVariants: [variant("VSSOP-8", "VSSOP")],
+    packagesInThisDocument: [
+      {
+        packageType: "VSSOP-8",
+        pins: pins(8),
+        citation: { page: 4, snippet: "PIN CONFIGURATION", region: null },
+        dimensions: {
+          bodyLengthMm: cited(3.0),
+          bodyWidthMm: cited(3.0),
+          bodyHeightMm: cited(1.1),
+          pitchMm: cited(0.65),
+          leadSides: cited<2 | 4>(2),
+          leadForm: cited<"gullwing" | "nolead" | "straight">("gullwing"),
+          landPadLengthMm: cited(1.45),
+          landPadWidthMm: cited(0.45),
+          landSpanMm: cited(4.4),
+          // The one nobody could place.
+          leadSpanMm: uncited({ minMm: 4.8, maxMm: 5.0 })
+        }
+      }
+    ]
+  });
+
+  const choice = packageOptions(part);
+  assert.equal(choice.ok, true, "an unplaceable number is not a reason to refuse the reading");
+  if (!choice.ok) return;
+  assert.equal(
+    choice.options[0].status,
+    "ships",
+    "everything that WAS placed is enough to build, so the part ships"
   );
 });

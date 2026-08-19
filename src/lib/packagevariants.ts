@@ -541,7 +541,7 @@ export function findOrderablePackages(text: string, partNumber: string): Package
  * answer rather than a guess. `buildFootprintGeometry` refuses anything left
  * contradictory.
  */
-export function pinTableFor<T extends { packageType: string; pins: unknown[] }>(
+export function pinTableFor<T extends { packageType: string; pins?: unknown[] }>(
   tables: readonly T[] | undefined,
   designator: string
 ): T | null {
@@ -568,6 +568,10 @@ export function pinTableFor<T extends { packageType: string; pins: unknown[] }>(
   // statement than the count its label happens to declare.
   const wanted = declaredLeadCount(designator);
   if (wanted === null) return null;
-  const matching = tables.filter((table) => table.pins.length === wanted);
+  // Only entries that HAVE rows can be matched on their row count. An entry
+  // carrying measurements and no pinout states nothing about lead count, and
+  // reading its absence as a count of zero would match a designator to a table
+  // it says nothing about.
+  const matching = tables.filter((table) => table.pins !== undefined && table.pins.length === wanted);
   return matching.length === 1 ? matching[0] : null;
 }

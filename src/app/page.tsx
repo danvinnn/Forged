@@ -549,8 +549,25 @@ export default function HomePage() {
     // PREVIOUS package in place under the new package's name, and it made the
     // export request name no package at all, so the real rule never ran. See
     // `chosenPackage`.
-    const table = pinTableFor(part.pinTablesByPackage, designator);
-    if (table) {
+    // AND EVERY NUMBER TYPED FOR THE PREVIOUS PACKAGE IS DROPPED.
+    //
+    // `supplied` survived a package change, so a land span answered for the SOIC
+    // was still being sent when the user switched to the QFN. That is the same
+    // mistake `asPackage` exists to prevent, made one layer up: those numbers
+    // were read off, or measured for, a different package's drawing, and a
+    // footprint built partly from one package and partly from another is wrong
+    // in a way nothing downstream can see.
+    //
+    // The install-scoped answers are a different thing and are NOT cleared
+    // elsewhere for the same reason: a forming die belongs to the assembler and
+    // not to the package. They are not in this map.
+    setSupplied({});
+
+    const table = pinTableFor(part.packagesInThisDocument, designator);
+    // Rows, specifically. An entry may carry this package's MEASUREMENTS and no
+    // pinout, which is a complete answer about the drawings and says nothing
+    // about the pins, so it is not what this branch is announcing.
+    if (table?.pins) {
       setChosenPackage(designator);
       setStatus(
         `Package set to ${designator}. The ${table.pins.length}-pin table this datasheet prints for it will be used, ` +

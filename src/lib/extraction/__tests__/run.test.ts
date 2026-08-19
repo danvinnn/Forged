@@ -340,7 +340,7 @@ test("per-package pin tables are kept on the record, so choosing costs no call",
     {
       values: {},
       notes: ["the part number does not name a package"],
-      pinTablesByPackage: [
+      packagesInThisDocument: [
         { packageType: "SOT23-5", pins: [{ number: "1", name: "OUT", electricalType: "unspecified" }] },
         { packageType: "SC70-5", pins: [{ number: "1", name: "OUT", electricalType: "unspecified" }] }
       ]
@@ -351,9 +351,9 @@ test("per-package pin tables are kept on the record, so choosing costs no call",
   const run = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
 
   assert.equal(model.seen.length, 1, "one call, not two questions about pins");
-  assert.equal(run?.part.pinTablesByPackage?.length, 2, "both tables are on the record");
+  assert.equal(run?.part.packagesInThisDocument?.length, 2, "both tables are on the record");
   assert.deepEqual(
-    run?.part.pinTablesByPackage?.map((t) => t.packageType),
+    run?.part.packagesInThisDocument?.map((t) => t.packageType),
     ["SOT23-5", "SC70-5"],
     "kept separate and labelled, never merged into one"
   );
@@ -365,7 +365,7 @@ test("a document with one pinout carries no per-package tables", async () => {
   const model = stub([{ values: {} }]);
   const part = buildPartRecord(doc, "ACME555.pdf");
   const run = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
-  assert.equal(run?.part.pinTablesByPackage, undefined);
+  assert.equal(run?.part.packagesInThisDocument, undefined);
 });
 
 test("the pipeline makes at most two model calls", async () => {
@@ -454,5 +454,60 @@ test("every field merge requires as a min/max pair is asked for that way, and no
   assert.ok(
     /minMm/.test(clause) && /EXCEPT|except/.test(clause),
     "the nominal-value rule must exempt the min/max fields"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Two passes, two halves of the same package
+// ---------------------------------------------------------------------------
+
+test("a package's pins and its measurements survive being read by different passes", async () => {
+  // Pass 1 reads the whole text and reports each package's PIN TABLE. Pass 2
+  // sees the rendered drawings and reports each package's MEASUREMENTS, which is
+  // the only pass that can: a dimension line's meaning is carried by arrows.
+  //
+  // `combine` took pass 2's list WHOLE, so the moment the second half started
+  // arriving it threw away every pin table pass 1 had found.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "SSOP-20", pins: [{ number: "1", name: "AIN0", electricalType: "unspecified" }] }
+      ]
+    },
+    {
+      values: {},
+      packagesInThisDocument: [
+        // The same package, written the way the other pass happened to spell it.
+        { packageType: "SSOP20", dimensions: { "dimensions.pitchMm": { value: 0.65, page: 3 } } },
+        { packageType: "SSOP-28", dimensions: { "dimensions.pitchMm": { value: 0.65, page: 4 } } }
+      ]
+    }
+  );
+
+  const twenty = merged.packagesInThisDocument?.find((entry) => /20/.test(entry.packageType));
+  assert.equal(twenty?.pins?.length, 1, "pass 1's pin table survives pass 2");
+  assert.equal(twenty?.dimensions?.["dimensions.pitchMm"]?.value, 0.65, "and pass 2's drawing read joins it");
+  assert.equal(
+    merged.packagesInThisDocument?.length,
+    2,
+    "a package only one pass mentioned keeps its own entry"
+  );
+});
+
+test("the pass that could see the drawing wins the dimension", async () => {
+  // Pass 1 is text only. Where both answer, the pass with the images is the one
+  // that read the number off a drawing rather than off a scrambled text layer.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    { values: {}, packagesInThisDocument: [{ packageType: "SSOP-20", dimensions: { "dimensions.pitchMm": { value: 1.27, page: 2 } } }] },
+    { values: {}, packagesInThisDocument: [{ packageType: "SSOP-20", dimensions: { "dimensions.pitchMm": { value: 0.65, page: 3 } } }] }
+  );
+
+  assert.equal(
+    merged.packagesInThisDocument?.[0].dimensions?.["dimensions.pitchMm"]?.value,
+    0.65,
+    "pass 2's reading, not pass 1's"
   );
 });

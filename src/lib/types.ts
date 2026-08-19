@@ -470,7 +470,7 @@ export const partSchema = z.object({
    * Packages this document PRINTS an outline drawing for, as each drawing labels
    * itself.
    *
-   * ON THE SCHEMA and not only on the type, for the reason `pinTablesByPackage`
+   * ON THE SCHEMA and not only on the type, for the reason `packagesInThisDocument`
    * records two fields below: `/api/export` validates a POSTED record with this
    * schema and zod strips keys it does not know about, so a field the TypeScript
    * type carries and the schema does not is silently dropped on exactly the
@@ -502,12 +502,17 @@ export const partSchema = z.object({
    * Optional rather than defaulted: absent means the document described one
    * pinout, which is a different statement from an empty list.
    */
-  pinTablesByPackage: z
+  packagesInThisDocument: z
     .array(
       z
         .object({
         packageType: z.string().min(1).max(64),
-        pins: z.array(pinSchema),
+        /**
+         * Optional since 2026-08-18. A document routinely prints an outline
+         * drawing per package while tabulating ONE pinout, and such an entry
+         * carries measurements and no rows. Requiring rows discarded it whole.
+         */
+        pins: z.array(pinSchema).optional(),
         /**
          * Whether THIS package has an exposed thermal pad.
          *
@@ -524,7 +529,32 @@ export const partSchema = z.object({
         // The page this table was FOUND on, filled by the merge rather than
         // claimed by the model. Nullable, and a null one is what keeps an
         // unlocatable table out of a footprint.
-        citation: citationSchema.nullable().optional()
+        citation: citationSchema.nullable().optional(),
+        /**
+         * THIS package's own measurements, read off THIS package's own drawings.
+         *
+         * The same reasoning as the pin table beside it, applied to everything
+         * else that differs between the packages one document describes. A body
+         * length, a pitch, a lead span and a printed land pattern all belong to
+         * one package; the record carried one of each, and on a document whose
+         * part number does not name a package there is no such thing as "the"
+         * body length.
+         *
+         * Measured over the hold-out on 2026-08-18: 27 of 57 parts came back
+         * with not one dimension from either pass, the model's own notes saying
+         * the part number does not specify a package designator. It was
+         * answering the question correctly. The question was wrong.
+         *
+         * Every value here is a full `Extracted<T>`, carrying its own citation,
+         * because it goes onto the record exactly as a flat dimension does and
+         * `resolveForExport` judges it by the same rule. Nothing is admitted
+         * here that would not be admitted there.
+         *
+         * PARTIAL on purpose: a document may print an outline for a package and
+         * no recommended footprint for it, and that is a complete answer about
+         * that package rather than a broken one.
+         */
+        dimensions: packageDimensionsSchema.partial().optional()
         })
         /**
          * THE SAME PROOF `pins` HAS TO PASS: rows number 1..N, no gaps, no
@@ -543,6 +573,10 @@ export const partSchema = z.object({
          */
         .refine(
           (table) => {
+            // An entry with no rows carries measurements only and has no
+            // numbering to prove. An entry WITH rows still proves it.
+            if (!table.pins) return true;
+            if (table.pins.length === 0) return false;
             const numbers = table.pins.map((pin) => Number(pin.number));
             if (numbers.some((value) => !Number.isInteger(value) || value < 1)) return false;
             return new Set(numbers).size === numbers.length && Math.max(...numbers) === numbers.length;
@@ -662,7 +696,19 @@ export type PartRecord = {
    * the package chooser refused to offer the very choice that would have
    * unblocked it. The product deadlocked on its own question.
    */
-  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[]; exposedPad?: boolean; citation?: Citation | null }>;
+  packagesInThisDocument?: Array<{
+    packageType: string;
+    /** Absent on an entry that carries measurements and no pinout. */
+    pins?: PinRecord[];
+    exposedPad?: boolean;
+    citation?: Citation | null;
+    /**
+     * THIS package's own measurements, each a full `Extracted<T>` carrying its
+     * own citation. Partial: a document may draw a package's outline and print
+     * no recommended footprint for it.
+     */
+    dimensions?: Partial<PartRecord["dimensions"]>;
+  }>;
   /**
    * Packages this document PRINTS an outline drawing for, as each drawing labels
    * itself. Undefined means nobody answered, which is not the same as "none" and
@@ -728,7 +774,19 @@ export interface ResolvedPart {
    * because they describe a different package; the pin table is the same kind
    * of value and was the one thing carried across unchanged.
    */
-  pinTablesByPackage?: Array<{ packageType: string; pins: PinRecord[]; exposedPad?: boolean; citation?: Citation | null }>;
+  packagesInThisDocument?: Array<{
+    packageType: string;
+    /** Absent on an entry that carries measurements and no pinout. */
+    pins?: PinRecord[];
+    exposedPad?: boolean;
+    citation?: Citation | null;
+    /**
+     * THIS package's own measurements, each a full `Extracted<T>` carrying its
+     * own citation. Partial: a document may draw a package's outline and print
+     * no recommended footprint for it.
+     */
+    dimensions?: Partial<PartRecord["dimensions"]>;
+  }>;
   /**
    * Packages this document PRINTS an outline drawing for, as each drawing labels
    * itself. Undefined means nobody answered, which is not the same as "none" and
@@ -891,7 +949,7 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
       vendorLandPattern: part.vendorLandPattern,
       pinCount: pinCount as number,
       pins,
-      pinTablesByPackage: part.pinTablesByPackage,
+      packagesInThisDocument: part.packagesInThisDocument,
       drawnPackages: part.drawnPackages,
       exposedPad: part.exposedPad,
       dimensions: {

@@ -1,7 +1,7 @@
 import { renderPages, type RenderLimits } from "../pagerender";
 import type { DatasheetText } from "../pdftext";
 import type { PartRecord } from "../types";
-import { extractionFields, type ExtractionRequest, type PageSelection } from "./contracts";
+import { extractionFields, MAX_PAGES_TO_MODEL, type ExtractionRequest, type PageSelection } from "./contracts";
 import { unresolvedFields } from "./merge";
 
 /**
@@ -117,13 +117,8 @@ function wholeDocument(doc: DatasheetText): PageSelection {
  */
 const MAX_TOTAL_CHARS = 2_000_000;
 
-/**
- * Rendered pages are still capped, and for a real reason rather than an obsolete
- * one: an image costs far more than the text of the same page, and most pages
- * have nothing to look at. Which pages get rendered is chosen by the MODEL in a
- * second pass; see `pagesWorthRendering` in the contract.
- */
-const MAX_PAGES_TO_MODEL = 8;
+// The page budget lives in `contracts.ts`, because the PROMPT has to state the
+// same number and the two drifting apart makes a change to either a no-op.
 
 export function buildExtractionRequest(
   part: PartRecord,
@@ -215,7 +210,19 @@ export async function withRenderedPages(
   resolvedPackage?: string | null
 ): Promise<ExtractionRequest> {
   if (pages.length === 0) return { ...request, images: [], pages: [] };
-  const images = await renderPages(pdfBytes, [...pages], { maxPages: MAX_PAGES_TO_MODEL, ...limits });
+  // The byte and time ceilings are sized FROM the page budget rather than left
+  // at their defaults. They were 8 MB and 15 s for 8 pages; raising only the page
+  // count would have hit those instead and silently rendered fewer pages, which
+  // is a measurement that appears to test the budget and does not.
+  //
+  // A caller with its own deadline, such as an HTTP route, passes tighter limits
+  // and still wins: `limits` is spread last.
+  const images = await renderPages(pdfBytes, [...pages], {
+    maxPages: MAX_PAGES_TO_MODEL,
+    maxTotalBytes: 1_000_000 * MAX_PAGES_TO_MODEL,
+    budgetMs: 1_500 * MAX_PAGES_TO_MODEL,
+    ...limits
+  });
 
   // The second pass carries ONLY the pages being looked at, not the document
   // again. The model read the whole text in the first pass and is now being

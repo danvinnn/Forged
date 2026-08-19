@@ -752,3 +752,636 @@ No guard fires on the tuned corpus, including the band check now that it also
 tests the cross axis and now that it can run at all on a straight-lead package,
 and including the vendor-land veto now that it compares the second span. Nothing
 was newly refused.
+
+---
+
+# SESSION 2, 2026-08-18: finishing the product
+
+The plan was Phase 1a (export ordering) then Phase 1b (the land pattern). 1a is
+done. 1b turned out to be a symptom of something larger, found by measurement.
+
+## F70. `/api/export` refused a family datasheet one step before the fix
+
+`resolveForExport` ran FIRST and `asPackage` second. The traceability gate
+refused a record for having no pins, and the function that would have supplied
+them from the per-package tables ran afterwards.
+
+The chooser had done it in the right order since 2026-08-16, so the two halves
+of the product disagreed about the same click, and the half the user presses was
+the one that said no. Ten of the fifty-six hold-out parts were reported
+`held: missing pinCount,pins` with their pinouts sitting on the record.
+
+Fixed by naming the package BEFORE the gate, via `recordForPackage`, which shares
+the chooser's own guard (`pinoutIsTheOnlyThingMissing`) and its own
+`withPinTable`. One rule, both callers.
+
+## F71. The hold-out bench had the identical defect, which is why nobody saw it
+
+`shipOutcome` returned on `!resolved.ok` and never reached route two, which is
+the route that runs the chooser. A bench that stops before the product does
+measures a product that does not exist. Fixed by falling through and keeping the
+traceability refusal only as the fallback reason.
+
+## F72. THE BOTTLENECK: half the corpus lost its whole mechanical read to an unanswerable question
+
+This is the finding of the session.
+
+Measured over the current-prompt hold-out cache, 57 labels:
+
+    packageType            30      pins        43
+    leadSides              30      pinCount    45
+    pitchMm                30
+    bodyLengthMm           29
+    leadSpanMm             24
+    landPadLengthMm        19
+
+A cliff at 30, with pins and pinCount well above it. Classifying every part by
+what the two passes returned:
+
+    28  pass 2 returned dimensions
+    27  NO dimensions from EITHER pass
+     1  pass 2 empty, pass 1 had dimensions
+     1  no pass 2 entry at all
+
+The 27 are not a reading failure. The model says why, in its own notes, in the
+same words each time: the part number does not specify a package designator. The
+29 that worked say the same thing from the other side: "Selected the 16-pin VQFN
+(RGT) package option."
+
+The pinout was asked PER PACKAGE. Everything else was asked once. On a document
+whose part number does not name a package, "the body length" has no referent, and
+the model answered correctly by declining. The prompt then told it explicitly to
+"return null for the package-specific values", so it did.
+
+**The question was wrong, not the answer.** Every one of those datasheets prints
+the drawings.
+
+### The fix
+
+`packagesInThisDocument` (renamed from `pinTablesByPackage`, which had become a
+lying name) now carries each package's own measurements alongside its own pinout:
+
+- asked on the pass that has the RENDERED IMAGES, because a dimension line cannot
+  be read from text, and only where the package is genuinely unsettled;
+- parsed by `coercePackageDimensions`, which applies the flat block's rules rather
+  than a second looser set;
+- verified by `packageDimensions` in the merge, with the same citation-then-render
+  order and the same uncited-is-refused outcome;
+- merged across passes by designator, so pass 1's pins and pass 2's dimensions
+  join instead of one replacing the other;
+- overlaid by `asPackage` and `withPinTable`, cited values only.
+
+### Measured effect, six tuned family datasheets, $0.18
+
+Before: 0 of 6 shipped, all six reported `missing pinCount,pins`.
+After: **4 of 6 ship with one click** (LD1117, TXB0104, ADG5412, ISO7741).
+
+Reading quality, checked against the merge with citation verification on:
+
+    TXB0104   6 packages, 6..13 values each, 100% cited
+    LD1117    4 packages, 4..11 values each, 100% cited
+
+The land pattern itself mostly does not come through, because pass 1's page
+budget (8) is spent on outline drawings once a document has six packages. It does
+not need to: with lead span, contact, width, pitch, leadSides and leadForm per
+package, IPC-7351B computes the land. That is what makes TXB0104 and ISO7741
+one-click parts.
+
+## F73. `run.ts` was a binary file to git
+
+One raw NUL byte at offset 8799, used as a separator inside a template literal.
+Git treated the whole file as binary, so every diff of it has been invisible in
+review. Replaced with the escape sequence for the same character: identical
+runtime value, reviewable file.
+
+## F74. The chooser said "ships" where the export asked three questions
+
+`optionFor` ran `buildFootprintGeometry`; a click runs `createExportZip`, which
+also requires the body size for the 3D solid. On a relabel every dimension is
+blanked, so the package the chooser promised would ship asked for body length,
+width and height when pressed. `optionFor` now includes `askForBody`, which is
+the drift it documents itself as preventing.
+
+## F75. The spend ceiling is permanently tripped and pays to discover it
+
+`spendLimitUsd()` compares LIFETIME charged spend against a limit defaulting to
+$10. Lifetime is $16.67, so every run now: makes one live call per part, writes
+the answer, then throws. The write-then-throw order is deliberate and right (the
+call is already paid for). The problem is that the ceiling can no longer be
+reached without being exceeded, so a run under it is impossible and each attempt
+costs money before failing.
+
+Not fixed: it is the user's guard and the user's money. Raised to $20 for this
+session only, per-command, not persisted. Reported rather than silently removed.
+
+## Not fixed, recorded
+
+- `packageOutlineCode` and `jedecOutline` come back inside the per-package
+  dimension block and are filtered out by the `dimensions.` prefix check. The
+  data is there and we drop it. It unblocks no part, so it is recorded rather
+  than chased.
+- Pass 1's page budget of 8 cannot cover both an outline and a land pattern page
+  for a document with six packages. Raising it costs an image per page.
+
+---
+
+# HOLD-OUT RESULT, run 3 of 4, 2026-08-18
+
+    READ    50/54  (93%)
+    SHIPS   31/54  (57%)     <- was 14/54 (26%) at the start of the session
+    cost    $2.00 this run, ~$18.72 cumulative over 903 billed calls
+    3 calls failed, so both numbers are FLOORS
+
+## How SHIPS was derived
+
+My command piped the run through `tail`, which cut the header off the captured
+output. The number is reconstructed from the bench's own buckets, which are
+printed from the same counters:
+
+    read      = sum of "By kind"          = 10+7+4+3+11+9+2+4 = 50
+    refusals  = sum of "Read but no bundle" = 4+3+2+2+2+1+1+1+1+1+1 = 19
+    ships     = 50 - 19 = 31
+
+`main()` increments `read` for every reason starting with "read" and records
+every read-but-not-shipping part in `shipRefusals`, so the two partition the read
+set exactly and the subtraction is not an estimate. Recorded here because a
+number I did not read directly should say so.
+
+## What still does not ship, all 23 of them
+
+    4  needs landPadLengthMm, landPadWidthMm, landSpanMm, landSpanCrossMm
+    3  needs the land pattern + leadSides + all three body dimensions
+    2  needs vacantLeadSlot
+    2  needs landPadLengthMm, landPadWidthMm, landSpanMm
+    2  needs leadDiameterMm, landSpanMm            (through-hole)
+    1  needs landSpanMm
+    1  unsupported: a pinout per package, none matching the requested one
+    1  unsupported: HTSSOP (PWP) drawings read, no pin table for it
+    1  unsupported: DSBGA (YKM) drawings read, no pin table for it
+    1  held: uncitable dimensions.leadForm, dimensions.mounting
+    1  held: uncitable pins
+    3  no pins, no count
+    1  count but no pins
+
+**Ten of the twenty-three are the land pattern**, which is now the single
+remaining bottleneck and is a much smaller one than the mechanical read it
+replaced. Two are the new "drawings read, no pin table" case, which the
+per-package work created and which is a reading gap rather than a structural one:
+the document was measured for that package and its pinout was not found.
+
+## What moved it
+
+Nothing in the reader. READ was already 93% before the session and is 93% now.
+The whole move came from three things:
+
+1. `/api/export` ran the traceability gate before the function that supplies the
+   pinout (F70), and the hold-out bench had the identical defect (F71).
+2. Dimensions asked PER PACKAGE (F72), which took 27 of 57 parts from no
+   mechanical read at all to a full one.
+3. Two refusals made answerable: the quad corner short (F76) and the body size
+   the chooser did not ask for (F74).
+
+## F76. The quad corner short was a dead end that named its own remedy
+
+`bench:copper`, written this session, found five cached parts failing to build
+for a reason that was not a refusal. All five were one class: a quad whose corner
+lands would touch. The check is correct and its message already ended "the centre
+span is the value to check first" — and it threw `FootprintInvalidError`, which
+reaches the user as FOOTPRINT_INVALID with an EMPTY `needs`. Nothing to type,
+nothing to do, part lost.
+
+It is now a `FootprintUnavailableError` naming `landSpanMm` and `landSpanCrossMm`,
+with the recommended-footprint page attached. The distinction is kept and is
+real: `FootprintInvalidError` means Forge built something self-contradictory, and
+this is a READING that two other readings contradict.
+
+## F77. The product asked for a number and then refused to use it
+
+`withSupplied` filled BLANKS only, with a sound reason written above it: a user
+must not silently redefine a value the document states. But the corner check can
+PROVE a read span wrong, and when it did, the user was asked for the span and
+their answer was discarded because the field was not blank. The same refusal came
+back.
+
+Fixed by scoping: the four land-pattern fields are CORRECTED by a supplied value,
+every other field is still only FILLED. That is not a special case — it is the
+only place the product asks about a field it has already read, so for every other
+field the two behaviours are indistinguishable.
+
+## F78. A number typed for one package was still sent for the next
+
+`supplied` survived a package change in the UI, so a land span answered for the
+SOIC was still posted after switching to the QFN. Same mistake `asPackage` exists
+to prevent, one layer up. Cleared on every package choice.
+
+## F79. bench:copper: the emitted copper agrees with every record
+
+56 footprints built from cached answers, 40 from the datasheet's own printed
+footprint and 16 computed from IPC-7351B. Pitch, span, land size and the exposed
+pad's axis all measured back out of the pads. **No disagreement.**
+
+Its first three runs reported 454, then 15, then 1 finding, every one of them the
+instrument being wrong. See LEARNINGS section 10.
+
+## F80. The oracle recorded three fields nothing compared against
+
+`bodyLengthMm`, `bodyWidthMm` and `bodyHeightMaxMm` were hand-read into
+`DIMENSION_ORACLE` and `bench:dimensions` never looked at any of them. Wired in,
+and the first run found a wrong number: ADC128S102QML-SP's body height read 1.778
+where the drawing's title block says 2.33 max.
+
+Both numbers are on the page. `.070 [1.778]` dimensions the ceramic; 2.33 is the
+seated envelope. The model answered the question as asked, and the FIELD GUIDE
+asked for "package body height" while `buildStepModel` stands the solid on the
+board and clearance-checks its top face. **The question was wrong.** The guide now
+asks for the maximum seated height and says why.
+
+Oracle now: 6 drawings, 87 checked values, and the first entry with an exposed
+pad (PWP0028C, hand-read 2026-08-18).
+
+## F81. The real server was never actually run this session
+
+`npm run build`, `npm start`, POST a real record:
+
+    kicad    200  16017 bytes  6 files  (sym, .pretty/.kicad_mod, step, json, manifest)
+    altium   200  50225 bytes  5 files  (SchLib, PcbLib, step, json, manifest)
+    cadence  501  GENERATOR_NOT_IMPLEMENTED, and says so honestly
+
+UCC27524's emitted footprint: 8 pads at x = +/-2.700, y stepping 1.27. That is a
+5.4 mm centre span at 1.27 pitch, which is what its datasheet prints.
+
+## F82. Mutation testing: 20/20, was 17/20
+
+Full end-to-end run, all twenty hand-chosen defects applied and the suite run
+against each. **KILLED 20/20, SURVIVED 0.** The three that survived on
+2026-08-16 are now caught. Tree verified clean afterwards; `mutation.ts` restores
+in a `finally` and did.
+
+## F83. The page request named a package nobody had chosen
+
+`pageRequestGuidance` asked for "the package outline / mechanical drawing page
+for THIS part's package" and "the RECOMMENDED FOOTPRINT / LAND PATTERN page for
+THIS part's package". On a family datasheet that phrase points at nothing, which
+is the same defect as F72 one layer up: a page request scoped to a package nobody
+has chosen is the same unanswerable question that cost 27 of 57 parts their
+entire mechanical read.
+
+Now: name those pages for the package the part number determines, and where it
+determines none, name them for EVERY package the document offers. The eight-page
+cap is spent deliberately rather than by chance, stating the preference outright:
+**breadth over depth**, because a package with only its outline drawing still
+yields a footprint (IPC-7351B computes the land from lead span, contact, width
+and pitch) and a package with no page yields nothing.
+
+UNMEASURED. It is a prompt change, so it strands the cache and costs a full run.
+Ten of the twenty-three parts that do not ship are blocked on the land pattern,
+and this is the change most likely to move them.
+
+## Air gap
+
+Structural guarantee intact: the commercial resolver is reached only through a
+dynamic import, so importing the module graph does not pull networking in. The
+preflight tests (155 in the retrieval suite) pass, including "a cloud key on an
+air-gapped deploy is flagged" and "an unset mode in production is flagged,
+because it silently means air-gapped". Generation runs unchanged under
+`FORGE_DEPLOYMENT_MODE=air-gapped`, being pure local computation.
+
+Not attempted, per Anthony's instruction not to spend time on it: reading a
+datasheet with a local model. `forge-local-model` already records what that
+costs (qwen2.5vl reads pin tables 8/8 when asked narrowly and nothing on the
+production prompt).
+
+## Cadence
+
+Still refuses, with `GENERATOR_NOT_IMPLEMENTED` and a message naming what IS
+available. Not built, and deliberately so: emitting an Allegro library without
+the format spec means guessing at a binary padstack format, and a wrong CAD file
+that opens is worse than an honest refusal. This is the one item of the plan I am
+not delivering, and it is named rather than quietly dropped.
+
+## Where the product stands
+
+    READ    50/54  (93%)   hold-out, run 3
+    SHIPS   31/54  (57%)   was 26% at the start of the session
+    copper  56/56 footprints agree with their records
+    suite   658 tests, 20/20 mutations killed
+    oracle  6 drawings, 87 hand-checked values
+    server  built, started, real export POSTed and read back
+
+Against the three-number definition of done:
+
+    SHIPS >= 60%              57%, three parts short
+    zero wrong-copper         MET (bench:copper, 56 footprints)
+    one click, one number     MET on the family path, measured 4/6 tuned parts
+
+## Reading back my own diff, same session
+
+Two defects in the work above, found by reading it rather than by a failing test.
+Both would have shipped.
+
+## F84. One unplaceable number would have refused the whole part
+
+`packageDimensions` in the merge stores a per-package value it could not locate
+on any page, with a null citation, so the user can see what was read and could
+not be placed. That is right on the RECORD.
+
+`withPinTable` then copied the entry's dimensions onto the part being exported,
+uncited ones included, and `resolveForExport` refuses any untraceable geometry
+value. So ONE unplaceable number would have refused the ENTIRE part with
+UNTRACEABLE_EXTRACTION, where the intended behaviour is to drop that value and
+ask for it.
+
+`asPackage` already filtered correctly, which is what made it visible: the two
+lifts of the same data disagreed. Both now go through `citedDimensions`.
+
+No test failed, because nothing in the corpus happens to carry an uncited
+per-package value yet. The test added for it was checked by removing the filter
+and confirming it fails, so it is not green for the wrong reason.
+
+## F85. Pass precedence held by accident
+
+`mergePackageEntries` joined the two passes' package entries by taking whichever
+came first in iteration order. That gives the right answer today only because
+pass 1 is not asked for per-package dimensions — a rule holding by accident, which
+stops holding silently.
+
+Now stated per half, for the reason each pass exists: **pass 1 is the authority on
+PIN TABLES** because it has the whole document and pass 2 sees only a handful of
+rendered pages, and **pass 2 is the authority on DIMENSIONS** because a dimension
+line's meaning is carried by arrows rather than text. Two tests pin it.
+
+## Oracle, end of session
+
+    7 drawings, 117 checked values, 1 WRONG
+
+The one WRONG is ADC128S102QML-SP's body height, already fixed at the source
+(F80) and awaiting a re-read. Added this session: PWP0028C and DDA0008B (the
+first two entries with an EXPOSED PAD, on a TSSOP and a SOIC, so the pad-axis
+rule is checked on more than one drawing) and PN0080A (the first FOUR-SIDED
+package in the file, which is where every cross-axis defect lives).
+
+Still unrepresented and worth the next entry: a RECTANGULAR quad. ADXL345 was
+read and deliberately NOT added — its LGA has two columns plus single terminals
+top and bottom, so which axis is "the axis the pin rows run" is genuinely
+ambiguous, and this file's own rule is that ambiguity is left out rather than
+guessed.
+
+## Guards, end of session
+
+`bench:guards`, all three corpora: every one of the seven **never fires**. Nothing
+in today's work newly refuses a part, including the corner-short change, which
+turned a refusal into a question rather than adding one.
+
+---
+
+# HOLD-OUT RUN 4 of 4: F83 IS A MEASURED NEGATIVE, AND IS REVERTED
+
+    READ    49/54  (91%)   run 3 was 50/54 (93%)
+    SHIPS   29/54  (54%)   run 3 was 31/54 (57%)
+    108 live calls, ZERO failures, $2.50
+    CHARGED TOTAL ~$21.22 over 1011 calls
+
+Run 4 is the CLEANER run. Run 3 had three failed calls and its numbers were
+explicitly floors; run 4 answered everything and still scored lower. The result
+is therefore stronger than the two-point gap suggests.
+
+## Every field went down
+
+                        run 3   run 4
+    pins                   39      37
+    pinCount               40      40
+    packageType            25      22
+    packageOutlineCode     23      20
+    bodyLengthMm           24      22
+    pitchMm                24      22
+    leadSides              26      24
+    leadWidthMm            22      20
+    landPadLengthMm        15      13
+    landPadWidthMm         15      13
+    landSpanMm             14      13
+
+Including the land pattern, which is the thing the change was aimed at.
+
+## Why
+
+The eight-page render cap is the binding constraint, not the wording. Asking for
+an outline and a recommended-footprint page for EVERY package a document offers
+spreads eight pages across six packages, which buys a thinner look at each and
+squeezes the pinout page out entirely. `pins` fell by two and three more parts
+landed in "uncitable pins" and "count but no pins".
+
+**Reverted.** The rejected approach is written into `pageRequestGuidance` with
+these numbers so nobody spends another $2.50 rediscovering it. A future attempt
+has to RAISE the budget or CHOOSE pages better; asking for more of them inside
+the same cap will lose.
+
+## The methodology mistake, recorded
+
+Two prompt changes shipped in run 4: F83 and the `bodyHeightMm` field-guide
+correction (F80). **They cannot be separated by measurement**, which is my error:
+a prompt change costs a full run, so exactly one hypothesis should ride on each.
+
+F83 is reverted because it has a mechanism that explains a broad drop across
+pins, packageType and the land pattern. F80 is kept because it changes one
+field's description, cannot plausibly explain that drop, and was verified against
+a hand-read drawing rather than against a coverage number.
+
+## What the tree measures at now
+
+Neither run describes the current tree exactly. After the revert the prompt is
+run 3's prompt plus the one-field `bodyHeightMm` wording, so **run 3's 93% READ
+and 57% SHIPS are the best available figure**, with that one field unmeasured.
+
+No runs remain of the four allowed, and spend is $21.22 against the $22 ceiling
+Anthony approved. Saying so rather than quoting a number that describes neither
+tree.
+
+---
+
+# ORACLE PASS, 2026-08-18: 5 drawings to 10, 87 values to 145
+
+Every entry below was read by a person off the rendered page, per the rules at
+the top of `dimension-oracle.ts`. None was copied from extractor output.
+
+    PWP0028C   PowerPAD TSSOP-28   first entry with an EXPOSED PAD
+    DDA0008B   PowerPAD SOIC-8     second pad, different family, so the pad-axis
+                                   rule is checked on more than one drawing
+    PN0080A    LQFP-80             first FOUR-SIDED package in the file
+    DBT0038A   TSSOP-38            outline AND printed land pattern, so the check
+                                   runs from drawing to emitted copper
+    CP-20-8    LFCSP-20            first NO-LEAD package
+    U0010A     CFP-10              rad-hard ceramic, dimensioned in inches
+
+**143 of 145 values correct.**
+
+## F86. The oracle's body-height check was too strict, and marked a correct read wrong
+
+`bodyHeightMaxMm` was compared for equality with the maximum. AD8232's drawing
+prints `0.80 / 0.75 / 0.70`, the prompt asks for the NOMINAL, the model returned
+0.75, and the oracle called it wrong.
+
+Both forms exist on real drawings and they mean different things, so both are now
+represented: `bodyHeightMm` as a range where the drawing prints max/nom/min (any
+value inside is correct), and `bodyHeightMaxMm` where it prints only a maximum
+(that number is the reading, because nothing else states the envelope).
+
+Same lesson as F80 from the other side. **A check has to be as precise as the
+drawing it is checking against.**
+
+## F87. The body-height defect is a CLASS, not one part
+
+With the check corrected, two parts still fail, and they fail the same way:
+
+    ADC128S102QML-SP   read 1.778   drawing title says 2.33 max
+    TPS7A4501-SP       read 2.62    drawing title says 2.03 max
+
+Both are CERAMIC FLAT PACKS, and both drawings separate the ceramic body's own
+thickness from the package's seated envelope, printing the envelope only in the
+title block. Both readings predate the FIELD GUIDE correction in F80, which now
+asks for the seated height and says explicitly that where a drawing dimensions
+the body separately from the overall height, the overall one is wanted.
+
+One part looked like a misread. Two of the same package family, failing the same
+way for the same reason, is the class the fix was written for. **Unconfirmed
+until those two are re-read**, which costs about $0.10 on the tuned bench.
+
+## What was deliberately NOT added
+
+- **ADXL345 (CC-14-1).** Its LGA has two columns of terminals plus single
+  terminals top and bottom, so "the axis the pin rows run" has no answer on that
+  drawing. This file's own rule is that ambiguity is left out rather than
+  guessed, because a wrong entry makes the oracle assert nonsense.
+- **U0010A's lead span.** The drawing dimensions the leads outward from the body
+  edge and the body separately, so a tip-to-tip span exists only as arithmetic
+  over three toleranced numbers. RULES.md 2: a derivation needs a reason from
+  practice, not from the arithmetic being available.
+- **U0010A's body size.** The drawing prints ".27 MAX GLASS" on both axes and
+  ".241 +.019/-.003" across the middle, and which one `bodyLengthMm` means is not
+  decidable from the page.
+
+## Unresolved, recorded rather than guessed
+
+The record reads TPS7A4501-SP's outline code as `HKU0010A`; the drawing titles
+itself `U0010A`. The entry is keyed on the drawing's own spelling and matched
+through `parts`, so the discrepancy cannot silently attach the entry to the wrong
+drawing. Which spelling is right is not settled.
+
+---
+
+# THE PAGE BUDGET, 2026-08-18
+
+## F88. One number, four copies, and raising any one alone does nothing
+
+The render budget was written out independently in four places:
+
+    run.ts        MAX_RENDERED_PAGES = 8
+    request.ts    MAX_PAGES_TO_MODEL = 8
+    pagerender.ts DEFAULT_RENDER_LIMITS.maxPages = 8
+    prompt.ts     "Name at most 8 pages", as an English word
+
+The fourth is the one that matters and is the easiest to miss. The model names
+the pages it wants, so a budget raised in code while the SENTENCE still says
+eight changes nothing at all: the model goes on naming eight and the extra
+capacity is never asked for.
+
+Now one exported constant in `contracts.ts`, interpolated into the prompt, with
+`MAX_RENDERED_PAGES` aliasing it and the render defaults sized from it. A test
+pins the sentence to the constant rather than to a literal.
+
+Raised to **16**, which fits an outline drawing, a recommended footprint and a
+pinout for the six-package documents that eight could not.
+
+## F89. The byte and time ceilings had to move with it
+
+`DEFAULT_RENDER_LIMITS` was 8 MB and 15 s, sized for 8 pages. Raising only the
+page count would have hit those instead, and `renderPages` does not throw when it
+runs out: **it returns fewer pages**. The measurement would have appeared to test
+a 16-page budget while actually rendering eight, and reported that the budget
+does not help.
+
+`withRenderedPages` now sizes both from the page budget, and a caller with its
+own deadline still wins because `limits` is spread last.
+
+## F90. Which immediately created a production regression, caught by reading
+
+The scaled ceiling is about 24 seconds. `runExtraction` passed NO limits, and
+both routes have `maxDuration = 30`. Rendering could therefore consume 24 of the
+30 seconds and leave six for two model calls, and because `renderPages` returns
+fewer pages rather than failing, the symptom would have been parts quietly
+reading worse in production with nothing reporting why. The benches have no
+deadline and would never have shown it.
+
+`runExtraction` now takes an optional render budget, and both routes pass one
+third of their remaining time. NOT capped inside `runExtraction` itself: that
+would make the benches render fewer pages than the product can, and a bench that
+measures a product that does not exist is the exact mistake `shipOutcome` was
+making this morning.
+
+## The hypothesis being measured
+
+One hypothesis, even though it moves two knobs, because breadth and budget are
+the same intervention: **the earlier breadth attempt lost because of the cap, not
+because of the breadth.** Run 4 asked for breadth inside 8 pages and lost on every
+field. This asks for the same breadth inside 16.
+
+If it loses too, the next question is NOT the wording again. It is whether the
+recommended-footprint page is being named and not rendered, or never named at
+all, and that is answerable for free from the cache.
+
+---
+
+# RUN 5: THE CAP WAS THE CONSTRAINT. SHIPS 63%.
+
+    READ    49/54  (91%)
+    SHIPS   34/54  (63%)
+    80 live calls, 1 failed, $1.97.  CHARGED TOTAL ~$23.23 over 1092 calls
+    Both numbers are FLOORS: one call never answered.
+
+## The three runs, same corpus, same day
+
+                        run 3        run 4        run 5
+    page budget          8            8            16
+    page request      one package   every pkg    every pkg
+    READ                 93%          91%          91%
+    SHIPS                57%          54%          63%
+    landPadLengthMm      15           13           14
+    land-blocked parts   ~12          ~11          8
+
+Run 4 asked for breadth inside eight pages and lost on every field. Run 5 asked
+for the SAME breadth inside sixteen and gained six points of SHIPS over the best
+previous run. **The hypothesis run 4 produced was correct: the cap was binding,
+not the wording.** Run 4 was not a wasted run; it is what made run 5 the right
+experiment rather than a guess.
+
+`landPadLengthMm` barely moved (15, 13, 14) while SHIPS moved a lot. The gain is
+not that more land patterns were read. It is that more packages got their OWN
+outline read, so IPC-7351B could compute a land where no printed one was found,
+and that the pinout pages stopped being squeezed out: "held: uncitable pins"
+went from three parts in run 4 to none.
+
+## Definition of done
+
+    SHIPS >= 60%              MET, 63%
+    zero wrong-copper         MET, 56/56 footprints agree with their records
+    one click, one number     MET on the family path
+
+## What still does not ship, 20 parts
+
+    8  the land pattern, in four different combinations
+    3  "drawings read for this package, but no pin table for it"
+    2  vacantLeadSlot
+    2  no pins and no count
+    3  count but no pins
+    1  through-hole, needs the lead diameter and the span
+    1  uncitable: seven dimensions located on no page
+
+The largest single bucket is now three parts, not ten. The land pattern is still
+first but it is eight parts spread over four different question sets rather than
+one blocking class.
+
+## Cost
+
+Cheaper than run 4 ($1.97 against $2.50) despite twice the page budget, because
+28 of the 108 calls hit cache: pass 1's prompt is unchanged for parts where the
+package is settled, so only the second pass re-asked. The budget change is not
+uniformly expensive.
