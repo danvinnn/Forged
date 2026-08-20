@@ -299,6 +299,19 @@ export interface ExtractionResult {
    */
   packagesInThisDocument?: Array<{
     packageType: string;
+    /**
+     * The OTHER name this document prints for the same package.
+     *
+     * The two passes read the same package from different sections and each
+     * names it after the section it read: the pinout section writes
+     * `D (OPA1612)` and `SOT-23 (DBV)`, the package drawings write `SOIC (D)`
+     * and `SOT-23 (5)`. The ordering table, which is where the chooser gets the
+     * designator it later looks this entry up by, uses a third mixture of the
+     * two. Filing a joined entry under either single name loses the parts whose
+     * chooser speaks the other one, and it is not a choice that has to be made:
+     * both names are known and both are the document's own.
+     */
+    alsoKnownAs?: string[];
     pins?: PinRecord[];
     /**
      * That package's OWN measurements, keyed by the same field names as the flat

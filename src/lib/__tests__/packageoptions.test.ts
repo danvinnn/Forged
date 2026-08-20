@@ -356,3 +356,60 @@ test("one unplaceable per-package measurement is dropped, not fatal to the packa
     "everything that WAS placed is enough to build, so the part ships"
   );
 });
+
+test("one ordering-table name covering two drawn packages becomes two choices", () => {
+  // LD39050 prints a pinout and a drawing for a 3x3 mm DFN6 and a 2x2 mm DFN6,
+  // and its ordering table calls both `DFN6`. Asking the pin-table lookup for
+  // `DFN6` has two right answers, so it correctly refuses, and the user was
+  // then told the document gives a pinout per package and none of them matches
+  // DFN6 - with both of them on the record, located and complete.
+  const table = (name: string) => ({
+    packageType: name,
+    pins: pins(6),
+    citation: { page: 3, snippet: name, region: null }
+  });
+  const choice = packageOptions(
+    record({
+      pins: nothing<PinRecord[]>(),
+      pinCount: nothing<number>(),
+      packageVariants: [variant("DFN6", "DFN", 6)],
+      packagesInThisDocument: [table("DFN6 (3x3 mm)"), table("DFN6 (2x2 mm)")]
+    })
+  );
+
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  const named = choice.options.map((option) => option.designator).sort();
+  assert.deepEqual(named, ["DFN6 (2x2 mm)", "DFN6 (3x3 mm)"], "both, by the document's own names");
+  assert.ok(
+    choice.options.every((option) => option.status !== "unsupported" || !/none of them matches/.test(option.reason ?? "")),
+    "and neither is refused for being ambiguous with the other"
+  );
+});
+
+test("the pitch is asked for, not merely named in the refusal", () => {
+  // The land pattern was printed and read, the arrangement was not, and the
+  // message said "that comes from the pitch and how many sides carry leads.
+  // Answer what is missing". The pitch was on no list, so there was nothing to
+  // answer and no input could unblock the part.
+  const choice = packageOptions(
+    record({
+      packageVariants: [variant("SOIC-8", "SOIC")],
+      dimensions: {
+        ...record().dimensions,
+        pitchMm: nothing<number>(),
+        landPadLengthMm: cited(1.55),
+        landPadWidthMm: cited(0.6),
+        landSpanMm: cited(5.4)
+      }
+    })
+  );
+
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  const asked = choice.options.flatMap((option) => (option.status === "needs-input" ? option.needs : []));
+  assert.ok(
+    asked.some((need) => need.field === "pitchMm"),
+    `the refusal names the pitch, so the ask must offer it; got ${JSON.stringify(asked.map((n) => n.field))}`
+  );
+});

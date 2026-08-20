@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { densityOf, parseSettings } from "../../../lib/settings";
 import {
   asPackage,
   createExportZip,
@@ -152,6 +153,12 @@ export async function POST(request: Request) {
     );
   }
 
+  // THE INSTALLATION'S OWN SETTINGS, sanitised exactly as everything else on
+  // this route is. They arrive with the request rather than from a server-side
+  // store because a controlled deployment may run several assembly lines against
+  // one host; the store lives with the client that knows which line it is.
+  const settings = parseSettings((payload as { settings?: unknown }).settings);
+
   // The land pattern the user typed, when their datasheet did not print one.
   //
   // Validated exactly as strictly as the span above: these become copper. A
@@ -246,9 +253,27 @@ export async function POST(request: Request) {
   let bundle: Awaited<ReturnType<typeof createExportZip>>;
   try {
     bundle = await createExportZip(part, format, {
-      formedLeadSpanMm: formedSpan,
-      formedLeadContactMm: formedContact,
-      supplied: suppliedNumbers as SuppliedDimensions
+      // THE SETTING IS THE FALLBACK, and the per-part answer wins.
+      //
+      // Both numbers are properties of the forming die, so a customer who has
+      // set them up front should never be asked again. They stay overridable per
+      // request because one part can be built on a different line, and a setting
+      // that could not be overridden would be an assumption wearing a screen.
+      formedLeadSpanMm: formedSpan ?? settings.formedLeadSpanMm,
+      formedLeadContactMm: formedContact ?? settings.formedLeadContactMm,
+      supplied: suppliedNumbers as SuppliedDimensions,
+      // THE USER'S SETTINGS, which had no way in until 2026-08-19.
+      //
+      // `ExportOptions.densityLevel` has existed since the generator did, and no
+      // caller ever set it, so every export in this product's life has been
+      // built at the standard's nominal whatever the customer chose. A setting
+      // the UI collects and the server ignores is worse than no setting: it
+      // tells the user their process was taken into account when it was not.
+      //
+      // Blank still means B, which is IPC-7351B's own nominal. See
+      // `densityOf`: resolving blank to the published standard is the whole
+      // shape of the settings screen, not a default invented here.
+      densityLevel: densityOf(settings)
     });
   } catch (error) {
     if (error instanceof GeneratorUnavailableError) {

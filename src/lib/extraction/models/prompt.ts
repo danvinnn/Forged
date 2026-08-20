@@ -374,7 +374,10 @@ THAT package's own drawings. Use the field names and value shapes exactly as lis
 Never copy a value from one entry to another because two packages look alike, and never add an entry
 for a package whose drawing is not in front of you. A package you can see the outline for but not the
 recommended footprint gets an entry with the outline's fields and no land pattern; that is a complete
-answer, not a partial one.`;
+answer, not a partial one.
+
+If one of the attached images is a PIN CONNECTIONS figure, give each package its "pins" here too,
+read off that figure. It is the same list as "pins" above, for that one package.`;
 }
 
 function imageGuidance(pageNumbers: number[]): string {
@@ -406,16 +409,41 @@ export function buildPrompt(request: ExtractionRequest): string {
     .join("\n\n");
   const partNumber = request.partNumber ? sanitizePartNumber(request.partNumber) : "";
   const images = imageGuidance(request.images.map((image) => image.page));
-  // Asked only on the first pass, when there is nothing attached yet.
-  const askPages = request.images.length === 0 ? pageRequestGuidance(request.fields) : "";
   // Sanitised the same way the part number is: it reaches here from a request
   // body on the package-chooser path, so it is untrusted input too.
   const packageType = request.packageType ? sanitizeDesignator(request.packageType) : "";
   // Sanitised like everything else that reaches the prompt from the document.
   // These designators are read off an untrusted PDF, so they are content.
+  //
+  // GIVING THE TWO PASSES THIS LIST AS A SHARED VOCABULARY WAS MEASURED AND
+  // REVERTED, 2026-08-19. The defect was real: `packagesInThisDocument` is
+  // filled by both passes and joined on the designator, and each pass used the
+  // vocabulary of whatever part of the document it was reading, so twelve of
+  // fifty-four hold-out parts carried their pin table and their dimensions in
+  // separate entries for the same package. Telling both passes to use the
+  // ordering table's names fixed exactly that, and per part it worked: LM358
+  // went from zero offered packages to four shipping.
+  //
+  // It cost the population anyway, and so did every refinement of it:
+  //
+  //     no paragraph                       READ 91%  SHIPS 63%
+  //     + one shared vocabulary            READ 87%  SHIPS 61%
+  //     + also report a shared pinout flat READ 83%  SHIPS 57%
+  //     + "only where the pinouts differ"  READ 87%  SHIPS 26%
+  //
+  // Four measurements, one direction. Every sentence added here about the
+  // per-package channel draws answers into it and away from the flat fields,
+  // and the flat fields are what let a record resolve without the chooser.
+  //
+  // Do not retry by rewording. The next thing to try is the JOIN, which is where
+  // the two vocabularies actually meet, and it must be a proof that two
+  // designators name one package rather than a guess: `D (OPA1612)` and
+  // `SOIC (D)` are the same package and nothing in the strings says so.
   const candidates = (request.packageCandidates ?? [])
     .map((designator) => sanitizeDesignator(designator))
     .filter((designator) => designator.length > 0);
+  // Asked only on the first pass, when there is nothing attached yet.
+  const askPages = request.images.length === 0 ? pageRequestGuidance(request.fields) : "";
   // Asked on the pass that can SEE the drawings, and only where the package is
   // genuinely unsettled. See `perPackageDimensionGuidance`.
   const perPackage = request.images.length > 0 && !packageType ? perPackageDimensionGuidance() : "";
@@ -425,7 +453,7 @@ export function buildPrompt(request: ExtractionRequest): string {
     askPages
       ? ', "pagesWorthRendering": [<page number>, ...], "packagesInThisDocument": [{"packageType": "<designator>", "pins": [...]}, ...], "drawnPackages": ["<as the drawing labels itself>", ...]'
       : perPackage
-        ? ', "packagesInThisDocument": [{"packageType": "<designator>", "dimensions": {"<field name>": {"value": <value>, "page": <page number>}}}, ...]'
+        ? ', "packagesInThisDocument": [{"packageType": "<designator>", "pins": [...], "dimensions": {"<field name>": {"value": <value>, "page": <page number>}}}, ...]'
         : ""
   }}`;
 

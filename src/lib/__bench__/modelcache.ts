@@ -909,9 +909,23 @@ export function preRunProjection(options: {
   // new corpus and a warning sign after a prompt edit, and the two are
   // indistinguishable from the run itself.
   if (census.stranded > 0 && census.reachable === 0) {
+    // NOT "this run re-asks everything", which is what it used to say, and which
+    // is wrong whenever a prompt edit touched only PART of the prompt.
+    //
+    // The fingerprint is one hash over the whole prompt, so editing a block that
+    // appears on some requests and not others restamps every entry as stranded
+    // while most of them still hit: their per-request key never changed. On
+    // 2026-08-19 this line announced "all 1480 stored answers CANNOT be hit,
+    // projected $2.57" for a run that hit 75 of 117 and cost $0.89, and it was
+    // printed at exactly the moment someone decides whether to spend.
+    //
+    // A projection that overstates cost is not the safe direction: it is the
+    // direction that stops a cheap, correct run from happening. So it now says
+    // what it can actually support, and names the free way to find out.
     lines.push(
-      `  WHY IT IS COLD  the prompt changed: all ${census.stranded} stored answers were paid for ` +
-        `under a different question and CANNOT be hit. This run re-asks everything.`
+      `  WHY IT MAY BE COLD  the prompt changed since these ${census.stranded} answers were stored. ` +
+        `Any request whose own prompt text is unchanged still hits, so the real number may be far ` +
+        `lower than the projection above. Run with --estimate for the exact count; it costs nothing.`
     );
   } else if (census.stranded > census.reachable && census.stranded > 0) {
     lines.push(

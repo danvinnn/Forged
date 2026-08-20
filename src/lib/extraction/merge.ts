@@ -426,6 +426,78 @@ const DRAWING_CONTEXT = [
  * `vlm-drawing` value is an unconfirmed reading with a verifiable location,
  * and the record says so rather than dressing it as a checked one.
  */
+/**
+ * The PDF page a model's claim refers to, when the model quoted the page number
+ * the DOCUMENT prints rather than the one the file counts.
+ *
+ * ## Why the two differ, and why the model is not wrong
+ *
+ * A datasheet with a cover, a revision history and a contents page prints
+ * `Page 24 of 24` in the footer of the twenty-SEVENTH page of the file. Both
+ * numbers are real and they are three apart. The model is looking at an image
+ * of the page, and the only page number on that image is the printed one, so
+ * quoting it is the correct reading of what it can see. Nothing in the prompt
+ * ever told it which numbering we check against.
+ *
+ * Measured 2026-08-19 on AD9833: seven dimensions were read off the package
+ * drawing, every value correct, every one thrown away as untraceable because
+ * the claim said 24 and the drawing is on file page 27. The part shipped
+ * nothing. This is the "we had it and threw it away" shape again, this time
+ * over a numbering convention.
+ *
+ * ## What keeps this from weakening the citation
+ *
+ * It resolves a page, it does not accept a value. Whatever page comes back is
+ * then put through the SAME two checks as before: the value must be quoted on
+ * that page's text, or the page must be one we actually rendered and sent.
+ *
+ * And it must be unambiguous: only the explicit `Page N of M` footer counts,
+ * and only when exactly one page in the document prints that N. A document that
+ * numbers its pages some other way gets null and the behaviour it has today.
+ */
+export function pageBearingPrintedNumber(doc: DatasheetText, printed: number | null): number | null {
+  if (printed === null || !Number.isInteger(printed) || printed < 1) return null;
+  const footer = new RegExp(`\\bpage\\s+${printed}\\s+of\\s+\\d+`, "i");
+  const hits = doc.pages.filter((page) => footer.test(page.text));
+  return hits.length === 1 ? hits[0].page : null;
+}
+
+/**
+ * The one page we SENT that says it is a pinout, or null.
+ *
+ * Used for a pin table that arrived with no page of its own, which is the shape
+ * of every per-package entry. It is not a claim being checked, it is a page
+ * being identified: the model was shown these images and answered with a
+ * pinout, so if exactly one of them is a pinout page, that is where it read it.
+ *
+ * The mechanical-drawing markers are deliberately excluded. A package outline
+ * page is not where a pin table comes from, and letting one match would turn a
+ * document with six drawing pages into six candidates and refuse them all - or
+ * worse, into one candidate on a document that renders a single drawing.
+ */
+function citeSoleRenderedPinoutPage(doc: DatasheetText, sentPages: readonly number[]): Citation | null {
+  const PINOUT_HEADINGS = [
+    /\bpin\s*(?:connection|description|configuration|assignment|out|function)s?\b/i,
+    /\bterminal\s+(?:configuration|function)s?\b/i,
+    /\bpin\s+diagrams?\b/i
+  ];
+  const hits: Array<{ page: number; marker: string }> = [];
+  for (const page of doc.pages) {
+    if (!sentPages.includes(page.page)) continue;
+    // Same refusal as `citeRenderedPage`: a page carrying an injection is not
+    // evidence, and pixels cannot be cut the way text can.
+    if (quarantinedRegions(page.text).length > 0) continue;
+    const marker = PINOUT_HEADINGS.map((pattern) => pattern.exec(page.text)?.[0]).find(Boolean);
+    if (marker) hits.push({ page: page.page, marker });
+  }
+  if (hits.length !== 1) return null;
+  return {
+    page: hits[0].page,
+    snippet: `read from the rendered pinout page (page identifies as "${hits[0].marker.trim().slice(0, 60)}")`,
+    region: null
+  };
+}
+
 export function citeRenderedPage(
   doc: DatasheetText,
   claimed: ModelValue,
@@ -649,6 +721,28 @@ export function mergeModelValues(
       }
     }
 
+    // Then the same two checks again, against the page the DOCUMENT calls by
+    // that number. See `pageBearingPrintedNumber`: the model quotes the footer
+    // it can see, and on any datasheet with front matter that is not the page
+    // the file counts. Nothing is accepted here that would not be accepted
+    // above; only the page the claim points at changes.
+    if (!citation) {
+      const printedPage = pageBearingPrintedNumber(doc, claimed.page);
+      if (printedPage !== null && printedPage !== claimed.page) {
+        const onPrinted = { ...claimed, value, page: printedPage };
+        const quoted = verifyCitation(doc, onPrinted);
+        if (quoted) {
+          citation = quoted;
+        } else if (renderedPages.length > 0) {
+          const drawn = citeRenderedPage(doc, onPrinted, renderedPages);
+          if (drawn) {
+            citation = drawn;
+            method = "vlm-drawing";
+          }
+        }
+      }
+    }
+
     if (!citation) uncited.push(field);
 
     setFieldAt(merged, field, {
@@ -861,6 +955,28 @@ export function mergeModelValues(
           // Located on the NORMALISED rows, which is what a later package choice
           // actually puts on the record.
           citation = locatePinTable(doc, normalized.pins);
+          // AND OFF THE RENDERED PINOUT PAGE, when the names are in the artwork.
+          //
+          // A per-package pin table had ONE way to be cited: find its names in
+          // some page's text. The flat `pins` field has had a render path since
+          // 2026-08-06, for the reason recorded there - a pinout drawn as a
+          // figure has no text layer to quote, so no reader of any kind can ever
+          // cite it from text. Per-package tables were left on the text-only
+          // path, and they are now the main way a multi-package document states
+          // its pinout.
+          //
+          // Measured 2026-08-19: TS922 read `Output 1 / Inverting input 1 /
+          // Non-inverting input 1` off its rendered page 2, correct against a
+          // hand read, and the whole table was stored uncited and refused
+          // downstream. The values were right and there was no way to say where
+          // they came from.
+          //
+          // The entry carries no page of its own, so the page is PROVEN rather
+          // than claimed: of the pages actually sent, exactly one must identify
+          // itself as a pinout page. Two candidates, or none, and this stays
+          // null and the table stays refused, which is the answer it gives
+          // today.
+          if (!citation) citation = citeSoleRenderedPinoutPage(doc, renderedPages);
         }
       }
 
@@ -868,6 +984,7 @@ export function mergeModelValues(
       if (pins === undefined && dimensions === undefined) continue;
       usable.push({
         packageType: table.packageType,
+        ...(table.alsoKnownAs && table.alsoKnownAs.length > 0 ? { alsoKnownAs: table.alsoKnownAs } : {}),
         ...(pins ? { pins, exposedPad, citation } : {}),
         ...(dimensions ? { dimensions } : {})
       });
@@ -933,6 +1050,24 @@ function packageDimensions(
       if (drawn) {
         citation = drawn;
         method = "vlm-drawing";
+      }
+    }
+    // And against the page the document PRINTS with that number, exactly as the
+    // flat block does. These face the same check in the same order, and a
+    // per-package measurement is read off the same drawings the flat ones are.
+    if (!citation) {
+      const printedPage = pageBearingPrintedNumber(doc, claimed.page);
+      if (printedPage !== null && printedPage !== claimed.page) {
+        const quoted = verifyCitation(doc, { value, page: printedPage });
+        if (quoted) {
+          citation = quoted;
+        } else if (renderedPages.length > 0) {
+          const drawn = citeRenderedPage(doc, { value, page: printedPage }, renderedPages);
+          if (drawn) {
+            citation = drawn;
+            method = "vlm-drawing";
+          }
+        }
       }
     }
     out[field.slice("dimensions.".length)] = {

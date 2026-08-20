@@ -1656,6 +1656,29 @@ function askForLandPattern(
       scope: "part"
     });
   }
+  // THE PITCH, which nothing asked for and everything needs.
+  //
+  // `datasheetLayout` refuses without it, and its refusal reaches the user as
+  // "the footprint was read but how the pads are ARRANGED was not: that comes
+  // from the pitch and how many sides carry leads. Answer what is missing." The
+  // pitch was not on the list, so there was nothing to answer: the sentence
+  // named a question the product never asked, and the part could not be
+  // unblocked by any input at all.
+  //
+  // Found 2026-08-19 by answering every question the hold-out asked and seeing
+  // which parts still refused. Three of the fifty-four sat here, each with its
+  // whole printed footprint on the record.
+  if (part.dimensions.pitchMm === null) {
+    needs.push({
+      field: "pitchMm",
+      label: "Lead pitch, centre to centre between neighbouring leads",
+      why: `The pads cannot be spaced without it, and it was not read for ${part.packageType}. Every package drawing dimensions it.`,
+      unit: "mm",
+      scope: "part",
+      page: landPage,
+      pageLabel: landLabel
+    });
+  }
   return needs;
 }
 
@@ -2845,7 +2868,36 @@ function optionsFromPerPackageTables(
 
   if (!pinoutIsTheOnlyThingMissing(resolved)) return null;
 
-  const options = record.packageVariants.map((variant) => {
+  // ONE OPTION PER PACKAGE THE DOCUMENT DESCRIBES, and the document describes
+  // them in two places.
+  //
+  // `packageVariants` is harvested from the ordering table and the prose, and it
+  // is routinely COARSER than the pinout section: LD39050 prints a pinout and a
+  // drawing for a 3x3 mm DFN6 and a 2x2 mm DFN6, and the ordering table calls
+  // both of them `DFN6`. Offering only the harvested name asks `pinTableFor` a
+  // question with two right answers, which it correctly refuses, and the user
+  // was then told the document gives a pinout per package and none of them
+  // matches DFN6 - with both of them on the record, located, complete.
+  //
+  // So a variant that names SEVERAL located tables is replaced by those tables.
+  // Nothing is guessed: each one is the document's own name for its own package,
+  // and the user picks, which is the choice this chooser exists to offer.
+  const offered = record.packageVariants.flatMap((variant) => {
+    if (pinTableFor(tables, variant.designator) !== null) return [variant];
+    const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const wanted = key(variant.designator);
+    const several = tables.filter(
+      (table) => table.pins !== undefined && table.pins.length > 0 && key(table.packageType).includes(wanted)
+    );
+    if (several.length < 2) return [variant];
+    return several.map((table) => ({
+      designator: table.packageType,
+      family: variant.family,
+      leadCount: table.pins?.length ?? variant.leadCount
+    }));
+  });
+
+  const options = offered.map((variant) => {
     const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
     const entry = pinTableFor(tables, variant.designator);
     // Two different absences, and telling the user they are the same misdirects

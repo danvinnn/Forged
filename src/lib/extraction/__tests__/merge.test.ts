@@ -977,3 +977,63 @@ test("an extra pin is NOT called a thermal pad when the document prints no pad",
   assert.equal(merged.part.pins.value?.length, 9, "every row survives");
   assert.equal(merged.part.exposedPad, false, "nothing was invented from a count mismatch alone");
 });
+
+// ---------------------------------------------------------------------------
+// The page the document PRINTS versus the page the file counts
+// ---------------------------------------------------------------------------
+
+test("a value cited by the page number printed on the page is still traceable", () => {
+  // A datasheet with a cover and a contents page prints `Page 3 of 3` in the
+  // footer of its FIFTH file page. The model sees an image and quotes the only
+  // number on it, which is the printed one, and every value on that drawing was
+  // then thrown away as untraceable. Measured on AD9833: seven correct
+  // dimensions lost, and the part shipped nothing.
+  const withFrontMatter = datasheetTextFromPages([
+    "Cover",
+    "Revision history",
+    "ACME9833 Direct Digital Synthesiser\nPage 1 of 3",
+    "Specifications\nPage 2 of 3",
+    "OUTLINE DIMENSIONS\nBody height 1.10 mm maximum.\nPage 3 of 3"
+  ]);
+  const part = buildPartRecord(withFrontMatter, "ACME9833.pdf");
+
+  const outcome = mergeModelValues(
+    part,
+    withFrontMatter,
+    // The drawing is on file page 5 and the model says 3, because 3 is what the
+    // page itself says.
+    { values: { "dimensions.bodyHeightMm": { value: 1.1, page: 3 } } } as ExtractionResult,
+    "test-model",
+    []
+  );
+
+  const height = outcome.part.dimensions.bodyHeightMm;
+  assert.equal(height.value, 1.1);
+  assert.equal(height.citation?.page, 5, "cited on the file page that prints that number");
+  assert.ok(!outcome.uncited.includes("dimensions.bodyHeightMm"));
+});
+
+test("the printed-page fallback resolves nothing when the number is ambiguous", () => {
+  // It resolves a page, it never accepts a value. Two pages printing the same
+  // number is a document we cannot read that way, and it gets the behaviour it
+  // has today rather than a guess between them.
+  const twice = datasheetTextFromPages([
+    "Cover",
+    "Revision history",
+    // File page 3 says nothing about the value, so the direct check fails and
+    // the fallback is what decides. Two later pages both print "Page 3".
+    "Contents",
+    "Body height 1.10 mm maximum.\nPage 3 of 9",
+    "Body height 1.10 mm maximum.\nPage 3 of 9"
+  ]);
+  const outcome = mergeModelValues(
+    buildPartRecord(twice, "ACME.pdf"),
+    twice,
+    { values: { "dimensions.bodyHeightMm": { value: 1.1, page: 3 } } } as ExtractionResult,
+    "test-model",
+    []
+  );
+
+  assert.equal(outcome.part.dimensions.bodyHeightMm.citation, null, "no page, so no citation");
+  assert.ok(outcome.uncited.includes("dimensions.bodyHeightMm"));
+});

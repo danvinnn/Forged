@@ -11,6 +11,13 @@ import { declaredLeadCount, pinTableFor } from "../lib/packagevariants";
 import type { DeploymentMode } from "../lib/retrieval";
 // Type-only for the same reason: `exporters.ts` reaches the CAD generators.
 import type { PackageChoice, PackageOption, RequiredInput } from "../lib/exporters";
+import {
+  SETTINGS_FIELDS,
+  missingRequired,
+  parseSettings,
+  settingsComplete,
+  type ForgeSettings
+} from "../lib/settings";
 import type { ReviewItem } from "../lib/review";
 import type { ConfidenceCheck } from "../lib/confidence";
 // Type-only: `pagerender.ts` dynamically imports mupdf, which must not follow
@@ -116,6 +123,16 @@ const defaultPart: PartRecord = {
  * "fixed in one place, not the other" trap this codebase has hit repeatedly.
  */
 const INSTALL_KEY_PREFIX = "forge.install.";
+
+/**
+ * Where the installation's settings live.
+ *
+ * The same store as the install-scoped answers above and deliberately so: the
+ * forming-die numbers ARE settings, and were being collected twice, once on the
+ * screen and once mid-parse as a question. `settingsFromStore` reads both so a
+ * value entered either way is seen by the other.
+ */
+const SETTINGS_KEY = "forge.settings";
 
 /** Field names whose answers belong to the assembly line rather than the part. */
 const INSTALL_FIELDS = ["formedLeadSpanMm", "formedLeadContactMm"] as const;
@@ -345,6 +362,15 @@ export default function HomePage() {
   // because reusing one across parts would be a guess.
   const [installAnswers, setInstallAnswers] = useState<Record<string, number>>({});
 
+  // THE INSTALLATION'S SETTINGS, and whether the first run is allowed yet.
+  //
+  // `settingsReady` starts false so the gate cannot flash open on first paint
+  // and let a datasheet through before the store has been read.
+  const [settings, setSettings] = useState<ForgeSettings>({});
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsDraft, setSettingsDraft] = useState<Record<string, string>>({});
+
   useEffect(() => {
     try {
       const restored: Record<string, number> = {};
@@ -354,10 +380,43 @@ export default function HomePage() {
         if (Number.isFinite(parsed) && parsed > 0) restored[field] = parsed;
       }
       if (Object.keys(restored).length > 0) setInstallAnswers(restored);
+
+      // The two stores are READ TOGETHER. A customer who answered the forming
+      // die mid-parse before this screen existed must not be asked again on the
+      // screen, and vice versa: they are the same two numbers.
+      const stored = window.localStorage.getItem(SETTINGS_KEY);
+      const parsedSettings = parseSettings({ ...restored, ...(stored ? JSON.parse(stored) : {}) });
+      setSettings(parsedSettings);
+      setSettingsOpen(!settingsComplete(parsedSettings));
     } catch {
-      // A blocked localStorage costs one re-entry, not the export.
+      // A blocked localStorage costs one re-entry, not the export. The gate then
+      // stays shut, which is the safe side: it asks rather than assumes.
+      setSettingsOpen(true);
     }
+    setSettingsReady(true);
   }, []);
+
+  /** Persist and apply. Called only from the settings screen's Save. */
+  function saveSettings(next: ForgeSettings) {
+    const clean = parseSettings(next);
+    setSettings(clean);
+    try {
+      window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean));
+      // Kept in step with the per-question store so neither goes stale.
+      for (const field of INSTALL_FIELDS) {
+        const value = clean[field as keyof ForgeSettings];
+        if (typeof value === "number") window.localStorage.setItem(`${INSTALL_KEY_PREFIX}${field}`, String(value));
+      }
+    } catch {
+      // Unsaved settings still apply to this session.
+    }
+    setInstallAnswers((current) => ({
+      ...current,
+      ...(clean.formedLeadSpanMm !== undefined ? { formedLeadSpanMm: clean.formedLeadSpanMm } : {}),
+      ...(clean.formedLeadContactMm !== undefined ? { formedLeadContactMm: clean.formedLeadContactMm } : {})
+    }));
+    if (settingsComplete(clean)) setSettingsOpen(false);
+  }
 
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("kicad");
   const [status, setStatus] = useState("Loading…");
@@ -492,6 +551,18 @@ export default function HomePage() {
     setSelectedFile(file);
     if (!file) return;
 
+    // THE FIRST RUN IS GATED ON THE SETTINGS, per RULES.md 3.
+    //
+    // Enforced here rather than only by disabling the input: a drop target, a
+    // paste and a lookup all reach this function, and a rule written on one of
+    // three doors is not a rule. Fields a published standard answers are not
+    // part of this; only the ones nothing else can answer.
+    if (!settingsComplete(settings)) {
+      setSettingsOpen(true);
+      setStatus("Set up your assembly line first. These cannot be read from any datasheet.");
+      return;
+    }
+
     setBusy(true);
     setStatus(packageType ? `Re-reading ${file.name} as ${packageType}…` : `Reading ${file.name}…`);
 
@@ -624,7 +695,13 @@ export default function HomePage() {
           ...answers,
           // Install-scoped answers last, so a remembered value is sent even on
           // an export the user started without answering anything this time.
-          ...install
+          ...install,
+          // THE INSTALLATION'S SETTINGS. Until 2026-08-19 the density level had
+          // no way to reach the server at all: `ExportOptions.densityLevel` had
+          // existed since the generator did and no caller ever set it, so every
+          // export in this product's life was built at the standard's nominal
+          // whatever the customer chose.
+          settings
         })
       });
 
@@ -797,6 +874,110 @@ export default function HomePage() {
       </header>
 
       <main className="flow">
+        {/* 0. SETTINGS -------------------------------------------------------
+            Shown before anything else on a fresh install, and reachable after.
+            RULES.md 3: a value no datasheet states and that differs between one
+            user's line and another's is a setting, and it is settled ONCE rather
+            than asked per part. Measured 2026-08-19: seven parts of the tuned
+            corpus were blocked on the two forming-die numbers alone. */}
+        {settingsReady && settingsOpen && (
+          <section className="step" aria-labelledby="settings-title">
+            <h2 className="step-title" id="settings-title">
+              <span className="step-n">0</span> Your assembly line
+            </h2>
+            <p className="hint">
+              {settingsComplete(settings)
+                ? "These apply to every part you build."
+                : "Set these before your first datasheet. They describe your process, so no datasheet can answer them."}
+            </p>
+
+            <div className="settings">
+              {SETTINGS_FIELDS.map((field) => {
+                const current = settingsDraft[field.key] ?? (settings[field.key] ?? "").toString();
+                const required = field.standard === null;
+                return (
+                  <label className="setting" key={field.key}>
+                    <span className="setting-label">
+                      {field.label}
+                      {required ? <em className="req"> required</em> : null}
+                    </span>
+                    {field.key === "densityLevel" ? (
+                      <select
+                        value={current}
+                        onChange={(event) => setSettingsDraft({ ...settingsDraft, [field.key]: event.target.value })}
+                      >
+                        <option value="">Use the standard (IPC-7351B, level B)</option>
+                        <option value="A">A, most copper, for hand rework</option>
+                        <option value="B">B, nominal</option>
+                        <option value="C">C, least copper, for dense assemblies</option>
+                      </select>
+                    ) : field.key === "footprintSource" ? (
+                      <select
+                        value={current}
+                        onChange={(event) => setSettingsDraft({ ...settingsDraft, [field.key]: event.target.value })}
+                      >
+                        <option value="">Use the manufacturer&apos;s own pattern where the datasheet prints one</option>
+                        <option value="datasheet-first">The manufacturer&apos;s pattern first</option>
+                        <option value="standard-always">Always compute from IPC-7351B</option>
+                      </select>
+                    ) : (
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        inputMode="decimal"
+                        placeholder="mm"
+                        value={current}
+                        onChange={(event) => setSettingsDraft({ ...settingsDraft, [field.key]: event.target.value })}
+                      />
+                    )}
+                    <span className="setting-why">
+                      {field.why}
+                      {field.standard ? ` Leave blank and we use ${field.standard}.` : ""}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="settings-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  const merged: Record<string, unknown> = { ...settings };
+                  for (const field of SETTINGS_FIELDS) {
+                    const raw = settingsDraft[field.key];
+                    if (raw === undefined) continue;
+                    if (raw === "") delete merged[field.key];
+                    else merged[field.key] = field.unit === "mm" ? Number(raw) : raw;
+                  }
+                  saveSettings(merged as ForgeSettings);
+                }}
+              >
+                Save settings
+              </button>
+              {settingsComplete(settings) && (
+                <button type="button" className="ghost" onClick={() => setSettingsOpen(false)}>
+                  Close
+                </button>
+              )}
+              {missingRequired(settings).length > 0 && (
+                <span className="hint">
+                  {missingRequired(settings).length} still needed before the first datasheet.
+                </span>
+              )}
+            </div>
+          </section>
+        )}
+
+        {settingsReady && !settingsOpen && (
+          <p className="hint">
+            <button type="button" className="ghost" onClick={() => setSettingsOpen(true)}>
+              Assembly line settings
+            </button>
+          </p>
+        )}
+
         {/* 1. SOURCE --------------------------------------------------------- */}
         <section className="step">
           <h2 className="step-title">

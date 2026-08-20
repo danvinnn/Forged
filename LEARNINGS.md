@@ -566,3 +566,485 @@ PROVE a read span wrong, and when it did, the product asked the user for the
 span, with the drawing's page beside it, and then kept the wrong value because it
 was not blank. Same refusal, twice. **Whenever you add a question, follow the
 answer all the way to the thing it is supposed to change.**
+
+---
+
+## 11. The prompt is a shared vocabulary, 2026-08-19
+
+### Diffing the model cache by prompt fingerprint is a free A/B test
+
+Every cache entry records the `promptFingerprint` it was stored under, so two
+prompt variants that have both been paid for can be compared **offline, for
+nothing**, per part and per field:
+
+```bash
+# group .model-cache/*.json by entry.prompt, then diff the results per label
+```
+
+This is how a 20-part SHIPS regression was diagnosed in twenty minutes without
+spending anything. Do this BEFORE forming a theory about why a run moved.
+
+The same trick settles which of two trees is better: `git stash` the working
+changes, replay `bench:holdout --model --offline`, and compare. Both prompts were
+already on disk, so the answer cost nothing.
+
+### The per-package channel is load-bearing for SHIPS. Do not discourage it.
+
+An instruction was added to recover flat pinouts on family datasheets:
+
+> Only where the packages genuinely have DIFFERENT pin assignments does the
+> pinout belong per package.
+
+It worked on pins, and the model read it as permission to stop enumerating
+packages at all. `packagesInThisDocument` collapsed: TLV9002 30 entries to 3,
+OPA192 14 to 4, TSZ121 21 to 7, M24C02 16 to 6. That list is where per-package
+DIMENSIONS live, which is what took SHIPS from 26% to 57% the day before.
+
+    READ 91% -> 87%      SHIPS 63% -> 26%
+
+Ten parts gained a pinout and twenty lost a footprint. **Before adding a sentence
+to the prompt, ask which other answer it competes with.**
+
+### The two passes were using different names for the same package
+
+`packagesInThisDocument` is filled by BOTH passes and joined on the designator.
+Nothing told either pass what to CALL a package, so each used the vocabulary of
+whatever part of the document it was reading, and the join found nothing:
+
+    pins  "HTSSOP (20)"     dims  "HTSSOP (PWP)"
+    pins  "D (OPA1612)"     dims  "SOIC (D)"
+    pins  "RGT (VQFN, 16)"  dims  "VQFN (16)"
+
+Twelve of fifty-four hold-out parts. The chooser then told the user "this
+datasheet's drawings were read, but no pin table was found" with the pin table in
+the row above. Same shape as everything in section 2: **we had it and threw it
+away.**
+
+Fixed at the source, not in the join. A looser join is guesswork about which
+parenthesised token is a package code and which is a device; the document already
+supplies one vocabulary, the ordering table's, and both passes are now given it.
+
+A pin table's caption also names several packages at once (`D, N, NS, J, DB, or
+PW Package`), and that was arriving as one entry naming no package anything could
+look up. The caption is the document ASSERTING a shared pin assignment, so it
+becomes one entry per package it covers.
+
+### A guard that is skipped exactly where it is most needed
+
+The glued designator form (`SO48`, `SOT23`) is marked by nothing but adjacency,
+so it demands a plausible lead count. For an OUTLINE-NUMBERED family (`TO`,
+`SOT`, `SC`, `DO`, `SOD`, `DPAK`) the number is a name rather than a count, so
+`count` is null and the minimum silently never applies. The weakest form in the
+module ran with no check at all, on precisely the families whose number cannot be
+checked against anything.
+
+An accelerometer's register map prints DO0 through DO15 and every one became a
+package the chooser offered the user: sixteen options, fifteen fiction.
+
+The rule that fixes it without losing `SOT23` (two tuned parts have no hyphenated
+twin): an outline number identifies ONE package, so a document that glues several
+different numbers to the same outline-numbered family is enumerating something
+else, and none of them is a designator. Measured blast radius on the tuned
+corpus: **0 designators lost, 0 gained.**
+
+### Once the prompt changes, there is no free measurement left
+
+Obvious in hindsight and it cost a wasted analysis anyway. After editing the
+prompt, an offline replay does not measure the new tree: every call misses,
+`runExtraction` throws `ModelCacheMiss`, the bench swallows it, and every part
+falls back to the DETERMINISTIC record. The output looks like a real run and
+reports zero of everything.
+
+It nearly produced a reported finding of "0 parts carry an uncited dimension",
+which is true of a record no model ever touched. **Change the prompt last.** Do
+every free measurement first, then edit, then pay.
+
+### No-lead land patterns are refused on purpose, and this is what would close it
+
+`leadFromDrawing` returns null for `leadForm === "nolead"`, so every QFN, DFN,
+SON, LGA and LFCSP goes to the questions. That is not a bug: `ipc7351.ts` has
+gull-wing fillet goals only, IPC-7351B publishes them per lead form, and the rule
+that used to serve no-lead was reverse-engineered from four vendor drawings.
+
+Four hold-out parts blocked on it have every other input already read: AD7124-8
+and AD5679R carry body, pitch, lead width, lead contact, BOTH spans, sides, form
+and thermal pad, and are refused for want of three published constants.
+
+Do NOT make it a setting. RULES.md 5 names that exact move as a failure ("a
+setting offered because the right answer was not looked up"), and the goals do
+not differ between users. The one thing that closes this class is the IPC-7351B
+no-lead fillet goal table, entered from the standard with the source recorded,
+the same way the gull-wing one was.
+
+### `bench:mutation` edits source files in place. Never run it alongside anything.
+
+It writes a mutation into a real source file, runs the suite, and writes the
+original back. Two consequences that are not obvious from the name:
+
+- **Killing it leaves the mutation in your tree.** Stopped mid-cycle on
+  2026-08-19, it left `FILLET_GOALS.B.side` at 0.35 instead of 0.03 in
+  `ipc7351.ts`. That is a live wrong-copper defect sitting in the working tree,
+  and `git status` is the only thing that shows it. **After any interrupted
+  mutation run, `git diff` the source tree before trusting anything.**
+- **Anything else running at the same time can read the mutated file.** A bench
+  that started earlier is safe, because the module was already loaded, but
+  nothing guarantees that for a process that starts mid-run.
+
+Run it alone, let it finish, and check `git status` afterwards.
+
+### The worst thing found today: a dense pinout figure read 15% wrong, and shipped
+
+STM32H743ZI's LQFP144 figure prints VSS at pin 51 and VDD at 52. The model
+emitted ONE pin there instead of two, ran one behind for twenty-one pins, and
+re-synchronised at 73 by giving pin 72 a name that belongs to its neighbour.
+Verified by rendering page 57 and reading it by hand.
+
+**Every automated check passes.** The table numbers 1..144 with no gaps, the
+count agrees with `pinCount`, the cited page is real, the pads come out exactly
+as `validateGeometry` expects, and the part exports a complete bundle. Even
+comparing the names against the page's own text cannot catch it: a dropped row
+plus renumbering MOVES a name rather than losing it, so the multiset is
+unchanged. Only the hand-read oracle saw it.
+
+The same reader got STM32F407VG's 100-pin figure exactly right, and MSP430F5529's
+80. So this is not "the model cannot read figures". It is that a dense
+four-sided figure is read correctly most of the time and silently wrongly some of
+the time, and the product cannot tell the two apart.
+
+Two changes reached it, and BOTH were in the same paid run, which is the mistake
+this file already warns about: a focused pinout pass, and a sentence in
+`imageGuidance` about multi-column pin tables. Bisecting them offline afterwards
+showed the SENTENCE was doing the work: reverting the pass alone left the wrong
+netlist in place.
+
+Both are reverted. The measured cost of reverting, on the tuned corpus:
+
+    fields   55% -> 45%      SHIPS   23% -> 19%      wrong netlists  1 -> 0
+
+That trade is not close. A wrong netlist is worse than a refusal by a wide
+margin, and it is the one failure a customer cannot catch either.
+
+**What would make it safe**, and it is a check the document supplies rather than
+a heuristic: these datasheets state their pinout TWICE, as a figure and as a
+pin-definition table. `combine` already prefers pass 1 when the two passes
+disagree about pins; what is missing is that pass 1 produces NO pin table on
+exactly these documents, because its own reading is truncated and correctly
+refused for having gaps. Getting a second, independent statement of the pinout on
+these parts is the thing to build before the coverage is taken again.
+
+### Where 2026-08-19 ended, and what is actually left
+
+Shipping state, measured on the hold-out with a warm cache:
+
+    READ   49/54  (91%)     unchanged across the whole session
+    SHIPS  33/54  (61%)     63% at the start; the one part is a re-roll, below
+
+Kept: the enumeration filter in `packagevariants.ts` (fifteen fictional `DO*`
+packages removed from one chooser, `SC1`/`SC2` from another, zero blast radius on
+the tuned corpus). Reverted: everything else that was tried.
+
+**A candidate-list change re-rolls the model's whole answer.** ADA4522-2 shipped
+before and needs six numbers after, and the filter did not cause that: removing
+`SC1` and `SC2` changed `packageCandidates`, which changed the prompt, which
+changed every dimension the model read. Any change touching `findPackageVariants`
+moves parts that have nothing to do with it, so a one-part delta after such a
+change is noise until a second sample says otherwise.
+
+The remaining 21 non-shipping parts, by cause:
+
+- **4  no-lead land pattern.** Everything else is read. Blocked on three
+  published constants, see above. The single biggest class.
+- **3  a per-package pinout the chooser cannot match** to the designator the
+  ordering table uses. The join, not the reading.
+- **3  the datasheet prints no footprint** and the package is not gull-wing.
+- **2  `vacantLeadSlot`**, which the model declines on both parts.
+- **2  through-hole and uncitable-dimension singletons.**
+- **7  read but short of one or two body numbers.**
+
+And 5 parts do not read at all. Two known non-defects live in the tuned corpus
+and are worth remembering before anyone counts them as failures:
+
+- **VA41630 is not a datasheet.** Retrieval fetched a four-page marketing web
+  page: a product photo, a block diagram, an ordering table, a newsletter footer.
+  It links to the real document. Nothing in Layer 2 can fix a Layer 1 miss.
+- **DF13-4P-1.25DSA is a connector**, and a connector's terminals are NUMBERED,
+  not named. Page 4 prints everything else: 1.25 pitch, 4 contacts, board hole
+  0.6, square post 0.35. `normalizeModelPins` refuses a row with no name, which is
+  right for an IC and wrong for this whole category.
+
+### The no-lead table was not the blocker, 2026-08-19
+
+Anthony asked me to look the standard up online. I found it: IPC-7351B table 3-15
+(Flat No Lead with toe fillet) and table 3-18 (pull back), transcribed with their
+table numbers in KiCad's footprint generator `ipc_7351b.yaml` (MIT). That source
+is trustworthy: its gull-wing block is digit for digit identical to the one in
+`ipc7351.ts`, entered here independently and months earlier.
+
+The equations are the same as gull-wing. KiCad's no-lead calculator and its
+gull-wing calculator are line for line identical, so there is no separate
+derivation to get wrong.
+
+Implemented it, then checked against two vendors' printed patterns, hand-read:
+
+                       printed           table 3-15         table 3-18
+    TI RGT0016C   0.600 x 0.240 @2.200  0.905x0.232@2.803  0.605x0.312@2.503
+    ADI CC-14-1   1.145 x 0.550 @2.195  1.169x0.476@2.487  0.869x0.556@2.187
+
+**No single table reproduces both.** TI's pad length matches 3-18, ADI's matches
+3-15. ADI's width and centre span match 3-18, TI's match neither. Under 3-15 the
+centre span is 0.3 to 0.6 mm too far out on both.
+
+Reverted. Picking the table that fits one vendor is exactly what got the previous
+no-lead rule retired on 2026-08-13.
+
+**The lesson is about the diagnosis, not the numbers.** "We are blocked on three
+published constants" was wrong, and it was stated confidently in a handoff. The
+constants were an hour's work to find and they did not unblock anything. What is
+actually missing is a way to know WHICH no-lead construction a package is, and
+the datasheet drawing may not say.
+
+Next thing to try, and it is not another table: run these two packages through
+Altium's IPC Compliant Footprint Wizard and compare. That wizard is the tool this
+whole computed path replaces, so matching it is the definition of correct, and it
+would settle the table question with one data point per package.
+
+## The designator join: five separate defects wearing one costume
+
+Written 2026-08-19, after the join matcher was implemented, verified safe, and
+then moved the number by one part instead of the ten it was built for.
+
+The two extraction passes name the same package differently, and joining their
+halves is worth about 15% of SHIPS. The matcher itself was correct on the first
+try. What kept it from firing was five smaller things underneath it, and every
+one was invisible until the merged records were dumped and read:
+
+1. **Rows are not leads.** A pin table carries a row for the exposed pad and a
+   drawing counts only leads, so the "proof" contradicted itself by exactly one
+   and refused. Both LM5117 packages died here.
+2. **The brackets do not always hold the code.** `SOIC (D)` puts the code
+   inside; `D (OPA1612)` puts a DEVICE there. Reading brackets unconditionally
+   compared `OPA1612` against `D` and invented a contradiction.
+3. **`DW0016A` and `DW` are the same package.** Pass 2 reads the code off the
+   drawing's title block, where it is a full outline number.
+4. **`SOIC_W` is not a SOIC** to any reader matching on a word boundary, because
+   `_` is a word character. This is the third time this exact trap has been hit
+   in this repo.
+5. **A joined entry has to be filed under a name the CONSUMER uses**, and the
+   consumer speaks a third vocabulary: the ordering table's. Picking the pinout
+   section's name loses OPA1612; picking the drawing's loses OPA192. Both names
+   are known, so the entry now carries both (`alsoKnownAs`).
+
+**The lesson is about the diagnosis, not the fixes.** "The join does not fire"
+was one symptom with five causes, and no amount of reasoning about the matcher
+found any of them. Dumping both passes' raw entries beside the merged result for
+all 54 parts, free and offline, found all five in one pass. When something
+correct is not working, print what it is actually being given.
+
+## Two guards that were protecting the wrong half
+
+The multi-package caption (`16-lead PDIP/SOIC_N/TSSOP/SOIC_W`) must not lend its
+BODY SIZE to any one package, and that refusal is right: four packages, four
+bodies. Refusing its PINS as well threw away a pinout the document states
+plainly, and left every one of those packages reported as "no pin table found"
+with the pin table one row above. Five hold-out documents publish their pinout
+this way and no other.
+
+The same shape appeared in the sibling-device check. A caption naming a device
+other than the requested one is not this part's pinout, and until this was fixed
+an ADM1385's netlist sat inside an ADM3202's footprint: correct pads, wrong
+connections, invisible to every automated check. That one was found by reading
+the merged entries by hand, not by any test.
+
+**Ask what a guard is protecting, then check it is refusing only that.**
+
+## SHIPS now means "with the customer's settings and their answers"
+
+Changed 2026-08-19, on Anthony's instruction: **always account for user answers
+and user settings when calculating the ships percentage.**
+
+The old number counted a part as a failure when its only remaining blocker was a
+question the product knows how to ask. That measures a product that refuses
+where this one asks, and the whole input model says a number no datasheet
+carries is ASKED rather than invented. So `bench:holdout` now reports the
+answered figure as the headline, with the zero-question figure beside it.
+
+It is not a free pass. A part counts only when every remaining blocker is a
+question the product asks AND the export really completes once the answers
+arrive, which the bench checks by supplying them and running the real export.
+Anything that answers every question and still refuses is printed BY NAME under
+"ANSWERED AND STILL REFUSED" and never folded into the total.
+
+**That line is the most valuable thing the change produced.** On its first run it
+named three parts, and all three were defects rather than hard datasheets:
+
+- `askForLandPattern` never asked for `pitchMm`, while the refusal it threw said
+  "that comes from the pitch and how many sides carry leads. Answer what is
+  missing". The pitch was on no list, so there was nothing to answer and no
+  input could ever unblock the part.
+- The questions arrive in ROUNDS. Supplying the land pattern reveals that the
+  arrangement is missing. A bench that asks once measures a product that gives
+  up when the user answers, so it now answers until nothing new is asked, and
+  reports the round count as friction.
+
+## Three more guards standing one step away from what they are about
+
+The pattern from the run-8 note keeps paying. All three found the same way: by
+listing every part that did not ship and asking, for each, what exactly stopped
+it.
+
+- **`classify` in the hold-out bench** treated "a pinout per package" as a
+  reading only when the record ALSO had no pin count. TCA9548A, LD39050 and
+  ADG1211 each carry two or three located per-package tables and a count, so
+  they were filed as unread and never offered to the chooser at all. READ 91% to
+  96% for a one-line change, and it was the bench that was wrong, not the
+  product.
+- **`pinTableFor` compared names as strings.** `VQFN (RGT)` and
+  `RGT (VQFN, 16)` state the same two facts in the opposite order, and no
+  punctuation-stripping makes one contain the other. It now falls back to
+  comparing what the names SAY - family and code, both known, both agreeing -
+  which is the same proof the two-pass join uses.
+- **The chooser offered only the ordering table's names.** LD39050 draws a 3x3mm
+  and a 2x2mm DFN6 and its ordering table calls both `DFN6`, so the lookup had
+  two right answers, refused, and told the user none of the document's pinouts
+  matched DFN6 with both of them on the record. A variant naming several located
+  tables is now replaced by those tables, and the user picks.
+
+## The model cites the page the DOCUMENT prints, not the page the file counts
+
+Found 2026-08-19 by asking, for the one part that had read everything and
+shipped nothing, which check refused it.
+
+AD9833 read seven dimensions off its package drawing - body height, pitch, lead
+width, lead span, lead contact, lead form, mounting - every value correct, and
+every one thrown away as untraceable. The model cited page 24. The drawing is on
+file page 27. **Page 27 of that PDF prints "Page 24 of 24" in its footer.** The
+document has a cover, a revision history and a contents page, so the two
+numberings are three apart, and the model is looking at an IMAGE whose only page
+number is the printed one.
+
+Nothing in the prompt ever told it which numbering we check against, so quoting
+the footer is the correct reading of what it can see. The bug was ours.
+
+`pageBearingPrintedNumber` now resolves a claim against the page the document
+labels with that number, and then runs the SAME two checks - the value must be
+quoted in that page's text, or the page must be one we rendered and sent. It
+resolves a page; it never accepts a value. Only the explicit `Page N of M`
+footer counts, and only when exactly one page prints that N.
+
+**Every vendor with front matter is affected**, which is most of Analog Devices
+and much of ST. This was worth one part today and is worth a citation on every
+drawing-read value in the corpus.
+
+The lesson is the diagnostic, again: the refusal said "uncitable", which sounds
+like the document's fault, and the actual cause was an off-by-three in whose
+page numbering we believed.
+
+## Measure frequency before arguing from severity
+
+2026-08-19. I proposed building a figure-versus-table cross-check to close the
+multi-column pin table class (one row per terminal, several pin-number columns,
+one per package; read the wrong column and you get a complete, gap-free,
+correctly-numbered pin table for the WRONG package). The argument was that a
+wrong netlist under correct pads is worse than a refusal, which is true.
+
+Anthony asked what the point was. Measured across every page a pinout was
+actually read from, all 52 hold-out documents:
+
+    parts whose pinout was read from a page   52
+    pages carrying the multi-column shape      3
+    of those, real instances                   0
+
+All three were false positives: two ordinary two-sided pinout figures and one
+internal schematic full of transistor labels.
+
+The class is real - it produced two wrong pin names on STM32F407VG - but it
+lives in large multi-package MCUs, and every one of those is in the TUNED
+corpus, which is exactly where the hand-read pin-name oracle runs. The one place
+the defect occurs is the one place a check already exists.
+
+**Severity is a reason to care, not a reason to build.** Building would have
+meant more prompt text - the thing that has lost population four times out of
+four - to guard something that appears in no document we would measure it on.
+
+Recorded as known, unguarded and currently unobserved. Revisit if a hold-out
+part with a large multi-package pin table appears, or if the oracle flags a
+second instance.
+
+## Pass 2 could see the pinout and had nowhere to put it
+
+2026-08-19, and the most valuable finding of the day because it was invisible
+from every angle except reading the prompt.
+
+TS922 and TSZ121 came back with every package named, every package drawing
+measured, and NO pin table for any of them. The model's own note said the part
+number does not pin down a package. That reads like a model limitation. It was
+not.
+
+Rendering both pinout pages and reading them by eye: they are perfectly legible.
+Six labelled figures on TSZ121, full words on TS922 ("Output 1", "Inverting
+input 1"). The text layer carries only the package captions, so a render is the
+only path - and we DID render them. Page 2 was in `renderedPages` for both.
+
+The two response shapes we hand the model:
+
+    pass 1 (text only)     "packagesInThisDocument": [{"packageType", "pins"}]
+    pass 2 (with images)   "packagesInThisDocument": [{"packageType", "dimensions"}]
+
+**Pass 1 is asked for the per-package pinout and cannot see it. Pass 2 can see
+it and has no key to put it in.** The model answered exactly what was asked.
+
+This is NOT the class the four failed prompt experiments belong to. Those were
+rewordings of pass 1's guidance about how to DECIDE. This was a field missing
+from an output shape.
+
+Verified on two blind ST op-amps fetched the same day, same vendor and document
+style: TSV991 and TSU101 now read their drawn pinouts per package, cited to
+page 2. TS922 too. Cost $0.89, and only 29 of 117 requests changed key, because
+the edited block only appears when a part has images AND no settled package.
+
+### And the citation path behind it was text-only
+
+Once TS922 read, its pin table was stored UNCITED and refused. The flat `pins`
+field has had a render-citation path since 2026-08-06, for exactly the reason
+recorded there: a pinout drawn as a figure has no text to quote. Per-package
+tables never got one, and they are now the main way a multi-package document
+states its pinout. `citeSoleRenderedPinoutPage` closes it, and PROVES the page
+rather than accepting a claim: of the pages actually sent, exactly one must
+identify itself as a pinout page.
+
+**Two fixes, one shape: the value was read correctly and the pipeline had no
+place to keep it.**
+
+## Both remaining failures were the BENCH, not the product
+
+2026-08-20. Two parts were left after the paid run, reported as "answered and
+still refused" and "read nothing at all". Neither was a product defect.
+
+**MSP430FR2433 was the bench inventing a bad number.** `answerFor` derived its
+stand-in answers from `record.dimensions`, which on a multi-package record is
+entirely null - correctly, because there is no such thing as "the body size" of a
+part sold in seven packages. The real measurements live in
+`packagesInThisDocument`. So every stand-in fell back to its constant, and a 3 mm
+span invented for a 4 mm VQFN puts the pads inside the body. Answered with the
+package's OWN numbers, it ships. Fixed by passing the option's designator into
+`answerFor` and reading that package's dimensions.
+
+This one stings: the `ANSWERED AND STILL REFUSED` line was added the same day and
+described as the most valuable thing the measurement produced. It was also
+generating false positives, and the first three it reported were real while the
+fourth was its own arithmetic. **A check that finds real defects can still be
+wrong; keep verifying it after it earns your trust.**
+
+**AD8495 was a retrieval failure wearing an extraction failure's clothes.** The
+fetched PDF is a three-page Soldered Electronics breakout-board product page:
+2,318 characters, no pinout, no mechanical section, a shipping weight and an
+order code. The model correctly refused all 36 fields including the manufacturer.
+Counting that as "we could not read the datasheet" is wrong in both directions -
+it makes extraction look worse than it is and hides a retrieval failure a user
+would hit just as hard. `classify` now names it, on SIZE rather than content: a
+component datasheet is not three pages and two thousand characters.
+
+Audited the whole corpus for the same thing; AD8495 is the only one.
+
+**Final: READ 58/59, SHIPS 58/59. Every part whose datasheet we actually
+fetched ships.**

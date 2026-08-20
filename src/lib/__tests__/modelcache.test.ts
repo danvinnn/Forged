@@ -533,7 +533,7 @@ test("a cache hit stamps an unfingerprinted entry, so a free offline pass backfi
   rmSync(own, { recursive: true, force: true });
 });
 
-test("the projection names a changed prompt as the reason a run will re-ask everything", async () => {
+test("the projection says a changed prompt MAY be cold, and never that it re-asks everything", async () => {
   const own = mkdtempSync(join(tmpdir(), "forge-projection-"));
   process.env.FORGE_MODEL_CACHE_DIR = own;
 
@@ -546,9 +546,23 @@ test("the projection names a changed prompt as the reason a run will re-ask ever
   writeFileSync(join(own, file), JSON.stringify({ ...entry, prompt: "the prompt before the edit" }));
 
   const report = preRunProjection({ parts: 38, callsPerPart: 2, modelName: "gemini" });
-  assert.match(report, /WHY IT IS COLD/);
+  assert.match(report, /WHY IT MAY BE COLD/);
   assert.match(report, /prompt changed/);
   assert.match(report, /at most 76 live calls/);
+
+  // THE CLAIM IT MUST NOT MAKE.
+  //
+  // The fingerprint is one hash over the whole prompt, so editing a block that
+  // appears on SOME requests restamps every entry as stranded while most of
+  // them still hit on their own key. On 2026-08-19 this said "all 1480 stored
+  // answers CANNOT be hit, projected $2.57" for a run that hit 75 of 117 and
+  // cost $0.89 - printed at the moment someone decides whether to spend.
+  //
+  // Overstating cost is not the safe direction: it is the direction that stops
+  // a cheap, correct run from happening.
+  assert.doesNotMatch(report, /re-asks everything/);
+  assert.doesNotMatch(report, /CANNOT be hit/);
+  assert.match(report, /--estimate/, "and it names the free way to get the real number");
   // Priced off real usage, so the figure is one to act on rather than a guess.
   assert.match(report, /projected ~\$\d+\.\d\d/);
 

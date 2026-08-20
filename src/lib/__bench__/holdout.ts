@@ -39,7 +39,17 @@ import { join } from "node:path";
 import { extractPartRecord } from "../datasheet";
 import { makeExtractionModel, runExtraction } from "../extraction";
 import { resolveForExport, type PartRecord } from "../types";
-import { createExportZip, packageOptions, FootprintUnavailableError, type RequiredInput } from "../exporters";
+import { pinTableFor } from "../packagevariants";
+import type { DatasheetText } from "../pdftext";
+import {
+  createExportZip,
+  packageOptions,
+  FootprintUnavailableError,
+  type OptionAnswers,
+  type RequiredInput,
+  type SuppliedDimensions
+} from "../exporters";
+import { densityOf, type ForgeSettings } from "../settings";
 import {
   cachingModel,
   cacheSize,
@@ -172,8 +182,13 @@ export const HOLDOUT_CORPUS: HoldoutPart[] = [
   { partNumber: "MSP430FR2433", manufacturer: "Texas Instruments", kind: "mcu" },
 
   // STMicroelectronics
-  { partNumber: "TS922", manufacturer: "STMicroelectronics", kind: "opamp" },
-  { partNumber: "TSZ121", manufacturer: "STMicroelectronics", kind: "opamp" },
+  // TS922 and TSZ121 were PROMOTED to the tuned corpus on 2026-08-19. Both read
+  // every package and every package drawing and returned NO pin table for any of
+  // them, and whether their pinouts are printed as text or drawn as artwork
+  // could not be established without opening them. Replaced blind below, by
+  // vendor and kind, datasheets unopened.
+  { partNumber: "TSV991", manufacturer: "STMicroelectronics", kind: "opamp" },
+  { partNumber: "TSU101", manufacturer: "STMicroelectronics", kind: "opamp" },
   { partNumber: "TSB611", manufacturer: "STMicroelectronics", kind: "opamp" },
   // L7805 was PROMOTED to the tuned corpus on 2026-08-17: it read no pins and no
   // pin count, and why could not be established without opening it. Replaced
@@ -245,9 +260,30 @@ async function fetchToCache(part: HoldoutPart): Promise<boolean> {
  * histogram of causes. A cause with one part behind it is a document; a cause
  * with nine is a hole in the reader.
  */
-function classify(record: PartRecord): string {
+function classify(record: PartRecord, doc?: DatasheetText): string {
   const pins = record.pins.value ?? [];
   const count = record.pinCount.value;
+
+  // WHAT WE FETCHED IS NOT ALWAYS A DATASHEET, and that is a different failure.
+  //
+  // AD8495 resolved to a three-page Soldered Electronics breakout-board product
+  // page: 2,318 characters, no pinout, no mechanical section, a shipping weight
+  // and an order code. The model correctly refused all 36 fields, including the
+  // manufacturer, because none of them is in the document.
+  //
+  // Counting that as "we could not read the datasheet" is wrong in both
+  // directions: it makes extraction look worse than it is, and it hides a
+  // retrieval failure that a user would hit exactly as hard. Retrieval is out of
+  // scope for this bench, so it is named and set aside rather than scored.
+  //
+  // The test is deliberately about SIZE and not about content: a document with
+  // no pinout section might still be a datasheet whose pinout is a figure, and
+  // that is a reading problem. A component datasheet that is three pages long
+  // with two thousand characters is not a component datasheet.
+  if (doc && doc.pages.length <= 4) {
+    const chars = doc.pages.reduce((sum, page) => sum + page.text.length, 0);
+    if (chars < 4000) return "NOT A DATASHEET (retrieval fetched the wrong document)";
+  }
 
   // A PINOUT PER PACKAGE IS A PINOUT.
   //
@@ -261,8 +297,15 @@ function classify(record: PartRecord): string {
   //
   // Only tables that were LOCATED count. An entry that matched no page in the
   // document is not evidence, and `resolveForExport` refuses it downstream.
+  //
+  // AND A PIN COUNT DOES NOT STOP IT BEING ONE. This asked additionally for
+  // `count === null`, so a document that named its lead count AND tabulated a
+  // pinout per package was filed as "count but no pins" and never offered to
+  // the chooser at all: the run stopped one step before the product, for the
+  // third time in this file's history. TCA9548A, LD39050 and ADG1211 each carry
+  // two or three located per-package tables and were counted as unread.
   const located = (record.packagesInThisDocument ?? []).filter((table) => table.citation).length;
-  if (pins.length === 0 && count === null && located > 0) {
+  if (pins.length === 0 && located > 0) {
     return "read (one pinout per package, user picks)";
   }
 
@@ -272,6 +315,24 @@ function classify(record: PartRecord): string {
   return "read";
 }
 
+
+/**
+ * The settings a customer has set before their first datasheet.
+ *
+ * The two forming-die numbers are the ones the settings screen makes mandatory,
+ * because no datasheet states them: they are properties of the assembler's
+ * bending die. The two that a published standard covers are left BLANK on
+ * purpose, so this run measures the defaults a customer who chooses nothing
+ * gets, which is the honest floor.
+ *
+ * The values are the ordinary ones for a small-outline part on a normal line.
+ * Nothing here is read from a datasheet and nothing here should be: that is the
+ * whole reason these are settings.
+ */
+const BENCH_SETTINGS: ForgeSettings = {
+  formedLeadSpanMm: 7.62,
+  formedLeadContactMm: 1.4
+};
 
 /**
  * What the USER would actually be able to get, which is not what this measured
@@ -293,8 +354,29 @@ function classify(record: PartRecord): string {
  *
  * No model calls. `packageOptions` is pure generation over a record already
  * read, so this costs nothing to re-measure from cache.
+ *
+ * ## Two numbers, and the second one is the product
+ *
+ * `ships` is the zero-friction figure: a bundle with nothing asked. It is the
+ * one to watch for regressions, because it is the only one that cannot be moved
+ * by asking the user more.
+ *
+ * `shipsAnswered` is what a customer actually experiences, and is the headline.
+ * The product's whole input model says that a number no datasheet carries is
+ * ASKED rather than invented; a part blocked only on such a question is a part
+ * that ships, after a few seconds of typing. Reporting it as a failure measures
+ * a product that refuses where this one asks.
+ *
+ * It is not a free pass. It counts a part only when EVERY remaining blocker is
+ * a question the product knows how to ask AND the export really completes when
+ * the answers arrive, which is checked here by supplying them. A part blocked by
+ * "no land pattern for this package" or by an uncitable dimension is not
+ * answerable and does not count, however small the gap looks.
  */
-async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: string }> {
+async function shipOutcome(
+  record: PartRecord,
+  settings: ForgeSettings
+): Promise<{ ships: boolean; shipsAnswered: boolean; why: string; asked: number; brokeWhenAnswered: string | null }> {
   const resolved = resolveForExport(record);
 
   // ROUTE ONE: the record as it stands, which is what the user gets when the
@@ -322,8 +404,8 @@ async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: s
         : `held: missing ${resolved.missing.join(",")}`;
   } else {
     try {
-      await createExportZip(resolved.part, "kicad");
-      return { ships: true, why: "" };
+      await createExportZip(resolved.part, "kicad", { densityLevel: densityOf(settings) });
+      return { ships: true, shipsAnswered: true, why: "", asked: 0, brokeWhenAnswered: null };
     } catch (error) {
       // ONE PART MUST NEVER KILL THE RUN.
       //
@@ -339,7 +421,7 @@ async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: s
       // informative than a stack trace: it is the output invariant doing its job.
       if (!(error instanceof FootprintUnavailableError)) {
         const why = error instanceof Error ? error.message.split("\n")[0].slice(0, 60) : "unknown";
-        return { ships: false, why: `invalid: ${why}` };
+        return { ships: false, shipsAnswered: false, why: `invalid: ${why}`, asked: 0, brokeWhenAnswered: null };
       }
       direct = error;
     }
@@ -347,17 +429,19 @@ async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: s
 
   // ROUTE TWO: whatever the chooser offers. Empty when the document names no
   // alternatives, which is why route one's refusal is kept rather than replaced.
-  const choice = packageOptions(record);
+  const choice = packageOptions(record, installAnswers(settings));
   if (choice.ok && choice.options.some((option) => option.status === "ships")) {
-    return { ships: true, why: "" };
+    return { ships: true, shipsAnswered: true, why: "", asked: 0, brokeWhenAnswered: null };
   }
 
   // The SMALLEST question set across every route, because that is the friction
   // the product actually imposes: the user takes the cheapest path on offer.
-  const asks: RequiredInput[][] = choice.ok
-    ? choice.options.filter((option) => option.status === "needs-input").map((option) => option.needs)
+  const asks: Array<{ needs: RequiredInput[]; designator?: string }> = choice.ok
+    ? choice.options
+        .filter((option) => option.status === "needs-input")
+        .map((option) => ({ needs: option.needs, designator: option.designator }))
     : [];
-  if (direct && direct.needs.length > 0) asks.push(direct.needs);
+  if (direct && direct.needs.length > 0) asks.push({ needs: direct.needs });
 
   if (asks.length === 0) {
     // Nothing anywhere is answerable. Prefer route one's own words: it is about
@@ -366,14 +450,223 @@ async function shipOutcome(record: PartRecord): Promise<{ ships: boolean; why: s
     const reason = direct?.reason ?? unsupported?.reason ?? null;
     // The traceability refusal is the truest answer only when nothing else has
     // one: a record with no pins and no offered package really is unread.
-    if (reason === null && held !== null) return { ships: false, why: held };
+    if (reason === null && held !== null) {
+      return { ships: false, shipsAnswered: false, why: held, asked: 0, brokeWhenAnswered: null };
+    }
     return {
       ships: false,
-      why: `unsupported: ${(reason ?? "no land pattern").slice(0, 60)}`
+      shipsAnswered: false,
+      why: `unsupported: ${(reason ?? "no land pattern").slice(0, 60)}`,
+      asked: 0,
+      brokeWhenAnswered: null
     };
   }
-  const fewest = asks.reduce((best, needs) => (needs.length < best.length ? needs : best));
-  return { ships: false, why: `needs ${fewest.map((need) => need.field).join(",")}` };
+  const cheapest = asks.reduce((best, ask) => (ask.needs.length < best.needs.length ? ask : best));
+  const fewest = cheapest.needs;
+
+  // NOW ANSWER THEM, because that is what the user does next.
+  //
+  // Every value here is one a real user reads off the drawing in front of them;
+  // the bench derives a self-consistent stand-in so the question under test is
+  // "does the pipeline complete once an answer arrives", not "can the bench
+  // guess the number". A part that still refuses after being answered is a
+  // defect, and is reported by name rather than folded into the total.
+  const answered = await exportWithAnswers(record, fewest, settings, cheapest.designator);
+  return {
+    ships: false,
+    shipsAnswered: answered.ok,
+    why: `needs ${fewest.map((need) => need.field).join(",")}`,
+    asked: answered.ok ? answered.asked : fewest.length,
+    brokeWhenAnswered: answered.ok ? null : answered.why
+  };
+}
+
+/**
+ * The settings a customer sets once, as the chooser and the exporter take them.
+ *
+ * The forming-die numbers are the two fields the settings screen makes
+ * mandatory, precisely because no datasheet states them. A bench that leaves
+ * them unset measures a product nobody uses: every straight-lead part would ask
+ * for a span the customer has already given.
+ */
+function installAnswers(settings: ForgeSettings): OptionAnswers {
+  return {
+    ...(settings.formedLeadSpanMm !== undefined ? { formedLeadSpanMm: settings.formedLeadSpanMm } : {}),
+    ...(settings.formedLeadContactMm !== undefined ? { formedLeadContactMm: settings.formedLeadContactMm } : {})
+  };
+}
+
+/**
+ * Answer every question the product asked, then try again.
+ *
+ * ## What this measures, and what it deliberately does not
+ *
+ * It measures whether the PIPELINE completes once answers arrive: that the
+ * route accepts the field, that the generator uses it, and that the output
+ * invariants pass on the result. It does NOT measure whether the bench guessed
+ * the right number, and it must not be read that way. A real user reads these
+ * off the package drawing in front of them.
+ *
+ * So the stand-ins are derived from the part's own record wherever it carries
+ * anything to derive from, and are geometrically self-consistent where it does
+ * not. Deriving matters: a land span invented independently of the body size
+ * produces pads outside their own courtyard, and the output invariant would
+ * then refuse a part for the bench's arithmetic rather than for the product's.
+ */
+async function exportWithAnswers(
+  record: PartRecord,
+  needs: RequiredInput[],
+  settings: ForgeSettings,
+  /** The package whose questions these are, so the answers come from ITS drawings. */
+  forPackage?: string
+): Promise<{ ok: true; asked: number } | { ok: false; why: string }> {
+  const supplied: Record<string, unknown> = {};
+  let asked = 0;
+
+  // A QUESTION SET ARRIVES IN ROUNDS, and so does the user's answer.
+  //
+  // The land pattern and the arrangement are answered by different parts of the
+  // generator, so supplying the pad size can reveal that the pitch is missing
+  // too. Measured 2026-08-19, three parts hit exactly that: they were reported
+  // as "answered and still refused" by a single-round bench, and every one of
+  // them ships on the second round. A bench that asks once measures a product
+  // that gives up when the user answers.
+  //
+  // Bounded, and the bound is the finding: a set of questions that keeps
+  // growing is a refusal wearing a form, and four rounds is already more
+  // friction than the input model allows.
+  const MAX_ROUNDS = 4;
+  for (let round = 0; round < MAX_ROUNDS; round += 1) {
+    const outstanding = round === 0 ? needs : null;
+    if (outstanding) for (const need of outstanding) supplied[need.field] = answerFor(need, record, forPackage);
+    asked = Object.keys(supplied).length;
+
+    const answers: OptionAnswers = {
+      ...installAnswers(settings),
+      supplied: supplied as SuppliedDimensions
+    };
+
+    // Route one, the record as it stands.
+    const resolved = resolveForExport(record);
+    if (resolved.ok) {
+      try {
+        await createExportZip(resolved.part, "kicad", {
+          densityLevel: densityOf(settings),
+          formedLeadSpanMm: settings.formedLeadSpanMm,
+          formedLeadContactMm: settings.formedLeadContactMm,
+          supplied: supplied as SuppliedDimensions
+        });
+        return { ok: true, asked };
+      } catch (error) {
+        if (error instanceof FootprintUnavailableError && error.needs.length > 0) {
+          for (const need of error.needs) supplied[need.field] = answerFor(need, record, forPackage);
+        }
+      }
+    }
+
+    // Route two, whatever the chooser offers once the answers are in hand.
+    const choice = packageOptions(record, answers);
+    if (choice.ok && choice.options.some((option) => option.status === "ships")) return { ok: true, asked };
+    const stillAsking = choice.ok
+      ? choice.options.find((option) => option.status === "needs-input")
+      : undefined;
+    if (stillAsking && stillAsking.status === "needs-input") {
+      const fresh = stillAsking.needs.filter((need) => supplied[need.field] === undefined);
+      if (fresh.length === 0) {
+        return { ok: false, why: `asks for ${stillAsking.needs.map((n) => n.field).join(",")} and refuses the answers` };
+      }
+      for (const need of fresh) supplied[need.field] = answerFor(need, record, stillAsking.designator);
+      continue;
+    }
+    if (Object.keys(supplied).length === asked) {
+      const unsupported = choice.ok ? choice.options.find((option) => option.status === "unsupported") : undefined;
+      return { ok: false, why: (unsupported?.reason ?? "refused with no reason given").slice(0, 90) };
+    }
+  }
+  return { ok: false, why: `still asking after ${MAX_ROUNDS} rounds of answers` };
+}
+
+/**
+ * One stand-in answer, in the units the field is asked in.
+ *
+ * Every branch prefers a number the document DID supply over one it did not:
+ * the questions overlap, and a body width the record carries is a better basis
+ * for a land span than any constant. The constants that remain are the ordinary
+ * proportions of a small surface-mount package, chosen so that the resulting
+ * pads sit inside their own courtyard and clear of each other.
+ */
+function answerFor(need: RequiredInput, record: PartRecord, designator?: string): number | string {
+  // THE CHOSEN PACKAGE'S OWN MEASUREMENTS, not the record's empty flat block.
+  //
+  // On a document whose part number does not name a package, every dimension
+  // lives in `packagesInThisDocument` and `record.dimensions` is entirely null -
+  // correctly, because there is no such thing as "the body size" of a part sold
+  // in seven packages. Reading the flat block there gave every stand-in its
+  // fallback constant, and a 3 mm span invented for a 4 mm VQFN puts the pads
+  // inside the body.
+  //
+  // Measured 2026-08-20: that is the whole of MSP430FR2433's "ANSWERED AND
+  // STILL REFUSED". The product asks two answerable questions and SHIPS when
+  // they are answered with the package's real numbers. The bench was reporting
+  // its own arithmetic as a product defect, which is the one thing this line
+  // must never do.
+  const perPackage = designator ? pinTableFor(record.packagesInThisDocument, designator)?.dimensions : undefined;
+  const dims = { ...record.dimensions, ...(perPackage ?? {}) } as PartRecord["dimensions"];
+  const num = (value: unknown): number | null => (typeof value === "number" && value > 0 ? value : null);
+  const span = (value: unknown): number | null =>
+    value !== null && typeof value === "object" && value !== null
+      ? num((value as { nominal?: unknown }).nominal ?? (value as { max?: unknown }).max)
+      : num(value);
+
+  const body = num(dims.bodyLengthMm.value) ?? num(dims.bodyWidthMm.value) ?? 3;
+  const pitch = num(dims.pitchMm.value) ?? 0.5;
+  const pins = num(record.pinCount.value) ?? 8;
+  const sides = dims.leadSides.value ?? (pins % 4 === 0 && pins >= 16 ? 4 : 2);
+
+  switch (need.field) {
+    case "bodyLengthMm":
+      return num(dims.bodyLengthMm.value) ?? span(dims.leadSpanMm.value) ?? body;
+    case "bodyWidthMm":
+      return num(dims.bodyWidthMm.value) ?? span(dims.leadSpanCrossMm.value) ?? body;
+    case "bodyHeightMm":
+      return num(dims.bodyHeightMm.value) ?? 1;
+    // The pad's radial length and tangential width. A no-lead package's pad is
+    // about the lead's own contact length and a little over half the pitch
+    // wide, which is what keeps neighbours clear at any pitch.
+    case "landPadLengthMm":
+      return span(dims.leadContactMm.value) ?? Math.max(0.4, Math.min(1, pitch * 1.2));
+    case "landPadWidthMm":
+      return Math.max(0.2, pitch * 0.55);
+    // The centre-to-centre span across the package. Derived from the body so the
+    // pads land under the leads rather than beyond the courtyard.
+    case "landSpanMm":
+      return span(dims.leadSpanMm.value) ?? body;
+    case "landSpanCrossMm":
+      return span(dims.leadSpanCrossMm.value) ?? span(dims.leadSpanMm.value) ?? body;
+    case "leadDiameterMm":
+      return 0.5;
+    case "pitchMm":
+      return pitch;
+    case "thermalPadLengthMm":
+      return num(dims.thermalPadLengthMm.value) ?? body * 0.6;
+    case "thermalPadWidthMm":
+      return num(dims.thermalPadWidthMm.value) ?? body * 0.6;
+    case "leadSides":
+      return sides;
+    case "leadsPerSide": {
+      const per = Math.floor(pins / sides);
+      return Array.from({ length: sides }, (_, i) => (i === 0 ? pins - per * (sides - 1) : per)).join(",");
+    }
+    // Which grid position on the short row carries no lead. A package that asks
+    // this has one more position than it has leads on that row, so the last one
+    // is the answer that is always in range.
+    case "vacantLeadSlot":
+      return Math.max(1, Math.floor(pins / 2) + 1);
+    case "formedLeadSpanMm":
+      return span(dims.leadSpanMm.value) ?? body + 1;
+    case "formedLeadContactMm":
+      return span(dims.leadContactMm.value) ?? 0.6;
+  }
 }
 
 async function main(): Promise<void> {
@@ -418,6 +711,12 @@ async function main(): Promise<void> {
   let cached = 0;
   let read = 0;
   let ships = 0;
+  /** Ships once the customer's settings and their answers to our questions are in. */
+  let shipsAnswered = 0;
+  /** How many questions each answered part actually took, so the friction is visible. */
+  const questionsAsked = new Map<string, number>();
+  /** Answered every question and still refused: a broken ask, reported by name. */
+  const answeredAndStillRefused = new Map<string, string>();
   const shipRefusals = new Map<string, string[]>();
   /** Which fields the model filled that the parser could not, per part. */
   const modelFilled = new Map<string, string[]>();
@@ -436,12 +735,15 @@ async function main(): Promise<void> {
 
     const bytes = readFileSync(path);
     let record: PartRecord;
+    // Kept outside the try so `classify` can ask what document we actually got.
+    let parsed: DatasheetText | null = null;
     try {
       const { doc, part: deterministic } = await extractPartRecord(
         `${part.partNumber}.pdf`,
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
       );
       record = deterministic;
+      parsed = doc;
 
       if (MODEL) {
         const model = await benchModel();
@@ -485,21 +787,44 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const reason = classify(record);
+    const reason = classify(record, parsed ?? undefined);
     reasons.set(reason, [...(reasons.get(reason) ?? []), part.partNumber]);
     if (reason.startsWith("read")) {
       read += 1;
       kind.read += 1;
-      const outcome = await shipOutcome(record);
+      const outcome = await shipOutcome(record, BENCH_SETTINGS);
       if (outcome.ships) ships += 1;
       else shipRefusals.set(outcome.why, [...(shipRefusals.get(outcome.why) ?? []), part.partNumber]);
+      if (outcome.shipsAnswered) {
+        shipsAnswered += 1;
+        if (!outcome.ships) questionsAsked.set(part.partNumber, outcome.asked);
+      } else if (outcome.brokeWhenAnswered !== null) {
+        // Answered and STILL refused. Never folded into a total: it is a defect
+        // in the ask, and the ask is the product's promise that a question has
+        // an answer.
+        answeredAndStillRefused.set(part.partNumber, outcome.brokeWhenAnswered);
+      }
     }
     byKind.set(part.kind, kind);
   }
 
   console.log(`cached:    ${cached}/${HOLDOUT_CORPUS.length}`);
   console.log(`READ:      ${read}/${cached}  (${cached ? Math.round((read / cached) * 100) : 0}%)  <- the number that predicts a stranger's datasheet`);
-  console.log(`SHIPS:     ${ships}/${cached}  (${cached ? Math.round((ships / cached) * 100) : 0}%)\n`);
+  const asks = [...questionsAsked.values()].sort((a, b) => a - b);
+  const median = asks.length > 0 ? asks[Math.floor(asks.length / 2)] : 0;
+  console.log(
+    `SHIPS:     ${shipsAnswered}/${cached}  (${cached ? Math.round((shipsAnswered / cached) * 100) : 0}%)` +
+      `  <- with the customer's settings and their answers. THE PRODUCT.`
+  );
+  console.log(
+    `  of which ${ships} asked nothing at all, and ${questionsAsked.size} answered ` +
+      `${asks.length > 0 ? `a median of ${median}` : "no"} question(s).`
+  );
+  if (answeredAndStillRefused.size > 0) {
+    console.log(`\n  ANSWERED AND STILL REFUSED (${answeredAndStillRefused.size}) - a broken ask, not a hard part:`);
+    for (const [partNumber, why] of answeredAndStillRefused) console.log(`    ${partNumber.padEnd(18)} ${why}`);
+  }
+  console.log();
 
   console.log("Why parts did not read:");
   for (const [reason, parts] of [...reasons].sort((a, b) => b[1].length - a[1].length)) {

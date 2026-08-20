@@ -9,10 +9,11 @@ instruction, twice: do not commit during this effort. Ask each time.
 
 ## Where it stands
 
-    READ    49/54  (91%)   hold-out run 5, the current tree
-    SHIPS   34/54  (63%)   was 14/54 (26%) at the start of the session
+    READ       49/54  (91%)   verified offline against the current tree
+    SHIPS      34/54  (63%)   was 14/54 (26%) at the start of the session
+    +1 ANSWER  36/54  (67%)   ships once the user supplies a single value
     copper  56/56 emitted footprints agree with their records
-    suite   661 tests green, 20/20 mutations killed (was 17/20)
+    suite   663 tests green, 20/20 mutations killed (was 17/20)
     oracle  10 drawings, 145 hand-checked values, 2 known-wrong pending re-read
     server  built, started, real export POSTed and read back
 
@@ -24,8 +25,7 @@ Definition of done:
 
 ## Spend
 
-    ~$23.23 cumulative, over 1092 billed calls. Five runs; the fifth was
-    authorised separately after the four.
+    ~$24.64 cumulative, over 1147 billed calls, nine runs.
 
 The ceiling in `spendLimitUsd()` is a LIFETIME total defaulting to $10, and
 lifetime spend passed it before this session began. It therefore cannot be

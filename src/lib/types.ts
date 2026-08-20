@@ -507,6 +507,8 @@ export const partSchema = z.object({
       z
         .object({
         packageType: z.string().min(1).max(64),
+        /** Other names this document prints for the same package; see the type. */
+        alsoKnownAs: z.array(z.string().min(1).max(64)).max(8).optional(),
         /**
          * Optional since 2026-08-18. A document routinely prints an outline
          * drawing per package while tabulating ONE pinout, and such an entry
@@ -698,6 +700,19 @@ export type PartRecord = {
    */
   packagesInThisDocument?: Array<{
     packageType: string;
+    /**
+     * The OTHER name this document prints for the same package.
+     *
+     * The two passes read the same package from different sections and each
+     * names it after the section it read: the pinout section writes
+     * `D (OPA1612)` and `SOT-23 (DBV)`, the package drawings write `SOIC (D)`
+     * and `SOT-23 (5)`. The ordering table, which is where the chooser gets the
+     * designator it later looks this entry up by, uses a third mixture of the
+     * two. Filing a joined entry under either single name loses the parts whose
+     * chooser speaks the other one, and it is not a choice that has to be made:
+     * both names are known and both are the document's own.
+     */
+    alsoKnownAs?: string[];
     /** Absent on an entry that carries measurements and no pinout. */
     pins?: PinRecord[];
     exposedPad?: boolean;
@@ -776,6 +791,19 @@ export interface ResolvedPart {
    */
   packagesInThisDocument?: Array<{
     packageType: string;
+    /**
+     * The OTHER name this document prints for the same package.
+     *
+     * The two passes read the same package from different sections and each
+     * names it after the section it read: the pinout section writes
+     * `D (OPA1612)` and `SOT-23 (DBV)`, the package drawings write `SOIC (D)`
+     * and `SOT-23 (5)`. The ordering table, which is where the chooser gets the
+     * designator it later looks this entry up by, uses a third mixture of the
+     * two. Filing a joined entry under either single name loses the parts whose
+     * chooser speaks the other one, and it is not a choice that has to be made:
+     * both names are known and both are the document's own.
+     */
+    alsoKnownAs?: string[];
     /** Absent on an entry that carries measurements and no pinout. */
     pins?: PinRecord[];
     exposedPad?: boolean;

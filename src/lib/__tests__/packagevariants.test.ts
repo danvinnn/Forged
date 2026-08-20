@@ -292,3 +292,69 @@ test("no table matches a count the document never printed", () => {
   const tables = [{ packageType: "SSOP-20", pins: Array.from({ length: 20 }, () => ({})) }];
   assert.equal(pinTableFor(tables, "28-Lead SSOP"), null);
 });
+
+// --- AN ENUMERATION IS NOT A PACKAGE ----------------------------------------
+//
+// The glued form (`SO48`, `SOT23`) is marked by nothing but adjacency, which is
+// why it demands a plausible lead count. For an OUTLINE-NUMBERED family that
+// guard cannot apply, because there the number is a name rather than a count and
+// `count` is null, so the weakest form in this module ran with no check at all
+// on exactly the families whose number cannot be checked against anything.
+//
+// Measured 2026-08-19: an accelerometer's register map prints DO0 through DO15,
+// and every one became a package the chooser offered the user. Fifteen fictional
+// options beside the one real package, which had been read correctly.
+
+test("several glued numbers on one outline-numbered family are an enumeration, not packages", () => {
+  const text =
+    "FIFO data output registers DO0, DO1, DO2, DO3, DO4, DO8 and DO15 are read over SPI. " +
+    "The device is supplied in an LGA-14L package.";
+  const designators = findPackageVariants(text, 0).map((variant) => variant.designator);
+
+  assert.deepEqual(designators, ["LGA-14L"], "the register names must not become packages");
+});
+
+test("but ONE glued outline number is still a designator", () => {
+  // The filter above must not cost the case the form exists for. Measured over
+  // the tuned corpus, every glued outline designator in it is the only number
+  // its family appears glued to, and two parts have no hyphenated twin to fall
+  // back on, so a blanket refusal would lose them.
+  const text = "The device is available in SOT23 and in an 8-lead SOIC.";
+  const designators = findPackageVariants(text, 0).map((variant) => variant.designator);
+
+  assert.ok(designators.includes("SOT23"), `SOT23 must survive, got ${designators.join(", ")}`);
+});
+
+test("a counted family is unaffected: two glued numbers are two real packages", () => {
+  // The rule is about numbers that CANNOT be checked. A counted family declares
+  // a lead count, which is corroborated against the pin table, so a document
+  // offering two of them is offering two packages and both must survive.
+  const text = "Available as SOIC8 and as SOIC14.";
+  const designators = findPackageVariants(text, 0).map((variant) => variant.designator);
+
+  assert.ok(designators.includes("SOIC8"), `SOIC8 must survive, got ${designators.join(", ")}`);
+  assert.ok(designators.includes("SOIC14"), `SOIC14 must survive, got ${designators.join(", ")}`);
+});
+
+test("a package named by the same facts in a different order is still found", () => {
+  // `VQFN (RGT)` from the ordering table against `RGT (VQFN, 16)` from the
+  // pinout section. The family and the code have swapped places, so no amount
+  // of punctuation-stripping makes one contain the other, and THS3491 was told
+  // its own document gave a pinout for every package except the one it asked
+  // for.
+  const tables = [
+    { packageType: "VQFN (16)", alsoKnownAs: ["RGT (VQFN, 16)", "VQFN (16)"], pins: new Array(16).fill(0) },
+    { packageType: "PowerPAD SOIC (8)", alsoKnownAs: ["DDA (HSOIC, 8)"], pins: new Array(8).fill(0) }
+  ];
+  assert.equal(pinTableFor(tables, "VQFN (RGT)")?.packageType, "VQFN (16)");
+});
+
+test("two packages the ordering table calls the same thing are not guessed between", () => {
+  // LD39050 prints a 3x3 mm DFN6 and a 2x2 mm DFN6. Picking one would be a
+  // wrong body under a real part number; the chooser offers both instead.
+  const tables = [
+    { packageType: "DFN6 (3x3 mm)", pins: new Array(6).fill(0) },
+    { packageType: "DFN6 (2x2 mm)", pins: new Array(6).fill(0) }
+  ];
+  assert.equal(pinTableFor(tables, "DFN6"), null);
+});

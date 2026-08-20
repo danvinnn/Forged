@@ -1385,3 +1385,368 @@ Cheaper than run 4 ($1.97 against $2.50) despite twice the page budget, because
 28 of the 108 calls hit cache: pass 1's prompt is unchanged for parts where the
 package is settled, so only the second pass re-asked. The budget change is not
 uniformly expensive.
+
+---
+
+# F91. THE FOOTPRINT PAGE WAS FINDABLE BY GREP, AND WE LEFT THE MODEL TO GUESS
+
+## The measurement
+
+Of the 53 tuned parts with a cached reading, 32 came back with no land pattern.
+Their datasheets were then searched for a footprint caption in the TEXT LAYER:
+
+    15  PRINT one, on a named page, caption sitting in the text
+    17  no caption in the text layer
+
+The 17 are mostly rad-hard ceramic (RHF1201, UT54LVDS217, VA10820, RTAX2000S,
+UT32M0R500), which is the segment that genuinely does not print recommended
+footprints. Absence of a caption is NOT proof of absence, since a drawing can be
+pure artwork, so 15 is a lower bound on what we are missing.
+
+The 15, with the pages the locator finds:
+
+    ISO7741        10, 47, 50          OPA2189      44, 47, 50, 53, 56
+    L7805          41, 46              OPA2277      33, 36, 39
+    LIS3DH         21                  PCF8574      27, 31, 35, 39
+    LT1013         24                  SN74LVC1G08  23, 27, 30, 33, 37, 41
+    LTC3105        16                  STM32F103C8  82, 84, 86, 89, 92, 95
+    MAX232         19, 24              TPS7A4501-SP 30
+    TSV321         13                  TSV911       17, 21, 23
+    TXB0104        36, 40, 44, 47, 50, 53
+
+Several print one PER PACKAGE, which is the family case again.
+
+## Why it was missed
+
+`findVendorLandPattern` and `findUnreadableFootprint` have located these pages for
+months. Both are family-scoped, both return ONE page, and both exist to read a
+specific package's numbers. Their result is shown to the USER, as the page to
+look at in a refusal message.
+
+**Neither has ever been used to decide which pages the MODEL is shown.** The model
+picks its own render pages and was left to guess at page 47 of a 60-page
+document. We could find it by grep.
+
+Same shape as every other finding this week: the information was in hand and did
+not reach the place that needed it.
+
+## The fix
+
+`landPatternPages(doc)` in `vendorland.ts`: every page whose text carries a
+footprint caption, no family filter, no claim about what is on it.
+`requestedPages` in `run.ts` unions it with the model's own list, model's choices
+first, still capped.
+
+No family filter on purpose. This answers "which pages carry a footprint
+drawing", a question about the DOCUMENT, and adding a page to a render set is not
+the same act as reading a number off it. Filtering by family would reintroduce
+exactly the failure the per-package work removed, because the documents with the
+most footprint pages are the ones whose part number names no package.
+
+Nothing is asserted. The model still reads the page, still has to cite it, and a
+value that cannot be located is still refused.
+
+## Why it composes with the raised page budget
+
+Six of the fifteen have four or more footprint pages, and STM32F103C8 and
+SN74LVC1G08 have six each. Under the old eight-page cap, adding those would have
+pushed the outline and pinout pages out, which is precisely how run 4 lost. At
+sixteen there is room for both. The two changes are not independent: the budget
+makes space and the locator fills it with the right pages.
+
+---
+
+# RUN 6: THE FOOTPRINT-PAGE LOCATOR DID NOT MOVE THE HOLD-OUT
+
+    READ    48/54  (89%)   run 5 was 49/54 (91%)
+    SHIPS   34/54  (63%)   run 5 was 34/54 (63%)
+    98 cache hits, 10 live calls, $0.25.  CHARGED TOTAL ~$23.48
+
+## The number that explains it: 98 of 108 calls hit cache
+
+A cached answer is served when the prompt and the images are byte-identical, so
+**the render set changed for only 10 calls out of 108**. On the other 44 parts the
+model was already asking for the pages the locator finds, or the document has no
+captioned page at all.
+
+That is the hold-out doing its job. On the TUNED corpus the same check said 15 of
+32 documents print a footprint we never read, which looked like the biggest
+remaining lever. On unseen documents it is worth almost nothing, because the
+model was mostly already choosing those pages.
+
+## What did move
+
+    land-pattern-blocked parts      8  ->  6
+    "count but no pins"             3  ->  4
+    landPadLengthMm read           14  -> 14
+
+Two parts gained a footprint, one lost a pinout, and the land fields did not move
+at all. Net zero on SHIPS. Kept rather than reverted: it is not a measured loss
+on the metric that matters, it costs nothing on 90% of parts, and the tuned
+evidence for it is strong. Recorded honestly as a wash on unseen documents.
+
+## F92. I recorded a defect in my own change that was not one
+
+Reading the change back, I wrote that sorting the union by page number and then
+truncating would drop the footprint pages, since they sit at the back of a
+datasheet. It reads as obviously true.
+
+**The test refused to fail.** Ascending order puts the captioned pages last, so
+they are dropped only once the union exceeds the budget, and priority order drops
+exactly the same ones. On real documents the two implementations are identical.
+
+The tempting move was to weaken the test until it agreed with me. The correct one
+was to correct the claim: the two orders differ only in the REVERSE case, a
+captioned page EARLIER than the model's own choices, where sorting promotes the
+caption and drops a page the model asked for. That is the wrong way round, since
+the model read the whole document and this reader saw only captions, so priority
+order is still the right implementation for a reason I had not stated.
+
+Two tests now pin it, and both were checked by reverting the fix and confirming
+they fail. A control test pins the other half: a captioned page IS added when the
+model left room, so a rule that never adds anything cannot pass.
+
+**A test that will not fail against the defect you think you found is evidence
+about the defect, not about the test.**
+
+---
+
+# RUN 7: THE PIN-PAGE LOCATOR, ADDED UNCONDITIONALLY, LOST
+
+    READ    47/54  (87%)   run 6 was 48/54 (89%)
+    SHIPS   33/54  (61%)   run 6 was 34/54 (63%)
+    24 live calls, $0.58.  CHARGED TOTAL ~$24.56
+
+## The diagnosis it came from was right
+
+Measured over the 11 tuned parts with no pin table at all, every one of their
+documents captions a pin section in the text layer, and those pages carry
+essentially NO numbered lines: the tables are figures, readable only from a
+render. The model was asking for one page of a multi-page table, or none:
+
+    STM32F407VG   pin sections 43, 44, 45, 46   model asked for 44
+    STM32H743ZI   pin sections 55, 56, 57       model asked for 57
+    STM32F103C8   pin sections 21, 22, 23       model asked for 26, 83, 84, 98, 100
+    SN74LVC1G08   pin section 3                 model asked for nothing at all
+
+A hundred-pin table cannot be read from a quarter of itself, and the partial
+table it yields is then correctly refused by the gap-free 1..N proof, which is
+exactly why those parts arrive with a pin COUNT and no pins.
+
+## The fix was right and the shape of it was wrong
+
+Offering the located pages on EVERY part took pass 2 from four or five images to
+sixteen, and both numbers went down. "count but no pins" went from four parts to
+five. Same lesson as the page-request wording the day before: **spreading a pass
+thinner over more pages loses more than the extra pages win.**
+
+## F93. A caption-located page is a FALLBACK FOR A GAP, not a supplement
+
+The locators now fire per kind, and only where pass 1 produced nothing of that
+kind: a part that already has its pinout is not shown six more pinout pages, and
+a part that already has its printed footprint is not shown six more footprint
+pages. Where both are missing the two share the budget in turn so neither
+starves the other.
+
+The information needed to make that decision was already in hand:
+`requestedPages` receives pass 1's whole result. Offering the pages
+unconditionally was not a missing input, it was not using one.
+
+Four assertions pin it: nothing read offers both, pins read offers only
+footprints, land read offers only pins, both read offers neither.
+
+---
+
+# RUN 8: THE CONDITIONAL WAS RIGHT AND FIRED ON ALMOST NOBODY
+
+    READ    48/54  (89%)   recovered to the run 6 level
+    SHIPS   33/54  (61%)   run 6 was 34/54 (63%)
+    +1 ANSWER 35/54 (65%)  new line, reported separately, never folded into SHIPS
+    106 cache hits, 2 live calls, $0.07
+
+## F94. "Did the model answer" is not "would the record keep it"
+
+Two live calls is the whole finding. Making the caption-located pages conditional
+on a gap was correct, and the condition asked the wrong question:
+
+    hasPins = the model returned something for `pins`
+
+A model shown ONE page of a four-page pin table returns rows 1..12 of 100. That
+IS an answer, so the fallback stayed silent on exactly the parts it was built
+for, and the partial table was then thrown away by the gap-free 1..N proof. The
+part ends with a pin COUNT and no pins, which is the bucket the whole exercise
+started from.
+
+The condition fired on 2 parts of 54 where it should have fired on about a dozen.
+
+Fixed by sharing the record's own proof rather than restating a weaker one:
+`usablePinTable` is exported from `merge.ts` and is the same
+`normalizeModelPins` plus `isGapFreeSequence` the record applies. One door, so
+the page decision and the record cannot disagree about what a pin table is.
+
+Pinned by a test that was checked against the old condition and fails on it.
+
+## The pattern, for the third time in two days
+
+    the export route      checked traceability before the step that supplies pins
+    the hold-out bench    stopped before the chooser the product actually runs
+    this                  asked "answered?" where the record asks "usable?"
+
+Every one is a check standing one step away from the thing it is about. That is
+worth more than the individual fixes: when something looks unreachable, the
+question to ask first is whether the guard in front of it is asking the same
+question as the thing behind it.
+
+---
+
+# RUN 9 AND THE REVERT: THE CAPTION LOCATOR IS A DEAD END, BOTH WAYS
+
+    run 5   no locator                READ 91%  SHIPS 63%  (34/54)
+    run 6   footprint, unconditional  READ 89%  SHIPS 63%  (34/54)
+    run 7   both, unconditional       READ 87%  SHIPS 61%  (33/54)
+    run 8   both, gap-conditional     READ 89%  SHIPS 61%  (33/54)
+    run 9   + the record's own proof  READ 89%  SHIPS 61%  (33/54), 0 live calls
+
+Run 9 made ZERO live calls: sharing `usablePinTable` changed the render set for
+no part at all. Combined with the free trace below, that settles it.
+
+## Where a pin table is actually lost: nowhere
+
+Traced through the real merge, with citation verification on, over 16 tuned parts:
+
+    model answered pins   10
+    kept with a citation  10
+    stored uncited         0
+    refused on shape       0
+
+**Every pin table the model returns survives onto the record.** Nothing is being
+thrown away in the merge. The parts that end with no pinout are parts where the
+model returned none, and the caption locator cannot reach them because a pinout
+drawn as artwork with no caption has nothing to grep for.
+
+## Reverted, and recorded so nobody retries it
+
+Two variants, two runs, no benefit and a measured cost in one of them. The
+locator, the module and its tests are removed rather than left dormant, and the
+measurement is written into `requestedPages` where the next person will look.
+
+The knowledge SURVIVES the code: 15 of the 32 tuned parts with no land pattern
+print one on a page we can name. That is true, and it is not actionable through
+the render set, because on unseen documents the model was already choosing those
+pages.
+
+## What is kept from these four runs
+
+- `+1 ANSWER` on the hold-out bench, reported separately and never folded into
+  SHIPS. The current tree: **SHIPS 34/54 (63%), +1 ANSWER 36/54 (67%)**.
+- The finding that "answered" and "usable" are different questions (F94), now
+  recorded as a pattern rather than a fix.
+- Confirmation, by direct trace, that the merge loses nothing.
+
+## The state the tree is in
+
+Verified offline, no spend, against the current tree:
+
+    READ       49/54  (91%)
+    SHIPS      34/54  (63%)
+    +1 ANSWER  36/54  (67%)
+
+which is the best configuration measured in this session.
+
+## F95 continued: how big the class is
+
+Scanned all 55 tuned datasheets for a pin table headed by two or more package
+designators:
+
+    STM32F103C8   p26   LQFP48, UFQFPN48
+    STM32F407VG   p49   LQFP64, LQFP100, UFBGA176
+    STM32G071RB   p40   LQFP48, UFQFPN48
+    STM32H743ZI   p64   LQFP100, LQFP144, TFBGA100, UFBGA169, UFBGA176, TFBGA240
+
+**4 of 55, and every one of them an MCU.**
+
+That is not a comfortable number, because it is the same four parts the
+enumeration instruction just unlocked. The class this session made readable is
+precisely the class most exposed to reading the wrong column. Coverage and
+correctness moved in opposite directions on the same documents.
+
+## Why no cheap structural guard exists
+
+The obvious check is the pin COUNT against the package's declared lead count, and
+it does not work here. The model returned ONE HUNDRED pins for a part in the
+LQFP100 and got a name wrong on one of them: it did not read a different column
+wholesale, it slipped column part way down a row. The count matches, the
+numbering is gap-free, the citation is real, and the pads come out 1..100.
+
+Nothing structural sees it. Only a hand-read oracle does, which is the argument
+for the oracle in one line.
+
+The fix therefore has to be the question, as it has been every time: where a pin
+table carries more than one pin-number column, read the column belonging to the
+package you reported and say which column that was.
+
+---
+
+# RUN 10, THE REVERTS, AND THE COLUMN CHECK
+
+    run 9 / best   READ 91%  SHIPS 63%
+    run 10         READ 85%  SHIPS 54%   three changes at once, $2.08
+
+## F96. I batched three changes again, having written up that exact mistake
+
+Run 10 carried the claimed-page rule, the pin-caption page rule and a
+population-wide prompt instruction. It lost, and no part of the loss could be
+attributed. The rule from 2026-08-18 was already written down: **one hypothesis
+per paid run.** Writing a lesson down is not the same as following it.
+
+What rescued it was free: measuring each rule's BLAST RADIUS over the cache.
+
+    claimed-page rule   0.7 pages/part
+    pin-caption rule    3.8 pages/part, and +34 on STM32F407VG, +54 on STM32H743ZI
+
+The second fills the whole sixteen-page budget on exactly the parts it targets
+and starves the mechanical drawings, which is why body dimensions appeared in the
+refusals for the first time. Both it and the prompt instruction are reverted with
+the numbers recorded in `requestedPages`.
+
+## F97. The focused pinout pass, which is what the evidence actually supports
+
+Asked thirty fields over a whole document the model returns a pin COUNT and no
+pins, saying why itself: "the complete pin definitions table is truncated after
+page 50 (covering up to pin 17)". Asked TWO fields over the pages that caption
+themselves as a pinout, the same model on the same documents returned 100, 144
+and 48 pins, all correct.
+
+So a third call, bounded four ways: only when neither channel yielded a usable
+pin table, only two fields, only the captioned pages, and a failure leaves the
+record exactly as it was. A part that already has its pinout pays nothing.
+
+This is NOT the third call deleted on 2026-08-11. That one worked around a
+REFUSAL which was fixable at source, and was: the per-package channel carries a
+pinout per package now. This one addresses a broad ask crowding out an expensive
+field, and the two cheaper alternatives were measured and both lost.
+
+## F95 fixed: the column claim, and it works
+
+The model now states which pin-number column it read, and the claim is CHECKED
+against the settled package. Verified on the four MCUs that publish
+multi-column tables:
+
+    before   STM32F407VG shipped with pins 12, 49 and 50 wrong
+    after    the table is DISCARDED, the part does not ship, the oracle is clean
+
+Coverage went down and that is the right direction. A wrong pin name is a wrong
+netlist: right pads, wrong connections, and nothing but a hand-read oracle can
+see it. Not shipping is strictly better.
+
+An instruction alone would not have done this. The model was already told to read
+the right column; what changed is that it now has to SAY which column, and a
+claim can be checked. **An instruction nobody verifies is a hope.**
+
+## Open, recorded rather than chased
+
+STM32G071RB returns `PC14-OSC32_IN (PC14)` where the oracle wants
+`PC14-OSC32_IN`: the model transcribes the whole cell including the
+"(function after reset)" parenthetical. It is a naming convention question rather
+than a wrong terminal, and batching another prompt tweak into a bundle that is
+already three changes is how run 10 became unattributable. Recorded.

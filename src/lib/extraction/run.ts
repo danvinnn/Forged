@@ -32,6 +32,14 @@ import type { PartRecord } from "../types";
 import { buildExtractionRequest, withRenderedPages } from "./request";
 import type { RenderedPage } from "../pagerender";
 import { mergeModelValues, type MergeOutcome } from "./merge";
+import {
+  declaredLeadCount,
+  familyToken,
+  namesPackageFamily,
+  packageCodeOf,
+  spellOut,
+  PACKAGE_FAMILY_PATTERN
+} from "../packagevariants";
 
 // One budget, defined in `contracts.ts` beside the prompt that has to state it.
 const MAX_RENDERED_PAGES = MAX_PAGES_TO_MODEL;
@@ -106,19 +114,195 @@ export interface ExtractionRun extends MergeOutcome {
  * Field by field rather than object by object, because the halves do not
  * overlap: whichever pass answered a field is the one that could read it.
  */
+/**
+ * Which already-merged entry describes the SAME package as this one, or null.
+ *
+ * ## Why this cannot be string similarity
+ *
+ * `SOIC (D)` and `SOIC (DW)` are different packages whose lead spans differ by
+ * 4.3 mm. Any rule that joins two names because they look alike will eventually
+ * hand one package another's pinout, which is a wrong footprint under a real
+ * part number and is worse than the split entries it set out to fix.
+ *
+ * So this is a PROOF, built only out of things both halves can be checked on:
+ *
+ *   the lead COUNT  a pin table knows how many rows it has; a drawing entry
+ *                   knows how many leads it measured
+ *   the vendor CODE the short parenthesised or leading token, `PWP`, `D`, `RGT`
+ *   the FAMILY word `HTSSOP`, `SOIC`, `VQFN`
+ *
+ * Two entries name one package when they AGREE on at least one of these, DISAGREE
+ * on none, and the match picks out exactly one candidate. Anything else stays
+ * separate and the chooser behaves exactly as it does today.
+ *
+ * That last clause is what keeps `SOIC (D)` away from `SOIC (DW)`: the family
+ * agrees and the CODE disagrees, so the whole match fails on the disagreement
+ * rather than passing on the agreement.
+ */
+function sameDesignator(
+  entry: NonNullable<ExtractionResult["packagesInThisDocument"]>[number],
+  held: Map<string, NonNullable<ExtractionResult["packagesInThisDocument"]>[number]>,
+  partNumber?: string
+): string | null {
+  // A SIBLING DEVICE'S ENTRY IS NOT THIS PART'S PACKAGE.
+  //
+  // Family datasheets label their pin tables with the device they belong to, and
+  // the siblings share package names with each other. Left alone, that puts one
+  // device's netlist inside another's footprint:
+  //
+  //     ADM3202   "20-lead SSOP (ADM1385)" joined pass 2's measured "20-lead SSOP"
+  //     OPA1612   "D (OPA1611)" and "D (OPA1612)" both matched "SOIC (D)"
+  //
+  // The first shipped. The second did not, because two candidates made the match
+  // ambiguous and it refused, which is the right answer arrived at by luck.
+  //
+  // Both are settled by the document's own words: a label naming a device other
+  // than the one asked for describes that other device. A label naming no device
+  // is unaffected, which is most of them.
+  if (!isThisPart(entry.packageType, partNumber)) return null;
+  // A LABEL COVERING SEVERAL PACKAGES CANNOT ABSORB ONE PACKAGE'S MEASUREMENTS.
+  //
+  // A pin table's caption routinely names every package that shares an
+  // assignment: `16-lead PDIP/SOIC_N/TSSOP/SOIC_W`, `D, N, NS, J, DB, or PW
+  // Package`. That is a true statement about the PINOUT, which really is shared,
+  // and a false one about any body size, because those four packages have four
+  // different bodies.
+  //
+  // Caught on the first run of this matcher, 2026-08-19: joining them attached
+  // the PDIP's measurements to the shared entry, and `pinTableFor` matches a
+  // TSSOP against that same entry by containment, so a TSSOP would have been
+  // built from a PDIP's body. That is the wrong-footprint-under-a-real-part-number
+  // failure this whole function is written to avoid, so it is refused outright
+  // rather than made cleverer.
+  if (namesSeveralPackages(entry.packageType)) return null;
+  const mine = featuresOf(entry);
+  // A candidate must be JOINABLE: two pin tables are two packages, not one
+  // package seen twice, and merging them would silently drop a pinout.
+  const hits: string[] = [];
+  for (const [otherKey, other] of held) {
+    // Two entries with a pin table each are two packages, not one seen twice,
+    // and merging them would silently drop a pinout. Judged on CONTENT rather
+    // than on the key being present: the model returns `"pins": []` on an entry
+    // it has only measured, and reading that as "has a pin table" made every
+    // candidate look like a conflict, so nothing ever joined.
+    const has = (value: unknown) => Array.isArray(value) ? value.length > 0 : value !== undefined && Object.keys(value as object).length > 0;
+    const overlaps =
+      (has(entry.pins) && has(other.pins)) || (has(entry.dimensions) && has(other.dimensions));
+    if (overlaps) continue;
+    if (namesSeveralPackages(other.packageType)) continue;
+    if (!isThisPart(other.packageType, partNumber)) continue;
+    const theirs = featuresOf(other);
+    let agreed = false;
+    let contradicted = false;
+    for (const part of ["code", "family", "leads"] as const) {
+      const a = mine[part];
+      const b = theirs[part];
+      if (a === null || b === null) continue;
+      if (a === b) agreed = true;
+      else contradicted = true;
+    }
+    if (agreed && !contradicted) hits.push(otherKey);
+  }
+  // Exactly one, or nothing. Two candidates means the document cannot tell them
+  // apart either, and picking is the guess this exists to avoid.
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * Whether one label names more than one package.
+ *
+ * Split on the separators vendors actually print between package names, then
+ * count how many fragments name a package family. Two or more means the label
+ * is about a set, and a set has no single body size.
+ */
+function namesSeveralPackages(name: string): boolean {
+  // Underscores become spaces first. `namesPackageFamily` matches on a word
+  // boundary and `_` is a word character, so `SOIC_W` hides the family from it
+  // and a two-package label read as one. That is the word-boundary trap this
+  // codebase has hit before; see LEARNINGS section 2.
+  const fragments = fragmentsOf(name);
+  if (fragments.length < 2) return false;
+  // A fragment counts as a package if it names a FAMILY or is a bare vendor
+  // CODE. TI captions a shared pinout as `DB, DGV, DW, N, NS, PW, RGY`, seven
+  // packages and not one family word between them, which the family test alone
+  // reads as a single package with a strange name.
+  const bareCode = /^[A-Z]{1,4}\d{0,2}$/;
+  const named = fragments.filter((fragment) => namesPackageFamily(fragment) || bareCode.test(fragment));
+  return named.length > 1;
+}
+
+/** The checkable features of one entry: its code, its family and its lead count. */
+function featuresOf(entry: NonNullable<ExtractionResult["packagesInThisDocument"]>[number]): {
+  code: string | null;
+  family: string | null;
+  leads: number | null;
+} {
+  const name = entry.packageType ?? "";
+  // The lead count a pin table PROVES by its own row count, else the one the
+  // drawing measured, else the one the name declares.
+  //
+  // ROWS ARE NOT LEADS. A pin table routinely carries a row for the exposed
+  // thermal pad, and a package drawing's lead count never does, so counting
+  // every row makes the two halves of one package CONTRADICT each other by
+  // exactly one and the join then refuses them:
+  //
+  //     LM5117  pins "HTSSOP (20)" 21 rows   dims "HTSSOP (PWP)" leadCount 20
+  //             pins "WQFN (24)"   25 rows   dims "WQFN (RTW)"   leadCount 24
+  //
+  // Both extra rows are `{"number": "EP", "name": "EP"}`. Counting only rows
+  // whose designator is a NUMBER is the same rule `normalizeModelPins` already
+  // applies when it separates a pad from a lead, so the two cannot disagree
+  // about what a lead is.
+  const rows = Array.isArray(entry.pins)
+    ? entry.pins.filter((pin) => /^\d+$/.test(String((pin as { number?: unknown }).number ?? "").trim())).length
+    : 0;
+  const measured = entry.dimensions?.["dimensions.leadCount"]?.value;
+  const leads =
+    rows > 0 ? rows : typeof measured === "number" && Number.isInteger(measured) ? measured : declaredLeadCount(name);
+  return {
+    code: packageCodeOf(name),
+    family: familyToken(spellOut(name)),
+    leads: leads !== null && leads > 0 ? leads : null
+  };
+}
+
+
 function mergePackageEntries(
   first: ExtractionResult["packagesInThisDocument"],
-  second: ExtractionResult["packagesInThisDocument"]
+  second: ExtractionResult["packagesInThisDocument"],
+  partNumber?: string
 ): ExtractionResult["packagesInThisDocument"] {
   if (!first && !second) return undefined;
   const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
   const byKey = new Map<string, NonNullable<ExtractionResult["packagesInThisDocument"]>[number]>();
   for (const entry of [...(first ?? []), ...(second ?? [])]) {
-    const existing = byKey.get(key(entry.packageType));
-    if (!existing) {
-      byKey.set(key(entry.packageType), { ...entry });
+    // THE SAME PACKAGE UNDER TWO NAMES.
+    //
+    // Each pass names a package after the part of the document it was reading,
+    // and nothing ever told either what to call one. The pin-table pass reads
+    // the pinout section, the drawing pass reads the outline, and they disagree:
+    //
+    //     pins "HTSSOP (20)"     dims "HTSSOP (PWP)"
+    //     pins "D (OPA1612)"     dims "SOIC (D)"
+    //     pins "RGT (VQFN, 16)"  dims "VQFN (16)"
+    //
+    // Measured 2026-08-19 over the cached hold-out answers: TWELVE of the
+    // fifty-four parts carry their pin table and their measurements in separate
+    // entries describing one package, and ten of the thirteen parts that cannot
+    // ship even when the user answers every question are this. The chooser looks
+    // up the ordering table's name, finds the measurements-only half, and tells
+    // the user no pin table was found with the pin table in the row above.
+    //
+    // Fixing it in the PROMPT was tried three times and lost the population
+    // every time; see the record above `candidates` in `models/prompt.ts`. So it
+    // is fixed here, where the two vocabularies actually meet.
+    const merged = key(entry.packageType);
+    const existing = byKey.get(merged) ? merged : sameDesignator(entry, byKey, partNumber);
+    if (existing === null) {
+      byKey.set(merged, { ...entry });
       continue;
     }
+    const held = byKey.get(existing)!;
     // WHICHEVER PASS COULD ACTUALLY SEE THE THING WINS, per half.
     //
     // Pass 1 has the whole document and is the authority on PIN TABLES: pass 2
@@ -130,26 +314,214 @@ function mergePackageEntries(
     // Written out rather than left to iteration order. The order happens to give
     // the right answer today only because pass 1 is not asked for per-package
     // dimensions, and a rule that holds by accident stops holding silently.
-    const fromFirst = first?.some((row) => key(row.packageType) === key(entry.packageType))
-      ? existing
-      : entry;
-    const fromSecond = fromFirst === existing ? entry : existing;
+    // WHICH PASS EACH HALF CAME FROM, decided by IDENTITY rather than by name.
+    //
+    // This used to ask whether `first` contains an entry with the same
+    // designator, which was true exactly when the two passes agreed about the
+    // name. Now that they may be joined despite disagreeing, that question
+    // answers about the wrong entry: it returned pass 2's reading as pass 1's
+    // and let a text-layer pitch beat a drawing-read one. Caught by the test
+    // that pins the precedence rule.
+    const entryIsFromFirst = (first ?? []).includes(entry);
+    const fromFirst = entryIsFromFirst ? entry : held;
+    const fromSecond = entryIsFromFirst ? held : entry;
     const pins = fromFirst.pins ?? fromSecond.pins;
     const dimensions = { ...(fromFirst.dimensions ?? {}), ...(fromSecond.dimensions ?? {}) };
-    byKey.set(key(entry.packageType), {
-      packageType: existing.packageType,
+    byKey.set(existing, {
+      // The name the CONSUMER will look this up by.
+      //
+      // The chooser asks `pinTableFor` with the designator harvested from the
+      // ordering table and the package drawings, so a joined entry has to be
+      // filed under the DRAWING half's name. Whichever half carried the
+      // measurements is that half, by definition: measurements come off a
+      // drawing, and a drawing states the name in its own title block.
+      //
+      // This used to keep the LONGER of the two names, on the reasoning that
+      // the drawing's is more specific. It usually is, and when it is not the
+      // part silently stops shipping: OPA1612 joined `D (OPA1612)` to
+      // `SOIC (D)` correctly and then filed it as `D (OPA1612)`, which no
+      // designator in the document matches, so the chooser reported "this
+      // document gives a pinout for each package and none of them matches SOIC"
+      // about a pinout it was holding. Length was a proxy for the question, and
+      // the question can be asked directly.
+      packageType: nameFromTheDrawing(fromFirst, fromSecond) ?? (held.packageType.length >= entry.packageType.length ? held.packageType : entry.packageType),
+      // BOTH NAMES ARE KEPT, because the consumer speaks a third vocabulary.
+      //
+      // See `alsoKnownAs`. Choosing one name was tried both ways and each way
+      // loses a part the other keeps: filing OPA1612's joined entry under its
+      // pin section's `D (OPA1612)` hides it from a chooser asking for
+      // `SOIC (D)`, and filing OPA192's under its drawing's `SOT-23 (5)` hides
+      // it from one asking for `SOT-23 (DBV)`.
+      alsoKnownAs: [...new Set([held.packageType, entry.packageType, ...(held.alsoKnownAs ?? []), ...(entry.alsoKnownAs ?? [])])],
       ...(pins ? { pins } : {}),
       ...(Object.keys(dimensions).length > 0 ? { dimensions } : {})
     });
   }
-  return byKey.size > 0 ? [...byKey.values()] : undefined;
+  return byKey.size > 0 ? shareCaptionedPinTables([...byKey.values()], partNumber) : undefined;
+}
+
+/**
+ * A pin table captioned with SEVERAL packages, handed to each package it names.
+ *
+ * ## The thing the document is actually saying
+ *
+ * A caption like `D, N, NS, J, DB, or PW Package` or
+ * `16-lead PDIP/SOIC_N/TSSOP/SOIC_W` is a statement that those packages SHARE
+ * one pin assignment. That is true, it is the document's own words, and it is
+ * the single most common way a pinout is published. Five of the twenty hold-out
+ * documents whose two passes both said something about packages state their
+ * pinout exactly this way.
+ *
+ * `sameDesignator` refuses to JOIN such a label to one package, and must keep
+ * refusing: a label naming four packages cannot lend its body size to any of
+ * them, because those four packages have four different bodies. But the pins
+ * are not the body. Refusing the pins as well threw away a pinout the document
+ * states plainly, and left every one of those packages reported as "drawings
+ * were read, but no pin table was found" with the pin table sitting one row
+ * above on the same record.
+ *
+ * So the dimensions stay put and the PINS are copied to each package the
+ * caption names. Nothing is invented: a package receives a pin table only when
+ * the caption names its family or its vendor code AND the two lead counts
+ * agree.
+ *
+ * ## The sibling device, which is why this is not just string matching
+ *
+ * These captions routinely belong to a DIFFERENT device in the same family:
+ *
+ *     ADM3202   "16-lead PDIP/SOIC_N/TSSOP/SOIC_W (ADM3202)"   ours
+ *               "18-lead PDIP/SOIC_W (ADM3222)"                a sibling
+ *               "20-lead SSOP/TSSOP (ADM3222)"                 a sibling
+ *
+ * Distributing the ADM3222 rows would put a sibling's netlist under the part
+ * number the user asked for, with a correct footprint around it, which is the
+ * wrong-netlist failure this file already refuses a whole extra model pass to
+ * avoid. A caption that names a device other than the requested one is
+ * therefore not this part's pinout and is dropped.
+ */
+function shareCaptionedPinTables(
+  entries: NonNullable<ExtractionResult["packagesInThisDocument"]>,
+  partNumber?: string
+): NonNullable<ExtractionResult["packagesInThisDocument"]> {
+  const hasPins = (entry: (typeof entries)[number]) => Array.isArray(entry.pins) && entry.pins.length > 0;
+  const hasDims = (entry: (typeof entries)[number]) => Object.keys(entry.dimensions ?? {}).length > 0;
+
+  // A shared caption carries pins and no measurements. One that carries
+  // measurements too has already been joined to a single package and is not a
+  // statement about several.
+  const shared = entries.filter(
+    (entry) =>
+      namesSeveralPackages(entry.packageType) &&
+      hasPins(entry) &&
+      !hasDims(entry) &&
+      isThisPart(entry.packageType, partNumber)
+  );
+  if (shared.length === 0) return entries;
+
+  return entries.map((entry) => {
+    // Only a package that has been MEASURED and has no pinout of its own. An
+    // entry that already read its own pin table keeps it: a per-package table
+    // beats a shared caption every time, because the caption can only be right
+    // about what the packages have in common.
+    if (hasPins(entry) || !hasDims(entry)) return entry;
+    if (namesSeveralPackages(entry.packageType)) return entry;
+    const mine = featuresOf(entry);
+    if (mine.leads === null) return entry;
+    const hits = shared.filter((caption) => {
+      const theirs = featuresOf(caption);
+      if (theirs.leads !== mine.leads) return false;
+      return captionNames(caption.packageType, mine.family, mine.code);
+    });
+    if (hits.length !== 1) return entry;
+    return { ...entry, pins: hits[0].pins };
+  });
+}
+
+/**
+ * Whether a multi-package caption names this particular package.
+ *
+ * By FAMILY (`16-lead PDIP/SOIC_N/...` names a PDIP) or by vendor CODE
+ * (`D, N, NS, J, DB, or PW` names the one whose drawing is `PW0016A`), because
+ * captions are written both ways and a document that uses codes uses them
+ * everywhere.
+ */
+function captionNames(caption: string, family: string | null, code: string | null): boolean {
+  for (const fragment of fragmentsOf(caption)) {
+    if (family !== null && familyToken(fragment) === family) return true;
+    if (code !== null && packageCodeOf(fragment) === code) return true;
+    if (code !== null && fragment.toUpperCase() === code) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a label is about the requested device rather than one of its siblings.
+ *
+ * True when the label names no device at all, which is the common case: a
+ * caption is usually about packages and says nothing about which die is in
+ * them. False only when it names a device and that device is not this one.
+ *
+ * With no part number in hand this cannot judge, and says so by allowing the
+ * label. That is the same answer it gives today, so a caller without a part
+ * number is no worse off than before.
+ */
+function isThisPart(label: string, partNumber?: string): boolean {
+  const named = devicesNamed(label);
+  if (named.length === 0) return true;
+  const mine = (partNumber ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  if (!mine) return true;
+  return named.some((device) => device.includes(mine) || mine.includes(device));
+}
+
+/**
+ * The device part numbers a label mentions, normalised to letters and digits.
+ *
+ * A device token is letters then digits, at least two of each side by side, and
+ * never a package family or a lead-count phrase. `ADM3202`, `ADA4522-1` and
+ * `OPA2192` are devices; `SOIC_N`, `16-lead` and `SOT-23` are not.
+ */
+function devicesNamed(label: string): string[] {
+  const withoutFamilies = (label ?? "").replace(new RegExp(PACKAGE_FAMILY_PATTERN, "gi"), " ");
+  const found: string[] = [];
+  for (const token of withoutFamilies.split(/[^A-Za-z0-9-]+/)) {
+    const trimmed = token.replace(/^-+|-+$/g, "");
+    if (!/^[A-Za-z]{2,}\d/.test(trimmed)) continue;
+    if (trimmed.replace(/[^A-Za-z0-9]/g, "").length < 5) continue;
+    found.push(trimmed.replace(/[^A-Za-z0-9]/g, "").toUpperCase());
+  }
+  return found;
+}
+
+/** One label split into the package names it lists. */
+function fragmentsOf(name: string): string[] {
+  return spellOut(name)
+    .split(/[/;,]|\s+or\s+/)
+    .map((piece) => piece.trim().replace(/\s+Packages?$/i, "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * The name of whichever half of a joined package carried its MEASUREMENTS, or
+ * null when neither did.
+ *
+ * Preferring the second pass by position would be the same rule most of the
+ * time and wrong exactly when it matters: two entries from the same pass can be
+ * joined, and then "second" means nothing.
+ */
+function nameFromTheDrawing(
+  fromFirst: NonNullable<ExtractionResult["packagesInThisDocument"]>[number],
+  fromSecond: NonNullable<ExtractionResult["packagesInThisDocument"]>[number]
+): string | null {
+  if (Object.keys(fromSecond.dimensions ?? {}).length > 0) return fromSecond.packageType;
+  if (Object.keys(fromFirst.dimensions ?? {}).length > 0) return fromFirst.packageType;
+  return null;
 }
 
 /** Exported for the tests that pin the two-pass join. */
-export const combineForTest = (first: ExtractionResult, second: ExtractionResult): ExtractionResult =>
-  combine(first, second);
+export const combineForTest = (first: ExtractionResult, second: ExtractionResult, partNumber?: string): ExtractionResult =>
+  combine(first, second, partNumber);
 
-function combine(first: ExtractionResult, second: ExtractionResult): ExtractionResult {
+function combine(first: ExtractionResult, second: ExtractionResult, partNumber?: string): ExtractionResult {
   const values = { ...first.values, ...second.values };
   const firstPins = first.values.pins;
   const secondPins = second.values.pins;
@@ -186,7 +558,7 @@ function combine(first: ExtractionResult, second: ExtractionResult): ExtractionR
     // rendered drawings and reports each package's MEASUREMENTS, which is the
     // only pass that can read them. Taking pass 2's list whole, as this did,
     // threw away every pin table the moment the second half started arriving.
-    packagesInThisDocument: mergePackageEntries(first.packagesInThisDocument, second.packagesInThisDocument),
+    packagesInThisDocument: mergePackageEntries(first.packagesInThisDocument, second.packagesInThisDocument, partNumber),
     // Same reasoning as the tables above: read once, by the pass that had the
     // whole document. Pass 2 sees only the rendered pages, so it cannot know
     // which drawings the rest of the document contains and must not overwrite a
@@ -337,8 +709,37 @@ export async function runExtraction(
     }
   }
 
-  const combined = combine(first, second);
+  const combined = combine(first, second, partNumber ?? part.partNumber.value ?? undefined);
 
+  // A THIRD, FOCUSED PINOUT PASS WAS MEASURED AND REVERTED, 2026-08-19.
+  //
+  // It targeted the parts that arrive with a pin COUNT and no pins, six of the
+  // fifty-three tuned parts, by asking for TWO fields over the pages that
+  // caption themselves as a pinout. The mechanism works: it read 100 pins off
+  // STM32F407VG and 80 off MSP430F5529, both exactly matching the hand-read
+  // oracle, and moved the tuned corpus from 45% to 55% fields and 19% to 23%
+  // shipping.
+  //
+  // It also made STM32H743ZI SHIP A WRONG NETLIST. Its LQFP144 figure prints
+  // VSS at 51 and VDD at 52; the model emitted one pin there instead of two,
+  // ran one behind for twenty-one pins, and re-synchronised at 73 by inventing
+  // a name for 72. Verified against a render of page 57 by hand.
+  //
+  // Nothing in this product can see that. The table numbers 1..144 with no
+  // gaps, the count agrees with `pinCount`, the cited page is real, and the
+  // pads come out exactly as `validateGeometry` expects. The name MULTISET is
+  // even preserved, because a dropped row plus renumbering moves a name rather
+  // than losing it, so comparing names against the page's text cannot catch it
+  // either. Only the hand-read oracle did.
+  //
+  // One wrong netlist in the four parts it unlocked. A wrong netlist is worse
+  // than a refusal by a wide margin, so the refusal stays.
+  //
+  // What would make it safe, and it is NOT a heuristic: these documents state
+  // their pinout TWICE, as a figure and as a pin-definition table. Requiring the
+  // two to agree is a check the document itself supplies. That is the thing to
+  // build before this is tried again, and reading a denser figure more carefully
+  // is not.
   return {
     ...mergeModelValues(part, doc, combined, model.name, rendered),
     renderedPages: rendered,

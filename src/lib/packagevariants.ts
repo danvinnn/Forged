@@ -125,7 +125,14 @@ export interface PackageVariant {
 
 const FAMILY_ALTERNATION = PACKAGE_FAMILIES.join("|");
 
-const NAMES_A_FAMILY = new RegExp(`\\b(?:${FAMILY_ALTERNATION})\\b`, "i");
+/**
+ * The family vocabulary as a bare alternation, for callers that need to REMOVE
+ * family words from a label rather than detect them. Exported as a pattern
+ * string so there is one vocabulary and not a second copy that drifts.
+ */
+export const PACKAGE_FAMILY_PATTERN = `\\b(?:${FAMILY_ALTERNATION})\\b`;
+
+const NAMES_A_FAMILY = new RegExp(PACKAGE_FAMILY_PATTERN, "i");
 
 /**
  * Whether a designator names a package family at all.
@@ -137,6 +144,24 @@ const NAMES_A_FAMILY = new RegExp(`\\b(?:${FAMILY_ALTERNATION})\\b`, "i");
  */
 export function namesPackageFamily(designator: string): boolean {
   return NAMES_A_FAMILY.test(designator);
+}
+
+/**
+ * WHICH family a name states, upper case, or null.
+ *
+ * `namesPackageFamily` answers whether, and `findPackageVariants` answers which
+ * but only for a name that also declares a LEAD COUNT, which is the right rule
+ * for harvesting designators out of prose and the wrong one for comparing two
+ * names that are already known to be designators. `HTSSOP (PWP)` names a family
+ * and declares no count, so the variant reader correctly yields nothing for it
+ * and a caller asking "what family is this" got null.
+ *
+ * Longest-first ordering is inherited from the vocabulary, so `TSSOP` is never
+ * read out of `HTSSOP`.
+ */
+export function familyToken(name: string): string | null {
+  const match = NAMES_A_FAMILY.exec(name ?? "");
+  return match ? match[0].toUpperCase() : null;
 }
 
 /**
@@ -181,6 +206,25 @@ const MATERIAL_QUALIFIER = /\b(ceramic|hermetic)\s+$/i;
 /** The same words, tested anywhere in a designator already recorded. */
 const MATERIAL_WORD = /\b(?:ceramic|hermetic)\b/i;
 
+/**
+ * `SO48`, `LQFP100`, `TSSOP14`, `DFN8`, and `SOT23`, `SC70`, `TO220`.
+ *
+ * Named rather than left anonymous inside `FORMS` because it is the only form
+ * marked by nothing but adjacency, and two rules refer to it: the minimum count
+ * below, and the enumeration filter at the end of `findPackageVariants` that
+ * covers the families for which that minimum cannot apply.
+ *
+ * Nothing but adjacency marks this form, so a small count is far more likely a
+ * footnote marker than a package: ADR4525 prints `SOIC2` for footnote 2 on a
+ * table heading, and no dual or quad package has two or three leads anyway.
+ */
+const GLUED_FORM: DesignatorForm = {
+  pattern: new RegExp(`\\b(${FAMILY_ALTERNATION})(\\d{1,3})\\b`, "g"),
+  countGroup: 2,
+  familyGroup: 1,
+  minCount: MIN_GLUED_COUNT
+};
+
 const FORMS: DesignatorForm[] = [
   // `16-Lead TSSOP`, `8-Pin SOIC`, `64 Ld EP-TQFP`, `16-Lead Ceramic SOIC`.
   //
@@ -217,17 +261,7 @@ const FORMS: DesignatorForm[] = [
     countGroup: 2,
     familyGroup: 1
   },
-  // `SO48`, `LQFP100`, `TSSOP14`, `DFN8`, and `SOT23`, `SC70`, `TO220`.
-  //
-  // Nothing but adjacency marks this form, so a small count is far more likely a
-  // footnote marker than a package: ADR4525 prints `SOIC2` for footnote 2 on a
-  // table heading, and no dual or quad package has two or three leads anyway.
-  {
-    pattern: new RegExp(`\\b(${FAMILY_ALTERNATION})(\\d{1,3})\\b`, "g"),
-    countGroup: 2,
-    familyGroup: 1,
-    minCount: MIN_GLUED_COUNT
-  },
+  GLUED_FORM,
   // `176 CQFP`, `128 LQFP`, `20 VQFN`, which is how an ordering table lays out
   // its package column. The noisiest form by far, so it is the most guarded:
   // see `plausibleLoneCount`.
@@ -263,6 +297,8 @@ function plausibleLoneCount(count: number): boolean {
  */
 export function findPackageVariants(text: string, frontMatterEnd: number): PackageVariant[] {
   const found = new Map<string, PackageVariant>();
+  /** Keys produced by the glued form on an outline-numbered family, to family. */
+  const unanchored = new Map<string, string>();
 
   for (const form of FORMS) {
     for (const match of text.matchAll(form.pattern)) {
@@ -323,7 +359,40 @@ export function findPackageVariants(text: string, frontMatterEnd: number): Packa
         index: match.index ?? 0,
         inFrontMatter: (match.index ?? 0) < frontMatterEnd
       });
+      // Adjacency alone, and a number that is a NAME rather than a count. See
+      // `unanchoredOutlines`.
+      if (form === GLUED_FORM && outlineNumbered) unanchored.set(key, family);
     }
+  }
+
+  // AN ENUMERATION IS NOT A PACKAGE.
+  //
+  // The glued form is the only one marked by nothing but adjacency, which is why
+  // it demands a plausible lead count. For an OUTLINE-NUMBERED family that guard
+  // is silently skipped, because the number there is a name and not a count, so
+  // `count` is null and the minimum never applies. That left the weakest form in
+  // this module running with no check at all on the families where the number
+  // cannot be checked against anything: `SOT23` and `DO15` are equally good
+  // evidence to it, and one of them is a package.
+  //
+  // Measured 2026-08-19: an accelerometer's register map prints DO0 through
+  // DO15, and every one became a package the chooser offered the user. Sixteen
+  // options, fifteen of them fiction, on a part whose real package was read
+  // correctly beside them.
+  //
+  // The rule, stated without naming a vendor or a family: an outline number
+  // identifies one package, so a document that glues SEVERAL different numbers
+  // to the same outline-numbered family is enumerating something else. Nothing
+  // in the token can say which one is the package, and this module's standing
+  // answer to "cannot tell" is to say nothing rather than to pick.
+  //
+  // Costs nothing where the form is doing its job: measured over the tuned
+  // corpus, every glued outline designator in it (three, all `SOT23`) is the
+  // only number its family appears glued to.
+  const gluedPerFamily = new Map<string, number>();
+  for (const family of unanchored.values()) gluedPerFamily.set(family, (gluedPerFamily.get(family) ?? 0) + 1);
+  for (const [key, family] of unanchored) {
+    if ((gluedPerFamily.get(family) ?? 0) > 1) found.delete(key);
   }
 
   return [...found.values()].sort((left, right) => left.index - right.index);
@@ -358,6 +427,70 @@ export function declaredLeadCount(designator: string): number | null {
 export function designatorToken(packageName: string): string | null {
   const match = /\(([A-Za-z][A-Za-z0-9-]{0,7})\)/.exec(packageName);
   return match ? match[1].toUpperCase() : null;
+}
+
+/**
+ * The vendor package CODE a name states, or null.
+ *
+ * Which token is the code depends on which side of the brackets the FAMILY is
+ * on, and reading the brackets unconditionally gets it backwards:
+ *
+ *     "SOIC (D)"        family outside, code inside      -> D
+ *     "HTSSOP (PWP)"    family outside, code inside      -> PWP
+ *     "D (OPA1612)"     code outside, DEVICE inside      -> D, not OPA1612
+ *     "RGT (VQFN, 16)"  code outside, family inside      -> RGT
+ *
+ * Getting `D (OPA1612)` wrong is not cosmetic: the join reads `OPA1612` as this
+ * package's code, compares it against `SOIC (D)`'s `D`, and refuses the two
+ * halves of one package on a CONTRADICTION it invented itself.
+ */
+export function packageCodeOf(rawName: string): string | null {
+  const name = spellOut(rawName);
+  const beforeBracket = name.split("(")[0];
+  // When the family is stated first, the brackets hold the code. When it is not,
+  // the leading token IS the code and the brackets hold something else.
+  const token = namesPackageFamily(beforeBracket)
+    ? designatorToken(name)
+    : (leadingCode(name) ?? designatorToken(name));
+  // A VENDOR OUTLINE NUMBER REDUCED TO THE CODE IT BEGINS WITH.
+  //
+  // Pass 2 reads the code off the drawing's own title block, where it is printed
+  // as a full outline number: `SOIC (DW0016A)`, `TSSOP (PW0016A)`. Every other
+  // place in a document writes the bare code, so `DW0016A` and `DW` are the same
+  // package written twice and comparing them as strings says they are not.
+  //
+  // Reducing is safe HERE and would not be everywhere: the outline number
+  // distinguishes `PW0016A` from `PW0020A`, and dropping it elsewhere has cost a
+  // regression in this repo before. This comparison also requires the two lead
+  // counts to agree, which is exactly the distinction the number was carrying.
+  return token === null ? null : (outlineCodeDesignator(token) ?? token);
+}
+
+/**
+ * A label with its underscores spelled out as spaces.
+ *
+ * `SOIC_W` hides `SOIC` from every reader in this file, because they all match
+ * on a word boundary and `_` is a word character. Analog Devices writes every
+ * narrow and wide body that way, so without this an `8-Lead SOIC_N` reports no
+ * family at all and can never be recognised as the SOIC a caption names.
+ */
+export function spellOut(name: string): string {
+  return (name ?? "").replace(/_/g, " ");
+}
+
+/**
+ * A vendor code written BEFORE the family rather than inside brackets after it.
+ *
+ * `RGT (VQFN, 16)` and `D (OPA1612)` are both this shape, and `designatorToken`
+ * cannot see them: it reads the parenthesised token, which here is a family or a
+ * device rather than the code. Restricted to a short all-capitals run at the
+ * very start so an ordinary family word never becomes a code.
+ */
+function leadingCode(name: string): string | null {
+  const match = /^([A-Z]{1,4})\b/.exec(name.trim());
+  if (match === null) return null;
+  // A family word is not a code, whichever end of the string it sits at.
+  return namesPackageFamily(match[1]) ? null : match[1];
 }
 
 /**
@@ -541,7 +674,7 @@ export function findOrderablePackages(text: string, partNumber: string): Package
  * answer rather than a guess. `buildFootprintGeometry` refuses anything left
  * contradictory.
  */
-export function pinTableFor<T extends { packageType: string; pins?: unknown[] }>(
+export function pinTableFor<T extends { packageType: string; alsoKnownAs?: string[]; pins?: unknown[] }>(
   tables: readonly T[] | undefined,
   designator: string
 ): T | null {
@@ -549,18 +682,44 @@ export function pinTableFor<T extends { packageType: string; pins?: unknown[] }>
 
   /** Letters and digits only, so `VQFN (RGE)` and `VQFNRGE` are one string. */
   const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  // EVERY NAME THE DOCUMENT PRINTS FOR THIS PACKAGE, not only the one the entry
+  // happens to be filed under. An entry assembled from two passes carries both,
+  // and the designator arriving here comes from a third place again: the
+  // ordering table. See `alsoKnownAs` on the record type.
+  const namesOf = (table: T) => [table.packageType, ...(table.alsoKnownAs ?? [])].map(key).filter((n) => n.length > 0);
   const wantedKey = key(designator);
   if (wantedKey.length > 0) {
-    const exact = tables.filter((table) => key(table.packageType) === wantedKey);
+    const exact = tables.filter((table) => namesOf(table).includes(wantedKey));
     if (exact.length === 1) return exact[0];
 
     // One name inside the other, which is how `16-lead TSSOP` meets `TSSOP` and
     // how `SOIC (D)` meets `SOICD`. Only when it picks out exactly one table.
-    const containing = tables.filter((table) => {
-      const other = key(table.packageType);
-      return other.length > 0 && (other.includes(wantedKey) || wantedKey.includes(other));
-    });
+    const containing = tables.filter((table) =>
+      namesOf(table).some((other) => other.includes(wantedKey) || wantedKey.includes(other))
+    );
     if (containing.length === 1) return containing[0];
+
+    // THE SAME FACTS IN A DIFFERENT ORDER.
+    //
+    // `VQFN (RGT)` and `RGT (VQFN, 16)` are one package written by two readers,
+    // and no amount of punctuation-stripping makes one contain the other: the
+    // family and the code have swapped places. Comparing what the two names
+    // SAY, rather than how they read, settles it, and it is the same proof the
+    // two-pass join is built on.
+    //
+    // Both halves must be known and both must agree, so a family alone never
+    // matches: a document with a 3x3 and a 2x2 DFN6 is genuinely ambiguous and
+    // stays refused.
+    const wantedFamily = familyToken(designator);
+    const wantedCode = packageCodeOf(designator);
+    if (wantedFamily !== null && wantedCode !== null) {
+      const proven = tables.filter((table) =>
+        [table.packageType, ...(table.alsoKnownAs ?? [])].some(
+          (name) => familyToken(name) === wantedFamily && packageCodeOf(name) === wantedCode
+        )
+      );
+      if (proven.length === 1) return proven[0];
+    }
   }
 
   // The lead count, for a designator whose text does not line up with any table.

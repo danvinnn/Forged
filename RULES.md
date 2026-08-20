@@ -43,6 +43,29 @@ between one user's process and another's: assembly density, stencil capability,
 library naming. Turning a question with a right answer into a setting pushes work
 onto the user and is its own failure.
 
+### Settings are established before the first datasheet, not during it
+
+A new account is taken through its settings before it can parse or generate
+anything. The first run is gated on that screen, so the product never reaches a
+datasheet with its conventions undecided.
+
+Two kinds of setting sit on that screen, and they behave differently:
+
+- **A published standard covers it.** The field may be left blank, and blank
+  means the standard. The screen says which standard, by name, so a user leaving
+  it blank knows exactly what they are accepting. IPC-7351B density level is
+  this shape: an engineer with no house rule is correctly served by the
+  published one.
+- **No published standard covers it.** The field is required and the first run
+  does not start until it is answered. There is nothing to fall back on, so a
+  default here would be an invention under rule 1, and silently choosing one
+  would be an assumption under rule 2.
+
+This does not license widening the settings screen. A question with one right
+answer is still answered by looking it up, not by adding a field. What the gate
+changes is only the timing: the settings that genuinely differ between users are
+settled once, up front, rather than interrupting a run.
+
 ## 4. General, never per-case. Never tailored.
 
 A fix covers the category or it is a hack. Before fixing the instance in front of

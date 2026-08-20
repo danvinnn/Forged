@@ -71,6 +71,12 @@ export const BENCH_CORPUS: BenchPart[] = [
   // and no pins.
   { partNumber: "LT1013", manufacturer: "Analog Devices", category: "analog", expect: "hit", note: "promoted: count but no pins" },
   { partNumber: "INA240", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
+  // Promoted from the hold-out 2026-08-19. Both listed every package and
+  // measured every package drawing, and returned no pin table for ANY of them.
+  // The question they were promoted to answer: is the pinout printed as text,
+  // or drawn as artwork no reader can quote?
+  { partNumber: "TS922", manufacturer: "STMicroelectronics", category: "analog", expect: "hit", note: "promoted: packages read, no pinout for any of them" },
+  { partNumber: "TSZ121", manufacturer: "STMicroelectronics", category: "analog", expect: "hit", note: "promoted: packages read, no pinout for any of them" },
   { partNumber: "ADS1115", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
   {
     partNumber: "LIS3DH",

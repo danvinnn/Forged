@@ -511,3 +511,169 @@ test("the pass that could see the drawing wins the dimension", async () => {
     "pass 2's reading, not pass 1's"
   );
 });
+
+// ---------------------------------------------------------------------------
+// The two passes name one package differently, and one of them is a caption
+// covering several packages at once
+// ---------------------------------------------------------------------------
+
+const pinRow = (number: string, name: string) => ({ number, name, electricalType: "unspecified" as const });
+const rows = (count: number) => Array.from({ length: count }, (_, i) => pinRow(String(i + 1), `P${i + 1}`));
+const leadCount = (count: number) => ({ "dimensions.leadCount": { value: count, page: 40 } });
+
+test("an exposed-pad row does not make a pin table contradict its own drawing", async () => {
+  // The table has a row for the thermal pad and the drawing counts only leads,
+  // so counting rows made the two halves of ONE package disagree by exactly one
+  // and the join then refused them. Both LM5117 packages failed this way.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    {
+      values: {},
+      packagesInThisDocument: [{ packageType: "HTSSOP (20)", pins: [...rows(20), pinRow("EP", "EP")] }]
+    },
+    { values: {}, packagesInThisDocument: [{ packageType: "HTSSOP (PWP)", dimensions: leadCount(20) }] }
+  );
+
+  assert.equal(merged.packagesInThisDocument?.length, 1, "one package, not two");
+  assert.equal(merged.packagesInThisDocument?.[0].pins?.length, 21, "the pad row is kept, not counted as a lead");
+});
+
+test("a device name inside brackets is not read as a package code", async () => {
+  // `D (OPA1612)` is the D package of the OPA1612. Reading the brackets as the
+  // code compared `OPA1612` against `SOIC (D)`'s `D` and refused the two halves
+  // of one package on a contradiction it invented itself.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    { values: {}, packagesInThisDocument: [{ packageType: "D (OPA1612)", pins: rows(8) }] },
+    { values: {}, packagesInThisDocument: [{ packageType: "SOIC (D)", dimensions: leadCount(8) }] },
+    "OPA1612"
+  );
+
+  assert.equal(merged.packagesInThisDocument?.length, 1, "one package");
+  assert.equal(merged.packagesInThisDocument?.[0].pins?.length, 8);
+});
+
+test("a pin table captioned with several packages reaches each package it names", async () => {
+  // The caption is the document saying these packages share one assignment.
+  // Refusing to JOIN it to any single package is right, because they have four
+  // different bodies; refusing its PINS left every one of them reported as
+  // having no pin table with the pin table on the row above.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    {
+      values: {},
+      packagesInThisDocument: [{ packageType: "16-lead PDIP/SOIC_N/TSSOP/SOIC_W", pins: rows(16) }]
+    },
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "16-lead SOIC_N", dimensions: leadCount(16) },
+        { packageType: "16-lead TSSOP", dimensions: leadCount(16) },
+        { packageType: "20-lead SSOP", dimensions: leadCount(20) }
+      ]
+    }
+  );
+
+  const named = merged.packagesInThisDocument ?? [];
+  assert.equal(named.find((e) => e.packageType === "16-lead SOIC_N")?.pins?.length, 16, "SOIC_N is named");
+  assert.equal(named.find((e) => e.packageType === "16-lead TSSOP")?.pins?.length, 16, "TSSOP is named");
+  assert.equal(
+    named.find((e) => e.packageType === "20-lead SSOP")?.pins,
+    undefined,
+    "a package the caption does not name, and whose lead count disagrees, gets nothing"
+  );
+  assert.equal(
+    named.find((e) => e.packageType === "16-lead PDIP/SOIC_N/TSSOP/SOIC_W")?.dimensions,
+    undefined,
+    "and the caption itself never takes on one package's measurements"
+  );
+});
+
+test("a caption written in vendor codes reaches the drawings' outline numbers", async () => {
+  // `D, N, NS, J, DB, or PW Package` against drawings titled `PW0016A`. Same
+  // package, two spellings, and comparing them as strings says they are not.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    { values: {}, packagesInThisDocument: [{ packageType: "D, N, NS, J, DB, or PW Package", pins: rows(16) }] },
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "TSSOP (PW0016A)", dimensions: leadCount(16) },
+        { packageType: "SOIC (DW0016A)", dimensions: leadCount(16) }
+      ]
+    }
+  );
+
+  const named = merged.packagesInThisDocument ?? [];
+  assert.equal(named.find((e) => e.packageType === "TSSOP (PW0016A)")?.pins?.length, 16, "PW is on the list");
+  assert.equal(
+    named.find((e) => e.packageType === "SOIC (DW0016A)")?.pins,
+    undefined,
+    "DW is not on the list, and is not given the pinout anyway"
+  );
+});
+
+test("a sibling device's pinout never lands in this part's package", async () => {
+  // A family datasheet labels each pin table with the device it belongs to. Left
+  // alone this put an ADM1385's netlist inside an ADM3202's footprint, and an
+  // ADA4522-1's inside an ADA4522-2's: correct pads, wrong connections, and
+  // nothing downstream can see it.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "ADA4522-1 (8-Lead MSOP / 8-Lead SOIC)", pins: rows(8) },
+        { packageType: "ADA4522-2 (8-Lead MSOP / 8-Lead SOIC)", pins: rows(8) }
+      ]
+    },
+    { values: {}, packagesInThisDocument: [{ packageType: "8-Lead SOIC_N (R-8)", dimensions: leadCount(8) }] },
+    "ADA4522-2"
+  );
+
+  const soic = merged.packagesInThisDocument?.find((e) => e.packageType === "8-Lead SOIC_N (R-8)");
+  assert.equal(soic?.pins?.length, 8, "the requested device's caption reaches it");
+
+  const wrongPart = combineForTest(
+    {
+      values: {},
+      packagesInThisDocument: [{ packageType: "20-lead SSOP (ADM1385)", pins: rows(20) }]
+    },
+    { values: {}, packagesInThisDocument: [{ packageType: "20-lead SSOP", dimensions: leadCount(20) }] },
+    "ADM3202"
+  );
+  const ssop = wrongPart.packagesInThisDocument?.find((e) => e.packageType === "20-lead SSOP");
+  assert.equal(ssop?.pins, undefined, "another device's pin table is not this part's, however well the name matches");
+  assert.equal(wrongPart.packagesInThisDocument?.length, 2, "and it is not joined either");
+});
+
+test("two packages that differ only in their code are never joined", async () => {
+  // The guarantee the whole matcher exists to keep. `SOIC (D)` and `SOIC (DW)`
+  // are 3.9mm and 7.5mm bodies; the family agrees and the code does not, so the
+  // match must fail on the disagreement rather than pass on the agreement.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    { values: {}, packagesInThisDocument: [{ packageType: "SOIC (D)", pins: rows(16) }] },
+    { values: {}, packagesInThisDocument: [{ packageType: "SOIC (DW)", dimensions: leadCount(16) }] }
+  );
+
+  assert.equal(merged.packagesInThisDocument?.length, 2, "two packages stay two");
+});
+
+test("a joined package answers to both names the document prints for it", async () => {
+  // The chooser looks these up with a designator harvested from the ordering
+  // table, which matches the pinout section's spelling on some documents and the
+  // drawing's on others. Filing a joined entry under one name was tried both
+  // ways and each way lost a part the other kept.
+  const { combineForTest } = await import("../run");
+  const { pinTableFor } = await import("../../packagevariants");
+  const merged = combineForTest(
+    { values: {}, packagesInThisDocument: [{ packageType: "SOT-23 (DBV)", pins: rows(5) }] },
+    { values: {}, packagesInThisDocument: [{ packageType: "SOT-23 (5)", dimensions: leadCount(5) }] }
+  );
+
+  const tables = merged.packagesInThisDocument ?? [];
+  assert.equal(tables.length, 1, "one package");
+  assert.equal(pinTableFor(tables, "SOT-23 (DBV)")?.pins?.length, 5, "found by the pinout section's name");
+  assert.equal(pinTableFor(tables, "SOT-23 (5)")?.pins?.length, 5, "and by the drawing's");
+});

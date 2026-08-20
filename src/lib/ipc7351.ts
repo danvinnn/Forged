@@ -274,6 +274,37 @@ export function computeLandPattern(lead: LeadDimensions, options: LandPatternOpt
   // retired on 2026-08-13 because it applied one vendor's house rule to every
   // vendor's parts. A no-lead package builds from its datasheet's own printed
   // footprint, and asks when the document prints none.
+  // TRIED 2026-08-19 WITH THE PUBLISHED TABLE IN HAND, AND STILL REFUSED.
+  //
+  // The goals were found: IPC-7351B table 3-15 "Flat No Lead (DFN/QFN) with toe
+  // fillet" gives toe 0.2/0.3/0.4, heel 0, side -0.04 for C/B/A, and table 3-18
+  // "Flat No Lead pull back" gives -0.05/0/+0.05 on all three. Source: KiCad's
+  // footprint generator `ipc_7351b.yaml` (MIT), trusted because the same file's
+  // gull-wing block is digit for digit identical to the one below, entered here
+  // independently months earlier.
+  //
+  // The equations are the same ones used below; KiCad's own no-lead calculator
+  // and its gull-wing calculator are line for line identical. So this was
+  // implemented and checked against two vendors' PRINTED patterns, both
+  // hand-read off the drawing:
+  //
+  //                        printed          table 3-15        table 3-18
+  //   TI RGT0016C     0.600 x 0.240 @2.200  0.905x0.232@2.803  0.605x0.312@2.503
+  //   ADI CC-14-1     1.145 x 0.550 @2.195  1.169x0.476@2.487  0.869x0.556@2.187
+  //
+  // NO SINGLE TABLE REPRODUCES BOTH. TI's pad length matches 3-18 and ADI's
+  // matches 3-15; ADI's width and centre span match 3-18 and TI's match neither.
+  // Under 3-15 the centre span is 0.3 to 0.6 mm too far out on both.
+  //
+  // Choosing the table that fits one of them is precisely what got the previous
+  // no-lead rule retired on 2026-08-13: it was reverse-engineered from four TI
+  // drawings and applied one vendor's house rule to everyone's parts. Having the
+  // published numbers does not change that; the numbers are not the blocker.
+  //
+  // What would settle it is Altium's own IPC Compliant Footprint Wizard, which
+  // is the tool the customer would otherwise use by hand: run these two packages
+  // through it and compare. Until then a no-lead package builds from its
+  // datasheet's own printed footprint, and asks when the document prints none.
   if (lead.form === "nolead") {
     throw new LandPatternError([
       "no-lead fillet goals are not transcribed here. IPC-7351B publishes them per lead form and only gull-wing is entered; the rule that used to serve no-lead was reverse-engineered from four vendor drawings and applied one vendor's house rule to everyone's parts. A no-lead package builds from its datasheet's own printed footprint, or asks"
