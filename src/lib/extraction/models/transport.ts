@@ -51,11 +51,23 @@ export function thinkingBudget(): number | null {
  * open until the platform kills it.
  *
  * A BACKSTOP, not the deadline that matters: a caller with a request to serve
- * enforces its own, because only it knows how much of its budget is spent. Left
- * generous so a call that takes 41.6 seconds succeeds rather than being recorded
- * as a transport failure.
+ * enforces its own, because only it knows how much of its budget is spent.
+ *
+ * RAISED FROM 60s ON 2026-08-20, because 60 was being HIT rather than
+ * approached. Measured with `bench:repeat`, six parts, live calls, net of the
+ * bench's own rate-limit pacing:
+ *
+ *     LM358         timed out on both runs AND both retries, returning nothing
+ *     STM32F407VG   timed out, so the run was not comparable
+ *     ADS1115       timed out once per run, and only succeeded on the retry
+ *
+ * A ceiling that the normal case hits is not a backstop, it is a failure
+ * generator: every one of those was a call we paid for and threw away. 90s is
+ * chosen as comfortably past the slowest call we have observed complete, while
+ * still being short enough that two of them plus a retry stay inside the route
+ * budget below.
  */
-export const MODEL_TIMEOUT_MS = 60_000;
+export const MODEL_TIMEOUT_MS = 90_000;
 
 /**
  * Transient upstream failures, retried; everything else surfaced at once.

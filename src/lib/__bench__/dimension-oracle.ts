@@ -184,6 +184,72 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   // NOTE, unresolved: the record read this code as `HKU0010A` and the drawing
   // titles itself `U0010A`. Keyed on the drawing's own spelling and matched via
   // `parts`, so the discrepancy cannot silently attach this to the wrong drawing.
+  // VSSOP-10 (MSOP-10), hand-read off the rendered ADS1115 page 51 on
+  // 2026-08-20. Chosen because two cached parts read this same drawing and
+  // neither was checked by anything: ADS1115 and INA226.
+  //
+  // Note 1: all linear dimensions are in millimetres, anything in parentheses
+  // is reference only. Notes 3 and 4 exclude mould flash and interlead flash
+  // from the body dimensions, so these are the body proper.
+  DGS0010A: {
+    packageType: "VSSOP (10)",
+    // NOT plain "ADS1115". That datasheet prints this drawing AND a 2.0 x 1.5 x
+    // 0.4mm one, and the unhinted reading takes the other; listing it here
+    // reported six correct values as wrong. `parts` is a hand-CONFIRMED list,
+    // and the honest content of it is the readings actually confirmed to come
+    // off this drawing. The height veto in `outlineFor` cannot save it because
+    // the page that reading cites states no height in its title block.
+    parts: ["ADS1115_VSSOP__DGS_", "INA226"],
+    source: "ADS1115 datasheet, page 51, PACKAGE OUTLINE DGS0010A, rev 4221984/A 05/2015",
+    leadForm: "gullwing",
+    // 10X 0.27 / 0.17.
+    leadWidthMm: { minMm: 0.17, maxMm: 0.27 },
+    // DETAIL A, the seated foot: 0.7 / 0.4.
+    leadContactMm: { minMm: 0.4, maxMm: 0.7 },
+    // 8X 0.5, eight gaps across ten leads, five a side.
+    pitchMm: 0.5,
+    // 5.05 / 4.75 TYP, toe to toe.
+    leadSpanMm: { minMm: 4.75, maxMm: 5.05 },
+    // 3.1 / 2.9 on both axes: this body is square, which is why the two are
+    // transcribed identically rather than one of them being a copy of a
+    // misread.
+    bodyLengthMm: { minMm: 2.9, maxMm: 3.1 },
+    bodyWidthMm: { minMm: 2.9, maxMm: 3.1 },
+    // Title block "VSSOP - 1.1 mm max height", and the side view agrees at
+    // "1.1 MAX". Reference JEDEC MO-187 variation BA.
+    bodyHeightMaxMm: 1.1,
+    leadSides: 2
+  },
+  // THE SECOND CERAMIC FLATPACK IN THE SAME DATASHEET, hand-read off the
+  // rendered page 29 on 2026-08-20. TPS7A4501-SP is offered in both this and
+  // `U0010A`, and they are different packages: 2.63mm max height against 2.03,
+  // a metal lid and a back-side thermal pad against neither.
+  //
+  // Added because the bench was scoring a CORRECT reading of THIS drawing as a
+  // wrong reading of the other one. `parts` alone cannot separate two outlines
+  // in one document; see `outlineFor` in `dimensions.ts`, which now picks
+  // between them by the height the cited page prints.
+  //
+  // Note 1: all linear dimensions are in millimetres, and anything in
+  // parentheses is REFERENCE ONLY - so (6.248), (4.3), (4.7), (6.62) and (7.02)
+  // are deliberately not transcribed.
+  HKU0010A: {
+    packageType: "CFP (10)",
+    parts: ["TPS7A4501-SP"],
+    source: "TPS7A4501-SP datasheet, page 29, PACKAGE OUTLINE HKU0010A, rev 4226200/A 09/2020",
+    // Leads leave the body flat and unformed, as on U0010A.
+    leadForm: "straight",
+    // 10X 0.48 / 0.38.
+    leadWidthMm: { minMm: 0.38, maxMm: 0.48 },
+    // 8X 1.27, eight gaps across ten leads, five a side.
+    pitchMm: 1.27,
+    // The title block reads "CFP - 2.63mm max height". The side view dimensions
+    // the same envelope as "2.62 MAX"; both are transcribed as printed and the
+    // title block is the one taken, because that is the figure the field asks
+    // for and the one the reader is pointed at.
+    bodyHeightMaxMm: 2.63,
+    leadSides: 2
+  },
   U0010A: {
     packageType: "CFP (10)",
     parts: ["TPS7A4501-SP"],
@@ -538,6 +604,257 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
       padWidthMm: 0.69,
       spanMm: 9.4,
       solderMaskExpansionMm: 0.07
+    }
+  },
+
+  // ON Semiconductor's SOIC-8, and the one non-TI, non-ADI vendor drawing in
+  // this file. Dimensioned as a LETTERED TABLE (A, B, C, D, G, ...) rather than
+  // with the callouts laid on the views, which is the shape most of this corpus
+  // does not have. Read off the rendered page 2026-08-20.
+  "751-07": {
+    packageType: "SOIC-8 NB",
+    parts: ["NCP1200"],
+    source: "NCP1200 datasheet, page 16, PACKAGE DIMENSIONS SOIC-8 NB CASE 751-07 ISSUE AK",
+    leadForm: "gullwing",
+    // Table row S, 5.80 to 6.20.
+    leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+    // Table row D, 0.33 to 0.51.
+    leadWidthMm: { minMm: 0.33, maxMm: 0.51 },
+    // Table row K, 0.40 to 1.27.
+    leadContactMm: { minMm: 0.4, maxMm: 1.27 },
+    // Table row G, 1.27 BSC.
+    pitchMm: 1.27,
+    // Table row A, 4.80 to 5.00.
+    bodyLengthMm: { minMm: 4.8, maxMm: 5.0 },
+    // Table row B, 3.80 to 4.00.
+    bodyWidthMm: { minMm: 3.8, maxMm: 4.0 },
+    // Table row C, 1.35 to 1.75. The seated envelope is the maximum.
+    bodyHeightMaxMm: 1.75,
+    leadSides: 2,
+    land: {
+      // The drawing prints SOLDERING FOOTPRINT as an OUTER and an INNER span
+      // (7.0 and 4.0) rather than a centre distance, so both the pad length and
+      // the centre span are derived from that pair: length (7.0 - 4.0) / 2, and
+      // centre (7.0 + 4.0) / 2. The printed 1.52 confirms the length
+      // independently, which is why this entry is safe to assert.
+      source: "NCP1200 datasheet, page 16, SOLDERING FOOTPRINT, SCALE 6:1",
+      padLengthMm: 1.52,
+      padWidthMm: 0.6,
+      spanMm: 5.5
+    }
+  },
+
+  // A ceramic dual flatpack with STRAIGHT leads, and the smallest one here.
+  //
+  // Carries no `leadContactMm` for the documented reason: the leads leave the
+  // body straight and the drawing prints no seated foot, because the assembler
+  // forms them. That absence is an assertion that a person looked, not a gap.
+  HKJ: {
+    packageType: "CFP (8)",
+    parts: ["REF5025"],
+    source: "REF5025 datasheet, page 27, MECHANICAL DATA HKJ (R-CDFP-F8), rev 4209892/A 10/08",
+    leadForm: "straight",
+    // 0.370 (9,40) / 0.250 (6,35), lead tip to lead tip across the top view.
+    leadSpanMm: { minMm: 6.35, maxMm: 9.4 },
+    // 0.021 (0,53) / 0.015 (0,38).
+    leadWidthMm: { minMm: 0.38, maxMm: 0.53 },
+    // i0.050 (1,27)a.
+    pitchMm: 1.27,
+    // 0.289 (7,34) / 0.265 (6,73), along the axis the two lead rows run.
+    bodyLengthMm: { minMm: 6.73, maxMm: 7.34 },
+    // 0.232 (5,89) / 0.212 (5,61), across that axis.
+    bodyWidthMm: { minMm: 5.61, maxMm: 5.89 },
+    // 0.078 (1,98) / 0.052 (1,32) on the side view, lid included.
+    bodyHeightMaxMm: 1.98,
+    leadSides: 2
+  },
+
+  // Renesas, and the only QFP in this file. Added 2026-08-20 specifically
+  // because ISL71001M SHIPS a bundle today and its drawing had never been
+  // checked by hand.
+  //
+  // IT CAUGHT ONE. Every other value below matches what the reader returned; the
+  // body height does not. The drawing's side view prints `1.20 Max` and the
+  // reader returned 1.00, which is the `1.00 +/- 0.05` printed in Detail A as
+  // the lead's height above the seating plane. Two heights on one page, and the
+  // wrong one was taken. It is not copper, but it is the height the exported
+  // STEP solid is built to, so a mechanical clearance check against the bundle
+  // is 0.2 mm short.
+  //
+  // `statedMaxHeightMm` does not catch it: this title block says
+  // "10.0 x 10.0 x 1.2 mm Body", not "1.2mm max height", and that phrasing
+  // appears in exactly ONE of the 55 cached datasheets, so it is a one-off
+  // rather than a rule worth keying on.
+  "Q64.10x10J": {
+    packageType: "64-QFP",
+    parts: ["ISL71001M"],
+    source: "ISL71001M datasheet, page 36, Package Outline Drawing Q64.10x10J / PT0064AA, Rev01 Apr 1 2025",
+    leadForm: "gullwing",
+    // 12.00 +/- 0.10, both axes: this quad is square, so there is no cross span.
+    leadSpanMm: { minMm: 11.9, maxMm: 12.1 },
+    // 0.22 +/- 0.05 on the top view.
+    leadWidthMm: { minMm: 0.17, maxMm: 0.27 },
+    // Detail A, 0.60 +/- 0.15, measured at the gauge plane per note 4.
+    leadContactMm: { minMm: 0.45, maxMm: 0.75 },
+    pitchMm: 0.5,
+    // 10.00 +/- 0.10, both axes.
+    bodyLengthMm: { minMm: 9.9, maxMm: 10.1 },
+    bodyWidthMm: { minMm: 9.9, maxMm: 10.1 },
+    // Side view, `1.20 Max`, and confirmed by the title block's
+    // "10.0 x 10.0 x 1.2 mm Body".
+    bodyHeightMaxMm: 1.2,
+    leadSides: 4,
+    land: {
+      // Recommended Land Pattern prints 12.60 outer and 10.20 inner, so the pad
+      // length is (12.60 - 10.20) / 2 = 1.20, which the drawing also labels
+      // directly, and the centre span is (12.60 + 10.20) / 2 = 11.40.
+      source: "ISL71001M datasheet, page 36, Recommended Land Pattern (PCB Top View, SMD Design)",
+      padLengthMm: 1.2,
+      padWidthMm: 0.3,
+      spanMm: 11.4
+    }
+  },
+
+  // Analog Devices' 14-terminal LGA, and the entry that caught the worst defect
+  // found on 2026-08-20. ADXL345 SHIPS four files today and its land is wrong.
+  //
+  // Figure 59 dimensions the pattern as an OUTER extent and an INNER gap, the
+  // same shape NCP1200's SOLDERING FOOTPRINT uses: 3.3400 across the whole
+  // pattern and 1.0500 between the two columns, so each pad is
+  // (3.3400 - 1.0500) / 2 = 1.1450 long and the centre span is
+  // (3.3400 + 1.0500) / 2 = 2.1950. The drawing labels 1.1450 directly, which
+  // confirms both independently.
+  //
+  // The reader returned `1.05` for the pad and `2.29` for the span: it took the
+  // INNER GAP as the pad length, then doubled the real pad length to get a span.
+  // Both wrong numbers reproduce the correct 3.34 outer envelope, which is why
+  // no plausibility guard catches this and why only a hand read could.
+  //
+  // `bench:copper` reports no disagreement here and is right to: the copper
+  // faithfully reproduces the record. The record is what is wrong.
+  //
+  // These same values are already written down in `ipc7351.ts`, in the comment
+  // recording why no-lead has no computed route ("ADI CC-14-1 1.145 x 0.550
+  // @2.195"). A person read this drawing correctly months ago and the live
+  // record disagreed with that comment the whole time, unmeasured.
+  "CC-14-1": {
+    packageType: "14-Terminal LGA",
+    parts: ["ADXL345"],
+    source: "ADXL345 datasheet, page 37, Figure 61, 14-Terminal Land Grid Array [LGA] (CC-14-1)",
+    leadForm: "nolead",
+    // 0.813 x 0.50 on the bottom view. The 0.50 is the terminal across the axis
+    // the two columns run, which is what the land is widened from.
+    leadWidthMm: { minMm: 0.5, maxMm: 0.5 },
+    // 0.80 BSC.
+    pitchMm: 0.8,
+    // 5.00 BSC, along the axis the two terminal columns run.
+    bodyLengthMm: { minMm: 5.0, maxMm: 5.0 },
+    // 3.00 BSC, across that axis.
+    bodyWidthMm: { minMm: 3.0, maxMm: 3.0 },
+    // END VIEW prints 1.00 / 0.95 / 0.85 as max / nom / min.
+    bodyHeightMaxMm: 1.0,
+    // `leadSides` IS DELIBERATELY ABSENT, and this is the interesting part.
+    //
+    // The obvious read is 2: Figure 59 draws a column of six pads on the left
+    // and six on the right. But terminals 7 and 14 sit alone at the centre of
+    // the bottom and top edges, on the other two sides, and the land pattern
+    // draws a pad for each. So six-per-side-times-two is 12, not 14, and the
+    // package is neither a two-row part nor a uniform quad.
+    //
+    // The record answers 4. Asserting 2 here would have marked that WRONG on
+    // the strength of my glance at two columns, which is exactly the guess this
+    // file's header forbids. Where a hand read does not settle a value, the key
+    // is left out: absence means a person looked and the drawing does not say,
+    // which is worth more than a confident wrong expectation.
+    land: {
+      source: "ADXL345 datasheet, page 36, Figure 59, Recommended Printed Wiring Board Land Pattern",
+      padLengthMm: 1.145,
+      padWidthMm: 0.55,
+      spanMm: 2.195
+    }
+  },
+
+  // ST's LQFP100, and the first LQFP in this file. Read off two rendered pages
+  // on 2026-08-21: Table 93 for the package, Figure 78 for the footprint.
+  //
+  // Worth having because LQFP is the largest family in the corpus by part count
+  // and had no hand-read entry at all, and because this drawing dimensions its
+  // footprint the way NCP1200 and ISL71001M do - an OUTER extent and an INNER
+  // one, with the centre span implied rather than printed:
+  //
+  //     outer 16.7, pad length 1.2  ->  inner 16.7 - 2(1.2) = 14.3, which the
+  //     drawing also prints, confirming both
+  //     centre span 16.7 - 1.2 = 15.5
+  //
+  // The third figure on that page, 12.3, is the pad ROW: twenty-five lands at
+  // 0.5 pitch is 12.0 between centres, plus one 0.3 land. It is not a span and
+  // is recorded here only so the next person does not read it as one.
+  "1L": {
+    packageType: "LQFP100",
+    parts: ["STM32F407VG"],
+    source: "STM32F407VG datasheet, page 173, Table 93 LQFP100 mechanical data, and page 174, Figure 78 footprint example",
+    leadForm: "gullwing",
+    // D and E, 16.00 BSC. Square, so there is no cross span to record.
+    leadSpanMm: { minMm: 16.0, maxMm: 16.0 },
+    // b, 0.17 / 0.22 / 0.27.
+    leadWidthMm: { minMm: 0.17, maxMm: 0.27 },
+    // L, 0.45 / 0.60 / 0.75.
+    leadContactMm: { minMm: 0.45, maxMm: 0.75 },
+    // e, 0.50 BSC.
+    pitchMm: 0.5,
+    // D1 and E1, 14.00 BSC.
+    bodyLengthMm: { minMm: 14.0, maxMm: 14.0 },
+    bodyWidthMm: { minMm: 14.0, maxMm: 14.0 },
+    // A, 1.50 typ / 1.60 max. The seated envelope is the maximum; A2 (1.35 to
+    // 1.45) is the plastic body alone and is NOT what the 3D solid stands on.
+    bodyHeightMaxMm: 1.6,
+    leadSides: 4,
+    land: {
+      source: "STM32F407VG datasheet, page 174, Figure 78, LQFP100 footprint example (1L_LQFP100_FP_V1)",
+      padLengthMm: 1.2,
+      padWidthMm: 0.3,
+      spanMm: 15.5
+    }
+  },
+
+  // ST's LQFP144, the second LQFP and the largest package in this file.
+  //
+  // Kept alongside `1L` rather than folded into it, because the two are the same
+  // FAMILY and different DRAWINGS: 22.00 against 16.00 across the leads, 144
+  // leads against 100. That is exactly the distinction `sameOutlineCode` refuses
+  // to blur, and having both here is what proves the reader is reading each
+  // drawing rather than recognising "an ST LQFP".
+  //
+  // Same outer/inner footprint convention as `1L`, confirmed the same way:
+  // 22.60 outer, 1.35 land, so 22.60 - 2(1.35) = 19.90 inner, which the drawing
+  // also prints, and a centre span of 22.60 - 1.35 = 21.25.
+  //
+  // The 17.85 on that figure is the pad ROW, not a span: thirty-six lands at
+  // 0.5 pitch is 17.5 between centres plus one 0.35 land.
+  "1A": {
+    packageType: "LQFP144",
+    parts: ["STM32H743ZI"],
+    source: "STM32H743ZI datasheet, page 325, Table 211 LQFP144 mechanical data, and page 327, Figure 121 footprint example",
+    leadForm: "gullwing",
+    // D and E, 22.00 BSC. Square.
+    leadSpanMm: { minMm: 22.0, maxMm: 22.0 },
+    // b, 0.17 / 0.22 / 0.27.
+    leadWidthMm: { minMm: 0.17, maxMm: 0.27 },
+    // L, 0.45 / 0.60 / 0.75.
+    leadContactMm: { minMm: 0.45, maxMm: 0.75 },
+    pitchMm: 0.5,
+    // D1 and E1, 20.00 BSC.
+    bodyLengthMm: { minMm: 20.0, maxMm: 20.0 },
+    bodyWidthMm: { minMm: 20.0, maxMm: 20.0 },
+    // A, max 1.60. This table prints no typ for A at all, only the maximum,
+    // which is the seated envelope. A2 is the plastic body and is not it.
+    bodyHeightMaxMm: 1.6,
+    leadSides: 4,
+    land: {
+      source: "STM32H743ZI datasheet, page 327, Figure 121, LQFP144 footprint example (1A_LQFP144_FP)",
+      padLengthMm: 1.35,
+      padWidthMm: 0.35,
+      spanMm: 21.25
     }
   }
 };

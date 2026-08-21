@@ -475,7 +475,11 @@ export function pageBearingPrintedNumber(doc: DatasheetText, printed: number | n
  * document with six drawing pages into six candidates and refuse them all - or
  * worse, into one candidate on a document that renders a single drawing.
  */
-function citeSoleRenderedPinoutPage(doc: DatasheetText, sentPages: readonly number[]): Citation | null {
+function citeSoleRenderedPinoutPage(
+  doc: DatasheetText,
+  sentPages: readonly number[],
+  pinNames: readonly string[] = []
+): Citation | null {
   const PINOUT_HEADINGS = [
     /\bpin\s*(?:connection|description|configuration|assignment|out|function)s?\b/i,
     /\bterminal\s+(?:configuration|function)s?\b/i,
@@ -490,12 +494,125 @@ function citeSoleRenderedPinoutPage(doc: DatasheetText, sentPages: readonly numb
     const marker = PINOUT_HEADINGS.map((pattern) => pattern.exec(page.text)?.[0]).find(Boolean);
     if (marker) hits.push({ page: page.page, marker });
   }
-  if (hits.length !== 1) return null;
+  if (hits.length === 1) {
+    return {
+      page: hits[0].page,
+      snippet: `read from the rendered pinout page (page identifies as "${hits[0].marker.trim().slice(0, 60)}")`,
+      region: null
+    };
+  }
+  if (hits.length === 0) return null;
+
+  // SEVERAL PINOUT PAGES, SETTLED BY WHAT IS ACTUALLY ON THEM.
+  //
+  // Requiring exactly one candidate is the right proof when the model was shown
+  // a handful of pages. It stopped being right when the render budget went to
+  // 16: a document describing several packages heads a page "Pin Configuration"
+  // for each of them, two of them get rendered, and a pin table we READ
+  // CORRECTLY was refused for want of a page number.
+  //
+  // Measured 2026-08-20 on the hold-out: two parts held with uncitable pins, and
+  // TS922 before them, whose rows matched a hand read exactly and were discarded
+  // anyway. That is the "we had it and threw it away" shape, not a safety net.
+  //
+  // The names themselves discriminate. A pinout page prints its own pin names,
+  // and the entry in hand is a list of them, so the page carrying this table is
+  // the one whose text holds them. Compared on letters and digits only, because
+  // a PDF text layer reorders characters within a label but does not invent
+  // them.
+  //
+  // A DECISIVE margin is required, not a plurality: the winner must carry over
+  // half this table's names and strictly more than any other candidate. Two
+  // pages describing an 8-pin and a 14-pin variant share most of their names, so
+  // a bare majority would cite whichever was rendered first. Ties refuse, which
+  // is where this started.
+  const wanted = pinNames
+    .map((name) => name.toUpperCase().replace(/[^A-Z0-9]/g, ""))
+    .filter((name) => name.length >= 2);
+  if (wanted.length === 0) return null;
+
+  const scored = hits.map((hit) => {
+    const text = (doc.pages.find((page) => page.page === hit.page)?.text ?? "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+    return { ...hit, score: wanted.filter((name) => text.includes(name)).length };
+  });
+  scored.sort((left, right) => right.score - left.score);
+  const best = scored[0];
+  if (best.score * 2 <= wanted.length) return null;
+  if (scored.length > 1 && scored[1].score >= best.score) return null;
+
   return {
-    page: hits[0].page,
-    snippet: `read from the rendered pinout page (page identifies as "${hits[0].marker.trim().slice(0, 60)}")`,
+    page: best.page,
+    snippet:
+      `read from the rendered pinout page (page identifies as "${best.marker.trim().slice(0, 60)}" ` +
+      `and carries ${best.score} of this package's ${wanted.length} pin names)`,
     region: null
   };
+}
+
+/**
+ * The overall height a package drawing states in its own title block.
+ *
+ * TI's outline drawings head themselves `CFP - 2.03 mm max height`,
+ * `TSSOP - 1.2 mm max height`, and 57 of the 123 cached datasheets carry the
+ * phrase. It is the drawing summarising, in millimetres and in words, exactly
+ * the quantity `dimensions.bodyHeightMm` asks for - the prompt names this very
+ * format as a source.
+ *
+ * The model disagrees with it on 14 of the 66 cached readings taken from a page
+ * that states it, and every disagreement is the same mistake: it takes a
+ * thickness dimension off the side view instead of the overall height, which
+ * the field description explicitly warns against. `OPA2277` reads 0.9 where the
+ * title says 1, `TLV9061` 1.175 where it says 1.45, `ADC128S102QML-SP` 1.778
+ * where it says 2.33.
+ *
+ * So where the CITED page states it once, it wins. Once, because a page
+ * carrying two drawings states two heights and cannot say which belongs to the
+ * package in hand; there this stays silent and the model's answer stands.
+ *
+ * This also repairs traceability rather than merely accuracy. The value and the
+ * citation currently disagree: TPS7A4700 was answered 1.0 on a page whose only
+ * stated height is 0.4, so the number is not on the page it points at. After
+ * this they describe the same drawing.
+ */
+export function statedMaxHeightMm(doc: DatasheetText, page: number | null): number | null {
+  if (page === null) return null;
+  const text = doc.pages.find((candidate) => candidate.page === page)?.text;
+  if (!text) return null;
+  // Quarantined text is not evidence, exactly as elsewhere in this file.
+  if (quarantinedRegions(text).length > 0) return null;
+  const found = [...text.matchAll(/(\d+(?:\.\d+)?)\s*mm\s+max\s+height/gi)].map((match) => Number(match[1]));
+
+  // THE SAME STATEMENT, SPELLED AS AN ENVELOPE.
+  //
+  // Some vendors title the drawing with the whole body rather than the height
+  // alone: Renesas heads Q64.10x10J with "64-QFP 10.0 x 10.0 x 1.2 mm Body,
+  // 0.5 mm Pitch". That is the identical claim about the identical measurement,
+  // and the third number is the seated envelope.
+  //
+  // Added 2026-08-20 after a hand read of that drawing caught ISL71001M, which
+  // SHIPS, exporting a STEP solid 0.2 mm short: the page prints `1.20 Max` on
+  // the side view and `1.00 +/- 0.05` in Detail A as the lead height above the
+  // seating plane, and the reader took the second one.
+  //
+  // Deliberately NOT a general "read dimensions off the title block" rule. This
+  // phrasing appears on ONE page of the 55 cached datasheets, so it is a second
+  // spelling of a rule that already exists rather than a new source of numbers.
+  // It earns its place by being page-scoped and by having to agree with anything
+  // else the page states, both of which the shared `distinct` check below
+  // enforce: a page saying "2.33mm max height" AND "... x 1.2 mm Body" has two
+  // candidates, disagrees with itself, and corrects nothing.
+  for (const match of text.matchAll(
+    /\d+(?:\.\d+)?\s*[x\u00d7]\s*\d+(?:\.\d+)?\s*[x\u00d7]\s*(\d+(?:\.\d+)?)\s*mm\s+body/gi
+  )) {
+    found.push(Number(match[1]));
+  }
+
+  const distinct = [...new Set(found)];
+  if (distinct.length !== 1) return null;
+  const value = distinct[0];
+  return Number.isFinite(value) && value > 0 && value < 50 ? value : null;
 }
 
 export function citeRenderedPage(
@@ -657,6 +774,26 @@ export function mergeModelValues(
     // gap the deterministic pass already found.
     let value = claimed.value;
 
+    // THE DRAWING'S OWN TITLE BLOCK WINS ON OVERALL HEIGHT.
+    //
+    // See `statedMaxHeightMm`. The field description asks for the maximum
+    // SEATED height and names this exact format as a source; the model answers
+    // the body thickness instead on roughly a fifth of the pages that state it.
+    // Corrected rather than flagged, because a caveat on a deliverable makes the
+    // user check everything, and because this is the document's own words about
+    // the quantity asked for rather than a preference between two readings.
+    if (field === "dimensions.bodyHeightMm" && typeof value === "number") {
+      const stated = statedMaxHeightMm(doc, claimed.page);
+      if (stated !== null && Math.abs(stated - value) >= 0.02) {
+        merged.notes.push(
+          `${modelName} read a ${value} mm overall height for this package; the drawing on page ` +
+            `${claimed.page} states ${stated} mm max height in its own title, which is the figure used. ` +
+            `The smaller reading is usually the body thickness rather than the seated envelope.`
+        );
+        value = stated;
+      }
+    }
+
     // A range field is validated before anything else looks at it. An
     // ill-formed pair is DROPPED rather than stored uncited, for the same
     // reason a bad pin table is: these two feed the land pattern directly.
@@ -740,6 +877,34 @@ export function mergeModelValues(
             method = "vlm-drawing";
           }
         }
+      }
+    }
+
+    // LAST, FOR A PIN TABLE ONLY: the rendered page that carries these names.
+    //
+    // A pinout drawn as vector artwork has no text layer to quote, and the model
+    // routinely cites the page it SAW the pinout on while the drawing pass was
+    // shown a different set. Both checks above then fail on a table that was
+    // read correctly, and the export refuses the part for want of a page number.
+    //
+    // This is the same proof `packagesInThisDocument` entries already use, and
+    // it is applied here for the same reason: LM139AQML-SP's rows were read off
+    // the render and discarded for want of a citation the document cannot
+    // supply, which is a permanent hole rather than a safety property. Measured
+    // 2026-08-20: two hold-out parts held on exactly this.
+    //
+    // Held to the identical standard - a decisive majority of THIS table's names
+    // on one rendered pinout page, beaten by no other - so it cannot cite a page
+    // it has not actually matched.
+    if (!citation && field === "pins" && renderedPages.length > 0 && Array.isArray(value)) {
+      const named = citeSoleRenderedPinoutPage(
+        doc,
+        renderedPages,
+        (value as PinRecord[]).map((pin) => pin.name)
+      );
+      if (named) {
+        citation = named;
+        method = "vlm-drawing";
       }
     }
 
@@ -976,7 +1141,13 @@ export function mergeModelValues(
           // itself as a pinout page. Two candidates, or none, and this stays
           // null and the table stays refused, which is the answer it gives
           // today.
-          if (!citation) citation = citeSoleRenderedPinoutPage(doc, renderedPages);
+          if (!citation) {
+            citation = citeSoleRenderedPinoutPage(
+              doc,
+              renderedPages,
+              pins.map((pin) => pin.name)
+            );
+          }
         }
       }
 
@@ -984,6 +1155,13 @@ export function mergeModelValues(
       if (pins === undefined && dimensions === undefined) continue;
       usable.push({
         packageType: table.packageType,
+        // The drawing code reaches the RECORD, not just the join.
+        //
+        // `packageOptions` needs it to tell two entries apart when a document
+        // captions both drawings the same way, and `pinTableFor` needs it to
+        // resolve the answer that comes back. Dropping it here would leave the
+        // chooser offering two options with one label again.
+        ...(table.outlineCode ? { outlineCode: table.outlineCode } : {}),
         ...(table.alsoKnownAs && table.alsoKnownAs.length > 0 ? { alsoKnownAs: table.alsoKnownAs } : {}),
         ...(pins ? { pins, exposedPad, citation } : {}),
         ...(dimensions ? { dimensions } : {})

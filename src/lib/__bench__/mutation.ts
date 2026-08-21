@@ -36,11 +36,13 @@
  *         npm run bench:mutation -- --only M9
  *
  * Spends no money and touches no network. It edits files in place and restores
- * them in a `finally`, so an interrupted run leaves the tree clean.
+ * them in a `finally` AND from an exit/signal handler, because a `finally` does
+ * not run when a timeout kills the process - see `inFlight`, which is there
+ * because exactly that shipped a live mutation into the tree on 2026-08-20.
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 interface Mutation {
@@ -243,6 +245,92 @@ function suitePasses(): boolean {
   }
 }
 
+
+/**
+ * A WRITE-AHEAD JOURNAL, because a `finally` and a signal handler are both too
+ * weak for what actually happens to this bench.
+ *
+ * The header used to claim that restoring in a `finally` made an interrupted run
+ * safe. It does not. This bench runs the whole suite once per mutation and takes
+ * long enough that being KILLED on a timeout is the ordinary outcome, and a
+ * killed process runs no `finally`. Signal handlers were tried next and are also
+ * not enough: SIGKILL cannot be caught, and a harness that kills a process tree
+ * does not politely send SIGTERM first.
+ *
+ * It has bitten twice. On 2026-08-20 a ten-minute timeout left the gull-wing side
+ * fillet ten times too large in `ipc7351.ts`; on 2026-08-21, while testing the
+ * signal handler that was supposed to fix it, a kill left
+ * `HOLE_ALLOWANCE` at 0.05 instead of 0.2 - the through-hole drill allowance.
+ * **All tests passed both times**, which is what a mutation is FOR, so a green
+ * suite can never be the thing that catches this.
+ *
+ * So the file's original contents are written to disk BEFORE it is mutated, and
+ * recovery happens at STARTUP rather than at shutdown. That survives SIGKILL, a
+ * killed process tree and a power cut, because it does not require this process
+ * to run any code at all.
+ */
+const JOURNAL = join(root, ".mutation-journal.json");
+
+/** Records what is about to be overwritten, before overwriting it. */
+function beginMutation(path: string, original: string): void {
+  writeFileSync(JOURNAL, JSON.stringify({ path, original }), "utf8");
+}
+
+/** Clears the journal once the file is safely back. */
+function endMutation(): void {
+  if (existsSync(JOURNAL)) rmSync(JOURNAL);
+}
+
+/**
+ * Puts back whatever a previous run was holding when it died. Runs before this
+ * one mutates anything, and shouts, because a silent recovery would hide the
+ * fact that a mutation was loose in the tree.
+ */
+function recoverFromLastRun(): void {
+  if (!existsSync(JOURNAL)) return;
+  try {
+    const held = JSON.parse(readFileSync(JOURNAL, "utf8")) as { path: string; original: string };
+    if (typeof held.path === "string" && typeof held.original === "string") {
+      const current = existsSync(held.path) ? readFileSync(held.path, "utf8") : null;
+      if (current !== held.original) {
+        writeFileSync(held.path, held.original);
+        console.error(
+          `\n  RECOVERED: a previous run was killed with ${held.path} mutated, and it has been put back.\n` +
+            `  If anything was committed since that run, CHECK IT.\n`
+        );
+      }
+    }
+  } catch (error) {
+    console.error(`  Could not read ${JOURNAL}: ${(error as Error).message}`);
+    console.error(`  Restore the file by hand and delete the journal before re-running.`);
+    process.exit(1);
+  }
+  endMutation();
+}
+
+// Still worth having for the polite cases: a Ctrl-C or a plain SIGTERM restores
+// immediately rather than leaving the next run to do it. The journal is what
+// makes the guarantee; these only make it faster.
+function restoreNow(): void {
+  if (!existsSync(JOURNAL)) return;
+  try {
+    const held = JSON.parse(readFileSync(JOURNAL, "utf8")) as { path: string; original: string };
+    writeFileSync(held.path, held.original);
+    endMutation();
+    console.error(`\n  restored ${held.path} after an interrupted run`);
+  } catch {
+    // The journal survives, and the next run recovers from it.
+  }
+}
+process.on("exit", restoreNow);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => {
+    restoreNow();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
+
+
 function main(): void {
   const chosen = ONLY ? MUTATIONS.filter((m) => m.id === ONLY) : MUTATIONS;
 
@@ -259,6 +347,15 @@ function main(): void {
   // written to find.
   //
   // So the baseline is checked and a red one is a hard stop, not a warning.
+  // BEFORE THE BASELINE, and the ordering is the whole point.
+  //
+  // Put after it, recovery never runs in the case it exists for: a leftover
+  // mutation fails the baseline, the bench exits reporting a red suite, and the
+  // corruption stays in the tree with a misleading explanation on top of it.
+  // That is worse than the original bug, and it is what this file did for about
+  // twenty minutes on 2026-08-21.
+  recoverFromLastRun();
+
   console.log("Checking the baseline passes before mutating anything...");
   if (!suitePasses()) {
     console.error(
@@ -291,6 +388,7 @@ function main(): void {
     }
 
     try {
+      beginMutation(path, original);
       writeFileSync(path, original.replace(mutation.from, mutation.to));
       const passed = suitePasses();
       if (passed) {
@@ -302,6 +400,7 @@ function main(): void {
       }
     } finally {
       writeFileSync(path, original);
+      endMutation();
     }
   }
 

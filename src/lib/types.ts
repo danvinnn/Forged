@@ -507,6 +507,13 @@ export const partSchema = z.object({
       z
         .object({
         packageType: z.string().min(1).max(64),
+        /**
+         * The vendor's own code for this package's outline drawing, e.g.
+         * `D0008A`. The entry's stable identity: `packageType` is a caption the
+         * model composes and recomposes, and a document can print two drawings
+         * under one caption. See the extraction contract for the measurements.
+         */
+        outlineCode: z.string().min(1).max(32).optional(),
         /** Other names this document prints for the same package; see the type. */
         alsoKnownAs: z.array(z.string().min(1).max(64)).max(8).optional(),
         /**
@@ -701,6 +708,12 @@ export type PartRecord = {
   packagesInThisDocument?: Array<{
     packageType: string;
     /**
+     * The vendor's own code for this package's outline drawing, e.g. `D0008A`.
+     * The entry's stable identity, because `packageType` is a caption that is
+     * recomposed on every run and a document can print two drawings under one.
+     */
+    outlineCode?: string;
+    /**
      * The OTHER name this document prints for the same package.
      *
      * The two passes read the same package from different sections and each
@@ -791,6 +804,12 @@ export interface ResolvedPart {
    */
   packagesInThisDocument?: Array<{
     packageType: string;
+    /**
+     * The vendor's own code for this package's outline drawing, e.g. `D0008A`.
+     * The entry's stable identity, because `packageType` is a caption that is
+     * recomposed on every run and a document can print two drawings under one.
+     */
+    outlineCode?: string;
     /**
      * The OTHER name this document prints for the same package.
      *

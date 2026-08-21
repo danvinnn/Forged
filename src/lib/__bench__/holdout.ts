@@ -61,8 +61,10 @@ import {
   type CacheMode,
   type CachingModel
 } from "./modelcache";
+import { looksLikeWrongDocument } from "../pdftext";
 import { loadBenchEnv } from "./env";
 import { getDeploymentMode } from "../retrieval/deployment";
+import { modelBudgetMs, withDeadline } from "../extraction/budget";
 
 loadBenchEnv();
 
@@ -280,9 +282,11 @@ function classify(record: PartRecord, doc?: DatasheetText): string {
   // no pinout section might still be a datasheet whose pinout is a figure, and
   // that is a reading problem. A component datasheet that is three pages long
   // with two thousand characters is not a component datasheet.
-  if (doc && doc.pages.length <= 4) {
-    const chars = doc.pages.reduce((sum, page) => sum + page.text.length, 0);
-    if (chars < 4000) return "NOT A DATASHEET (retrieval fetched the wrong document)";
+  // The rule lives in `pdftext.ts` so the PRODUCT applies the same one. It was
+  // duplicated here, which meant the bench could classify a case the product had
+  // no way to detect.
+  if (doc && looksLikeWrongDocument(doc)) {
+    return "NOT A DATASHEET (retrieval fetched the wrong document)";
   }
 
   // A PINOUT PER PACKAGE IS A PINOUT.
@@ -669,6 +673,22 @@ function answerFor(need: RequiredInput, record: PartRecord, designator?: string)
   }
 }
 
+
+/**
+ * The deadline the ROUTES enforce, applied here so this bench measures the
+ * product rather than a version of it with unlimited time.
+ *
+ * `/api/parse` and `/api/lookup` both carve the model pass a budget out of
+ * `maxDuration`, race it, and DISCARD the whole outcome when it expires. This
+ * bench called `runExtraction` bare until 2026-08-21, so every accuracy number
+ * this project ever published described a pipeline nobody can actually run.
+ *
+ * The limiter's sleeps are added back before the race, because pacing belongs to
+ * the bench and not to the product: counting it would fail parts for a rolling
+ * window that production does not have. See `CacheStats.pacedMs`.
+ */
+const ROUTE_BUDGET_MS = 150_000;
+
 async function main(): Promise<void> {
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
 
@@ -750,12 +770,17 @@ async function main(): Promise<void> {
         if (model) {
           currentLabel = part.partNumber;
           try {
-            const outcome = await runExtraction(
-              deterministic,
-              doc,
-              bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-              model,
-              `${part.partNumber}.pdf`
+            const pacedBefore = model.stats.pacedMs;
+            const startedAt = Date.now();
+            const outcome = await withDeadline(
+              runExtraction(
+                deterministic,
+                doc,
+                bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+                model,
+                `${part.partNumber}.pdf`
+              ),
+              modelBudgetMs(ROUTE_BUDGET_MS, Date.now() - startedAt) + (model.stats.pacedMs - pacedBefore)
             );
             if (outcome) {
               record = outcome.part;

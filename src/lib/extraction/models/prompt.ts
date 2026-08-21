@@ -306,8 +306,14 @@ ${
   wantsPins
     ? `
 Also return "packagesInThisDocument" whenever this document describes MORE THAN ONE package with its own
-pin assignment: a list of {"packageType": "<designator>", "pins": [...]} , one entry per package, each
-with that package's own complete pin table.
+pin assignment: a list of {"packageType": "<designator>", "outlineCode": "<code or null>", "pins": [...]},
+one entry per package, each with that package's own complete pin table.
+
+"outlineCode" is the vendor's own code for THAT package's outline drawing, exactly as the drawing
+prints it: "D0008A", "PWP0028C", "CC-14-1", "Q64.10x10J", "CASE 751-07". It is how this document
+identifies one exact geometry, and two packages that share a family name have different codes. Give
+it only when you can see that package's own drawing and are sure the code belongs to it; null
+otherwise. Never reuse one package's code for another, and never invent one from the package name.
 
 Keep them SEPARATE. Never merge two packages' pin names into one entry, and never write a name like
 "Vref/NC" that combines variants; report each package's real name in its own entry. If the part
@@ -367,9 +373,15 @@ pitch, a lead span and a recommended footprint are properties of ONE package, so
 PACKAGE, the same way a pin table is reported per package.
 
 Return "packagesInThisDocument": a list of
-{"packageType": "<designator>", "dimensions": {"<field name>": {"value": <value>, "page": <page>}}},
+{"packageType": "<designator>", "outlineCode": "<code or null>",
+ "dimensions": {"<field name>": {"value": <value>, "page": <page>}}},
 one entry per package whose drawings you can actually see, each carrying only the fields you read off
 THAT package's own drawings. Use the field names and value shapes exactly as listed above.
+
+"outlineCode" is the vendor's own code printed on THAT package's outline drawing: "D0008A",
+"PWP0028C", "CC-14-1", "Q64.10x10J", "CASE 751-07". You are looking straight at the drawing these
+dimensions came from, so give its code whenever the drawing prints one, and null when it does not.
+Never reuse one package's code for another, and never invent one from the package name.
 
 Never copy a value from one entry to another because two packages look alike, and never add an entry
 for a package whose drawing is not in front of you. A package you can see the outline for but not the
@@ -451,9 +463,9 @@ export function buildPrompt(request: ExtractionRequest): string {
   const contract = `Respond with JSON only, no markdown fences and no commentary, in exactly this shape:
 {"values": {"<field>": {"value": <value or null>, "page": <page number or null>}}, "notes": ["<observation>"]${
     askPages
-      ? ', "pagesWorthRendering": [<page number>, ...], "packagesInThisDocument": [{"packageType": "<designator>", "pins": [...]}, ...], "drawnPackages": ["<as the drawing labels itself>", ...]'
+      ? ', "pagesWorthRendering": [<page number>, ...], "packagesInThisDocument": [{"packageType": "<designator>", "outlineCode": "<code or null>", "pins": [...]}, ...], "drawnPackages": ["<as the drawing labels itself>", ...]'
       : perPackage
-        ? ', "packagesInThisDocument": [{"packageType": "<designator>", "pins": [...], "dimensions": {"<field name>": {"value": <value>, "page": <page number>}}}, ...]'
+        ? ', "packagesInThisDocument": [{"packageType": "<designator>", "outlineCode": "<code or null>", "pins": [...], "dimensions": {"<field name>": {"value": <value>, "page": <page number>}}}, ...]'
         : ""
   }}`;
 
@@ -774,14 +786,28 @@ export function parseModelResponse(text: string): ExtractionResult {
   const packagesInThisDocument = Array.isArray(root.packagesInThisDocument)
     ? root.packagesInThisDocument
         .map((entry) => {
-          const row = entry as { packageType?: unknown; pins?: unknown; dimensions?: unknown };
+          const row = entry as {
+            packageType?: unknown;
+            outlineCode?: unknown;
+            pins?: unknown;
+            dimensions?: unknown;
+          };
           const designator = typeof row.packageType === "string" ? row.packageType.trim() : "";
           if (!designator || designator.length > 64) return null;
           const pins = Array.isArray(row.pins) ? coercePinRows(row.pins) : null;
           const dimensions = coercePackageDimensions(row.dimensions);
           if ((!pins || pins.length === 0) && !dimensions) return null;
+          // A drawing code, held to the same shape the flat `packageOutlineCode`
+          // answer is: short, printable, and no phrases. A model that answers
+          // this with a sentence has not read a code off a drawing, and letting
+          // one through would put a made-up identity on an entry, which is worse
+          // than the caption it replaces.
+          const rawCode = typeof row.outlineCode === "string" ? row.outlineCode.trim() : "";
+          const outlineCode =
+            rawCode.length > 0 && rawCode.length <= 32 && !/\s{2,}|[<>{}]/.test(rawCode) ? rawCode : null;
           return {
             packageType: designator,
+            ...(outlineCode ? { outlineCode } : {}),
             ...(pins && pins.length > 0 ? { pins } : {}),
             ...(dimensions ? { dimensions } : {})
           };
@@ -791,6 +817,7 @@ export function parseModelResponse(text: string): ExtractionResult {
             entry
           ): entry is {
             packageType: string;
+            outlineCode?: string;
             pins?: PinRecord[];
             dimensions?: Record<string, { value: unknown; page: number | null }>;
           } => entry !== null

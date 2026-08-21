@@ -58,8 +58,10 @@ import {
   type CachingModel
 } from "./modelcache";
 import { DIMENSION_ORACLE } from "./dimension-oracle";
+import { sameOutlineCode } from "../packagevariants";
 import { loadBenchEnv } from "./env";
 import { getDeploymentMode } from "../retrieval/deployment";
+import { modelBudgetMs, withDeadline } from "../extraction/budget";
 
 const PINOUT_ORACLE_SIZE = Object.keys(PINOUT_ORACLE).length;
 
@@ -398,12 +400,17 @@ async function scoreRow(part: BenchPart): Promise<Row> {
       if (model) {
         currentLabel = part.partNumber;
         try {
-          const outcome = await runExtraction(
-            deterministic,
-            doc,
-            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-            model,
-            `${part.partNumber}.pdf`
+          const pacedBefore = model.stats.pacedMs;
+          const startedAt = Date.now();
+          const outcome = await withDeadline(
+            runExtraction(
+              deterministic,
+              doc,
+              bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+              model,
+              `${part.partNumber}.pdf`
+            ),
+            modelBudgetMs(ROUTE_BUDGET_MS, Date.now() - startedAt) + (model.stats.pacedMs - pacedBefore)
           );
           if (outcome) {
             record = outcome.part;
@@ -523,6 +530,22 @@ function percentile(values: number[], p: number): number {
 }
 
 const pct = (n: number, d: number) => (d === 0 ? "  n/a" : `${String(Math.round((n / d) * 100)).padStart(3)}%`);
+
+
+/**
+ * The deadline the ROUTES enforce, applied here so this bench measures the
+ * product rather than a version of it with unlimited time.
+ *
+ * `/api/parse` and `/api/lookup` both carve the model pass a budget out of
+ * `maxDuration`, race it, and DISCARD the whole outcome when it expires. This
+ * bench called `runExtraction` bare until 2026-08-21, so every accuracy number
+ * this project ever published described a pipeline nobody can actually run.
+ *
+ * The limiter's sleeps are added back before the race, because pacing belongs to
+ * the bench and not to the product: counting it would fail parts for a rolling
+ * window that production does not have. See `CacheStats.pacedMs`.
+ */
+const ROUTE_BUDGET_MS = 150_000;
 
 async function main() {
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
@@ -667,10 +690,35 @@ async function main() {
   // that shares it and this says which ones are already covered.
   const shipping = allOk.filter((r) => r.ships);
   if (shipping.length > 0) {
+    // VERIFIED, AND IT IS NOT THE SAME CLAIM AS SHIPS.
+    //
+    // `SHIPS` says a bundle came out. It says nothing about whether the numbers
+    // in it are right, and the two were being read as one figure. They are not:
+    // ISL71001M shipped for weeks with a body height of 1.00 mm where its
+    // drawing prints 1.20 Max, and every check in this repo was green, because
+    // the only instrument that can see a wrong VALUE is a person reading the
+    // drawing.
+    //
+    // So the fraction of shipping parts whose drawing a human has actually read
+    // is printed as its own number. It is the one to quote to a customer, and
+    // it is much smaller than SHIPS.
+    // Matched with `sameOutlineCode`, not by exact key. NCP1200 reads
+    // "CASE 751-07" and the oracle is keyed "751-07"; an exact lookup called a
+    // hand-read drawing UNCHECKED and undercounted this figure the first time it
+    // ran. `bench:dimensions` was already matching it correctly, so the two
+    // instruments disagreed about the same part.
+    const oracleCovers = (code: string | null): boolean =>
+      code !== null && Object.keys(DIMENSION_ORACLE).some((key) => sameOutlineCode(key, code));
+    const verified = shipping.filter((row) => oracleCovers(row.outlineCode ?? null));
+    const pct = shipping.length > 0 ? Math.round((verified.length / shipping.length) * 100) : 0;
+    console.log(
+      `VERIFIED:         ${verified.length}/${shipping.length} shipping parts (${pct}%) have their drawing ` +
+        `hand-read in DIMENSION_ORACLE`
+    );
     console.log("  shipping parts, and the outline drawing each was measured from:");
     for (const row of shipping) {
       const code = row.outlineCode ?? "(no outline code read)";
-      const covered = DIMENSION_ORACLE[code] ? "checked" : "UNCHECKED";
+      const covered = oracleCovers(row.outlineCode ?? null) ? "checked" : "UNCHECKED";
       console.log(`    ${row.part.partNumber.padEnd(18)} ${code.padEnd(16)} ${covered}`);
     }
     console.log("");

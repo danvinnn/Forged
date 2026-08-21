@@ -16,6 +16,7 @@ import { PdfExtractionError } from "../../../lib/pdftext";
 // models, so importing it cannot pull a networked model into the air-gapped
 // module graph. makeExtractionModel reaches those by dynamic import.
 import { makeExtractionModel, runExtraction } from "../../../lib/extraction";
+import { SecondPassFailedError } from "../../../lib/extraction/contracts";
 import {
   ModelDeadlineError,
   modelBudgetMs,
@@ -45,8 +46,19 @@ import { buildReadout } from "../../../lib/readout";
 const RENDER_SHARE_OF_BUDGET = 1 / 3;
 
 export const runtime = "nodejs";
-// Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
-export const maxDuration = 30;
+// Ceiling so a slow retrieval or parse cannot hold a request open indefinitely.
+//
+// RAISED FROM 30 ON 2026-08-20. Measured with `bench:repeat`, six parts, live
+// calls, NET of the bench's own rate-limit pacing: a parse takes p50 75.6s and
+// p90 128.8s, and 9 of 9 parses blew the ~25s this route was leaving the model.
+// On that deadline `withDeadline` discards the WHOLE pass, including a pass 1
+// that had already succeeded and been paid for.
+//
+// 150 covers the p90 with the response margin and local work on top. It is NOT
+// a serverless platform's number: this is our own budget, enforced by our own
+// code, so it travels to whatever host we run on. A host that imposes something
+// shorter has to be told about it here.
+export const maxDuration = 150;
 
 /**
  * The model pass gets a budget of its own, carved out of what is left of this
@@ -224,6 +236,30 @@ export async function POST(request: Request) {
         // Running out of time is reported as what it is rather than as a failure,
         // because the two call for different actions: one is retryable, the other
         // means the document is too big for this route's budget.
+        // THE DRAWING PASS FAILING IS A FAILED PARSE, not a thinner one.
+        //
+        // Everything else in this catch degrades: the record survives with a
+        // note and the user gets whatever was read. That is right for a
+        // timeout or a first-pass error, where the alternative is nothing at
+        // all. It is wrong when the pass that reads the DRAWINGS is the one
+        // that died, because pass 1 answers those same dimensions off the text
+        // layer and is measurably wrong there - REF5025's prose says 6.9mm
+        // where its drawing says 7.035mm, RHF1201's front page says `gullwing`
+        // where its drawing says `straight`. A lead form read wrong changes the
+        // whole land pattern.
+        //
+        // Anthony's call, 2026-08-20: a caveat on the deliverable is worse than
+        // useless, because it makes the user check everything and that is the
+        // job they came here to avoid. Either files nobody has to second-guess,
+        // or "we could not read it, try again". So this one returns an error
+        // the UI can offer a retry on, and no half-built record.
+        if (error instanceof SecondPassFailedError) {
+          console.error("extraction drawing pass failed after retry", error);
+          return NextResponse.json(
+            { error: error.message, retryable: true },
+            { status: 503, headers: { "Retry-After": "5" } }
+          );
+        }
         const timedOut = error instanceof ModelDeadlineError;
         if (!timedOut) console.error("extraction model failed", error);
         part = {

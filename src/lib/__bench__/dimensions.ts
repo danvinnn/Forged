@@ -16,8 +16,11 @@
  * visible.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { extractPartRecord } from "../datasheet";
+import { statedMaxHeightMm } from "../extraction/merge";
+import type { DatasheetText } from "../pdftext";
 import { DIMENSION_ORACLE, type DimensionOracleEntry, type OracleRange } from "./dimension-oracle";
 
 const CACHE = join(process.cwd(), ".model-cache");
@@ -85,6 +88,27 @@ function show(value: unknown): string {
     if (typeof r.minMm === "number") return `${r.minMm}-${r.maxMm}`;
   }
   return String(value);
+}
+
+/** The parsed document for a part, from either cache, or null. Memoised. */
+const documents = new Map<string, DatasheetText | null>();
+async function documentFor(part: string): Promise<DatasheetText | null> {
+  if (documents.has(part)) return documents.get(part) ?? null;
+  let parsed: DatasheetText | null = null;
+  for (const dir of [".bench-cache", ".holdout-cache"]) {
+    const path = join(process.cwd(), dir, `${part}.pdf`);
+    if (!existsSync(path)) continue;
+    try {
+      const bytes = readFileSync(path);
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      ({ doc: parsed } = await extractPartRecord(`${part}.pdf`, buffer));
+    } catch {
+      parsed = null;
+    }
+    break;
+  }
+  documents.set(part, parsed);
+  return parsed;
 }
 
 function compare(part: string, outline: string, entry: DimensionOracleEntry, values: Record<string, { value?: unknown }>): Row[] {
@@ -172,7 +196,7 @@ function compare(part: string, outline: string, entry: DimensionOracleEntry, val
   return rows;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const byPart = new Map<string, Record<string, { value?: unknown }>>();
   for (const file of readdirSync(CACHE).filter((n) => n.endsWith(".json") && n !== "_billed.json")) {
     let entry: Cached;
@@ -195,15 +219,80 @@ function main(): void {
   // Outline code first, because it identifies the drawing. Falling back to the
   // hand-confirmed part list, because the code is itself model-read and comes
   // back null for most of the corpus.
-  const byPartName = new Map<string, string>();
+  //
+  // A LIST per part, not one entry. A datasheet routinely prints two outline
+  // drawings and offers the part in both: TPS7A4501-SP is a `U0010A` at 2.03mm
+  // max height and an `HKU0010A` at 2.63. This map kept whichever was declared
+  // last, so a CORRECT reading of one drawing was scored as a wrong reading of
+  // the other and reported under "every WRONG above is a number that would have
+  // placed copper". It was the bench that was wrong.
+  const byPartName = new Map<string, string[]>();
   for (const [code, entry] of Object.entries(DIMENSION_ORACLE)) {
-    for (const part of entry.parts) byPartName.set(part, code);
+    for (const part of entry.parts) byPartName.set(part, [...(byPartName.get(part) ?? []), code]);
   }
 
+  /**
+   * Which of a part's outlines the reading actually came from.
+   *
+   * Decided by the height the CITED page prints in its own title block, which
+   * is the one thing on a drawing that names the drawing unambiguously and is
+   * present on both of these. No candidate matches, or several do, and this
+   * gives up rather than picking: an unmatched part is reported as unchecked,
+   * which is honest, where a guess would be scored as fact.
+   */
+  const outlineFor = (codes: string[], stated: number | null): string | null => {
+    // EVEN ONE CANDIDATE HAS TO SURVIVE THE HEIGHT CHECK.
+    //
+    // A part list says "this part reads this drawing", and it is wrong whenever
+    // the datasheet prints two and the reading came from the other one. Adding
+    // `DGS0010A` on 2026-08-20 attributed a 2.0 x 1.5 x 0.4mm reading to a
+    // 3 x 3 x 1.1mm VSSOP and reported six WRONG values, none of which was a
+    // misread: `ADS1115` is offered in both and the model had read the other.
+    //
+    // So the cited page's own title block gets a veto here as well as a vote.
+    // An unmatched part is reported as unchecked, which is true; a mismatched
+    // one is reported as a defect, which is a lie about the product.
+    const fitsHeight = (code: string) => {
+      const wanted = DIMENSION_ORACLE[code].bodyHeightMaxMm;
+      if (wanted === undefined || stated === null) return true;
+      return Math.abs(wanted - stated) < 0.02;
+    };
+    if (codes.length === 1) return fitsHeight(codes[0]) ? codes[0] : null;
+    if (stated === null) return null;
+    const fits = codes.filter((code) => {
+      const wanted = DIMENSION_ORACLE[code].bodyHeightMaxMm;
+      return wanted !== undefined && Math.abs(wanted - stated) < 0.02;
+    });
+    return fits.length === 1 ? fits[0] : null;
+  };
+
   for (const [part, values] of byPart) {
+    // THE CORRECTION THE PRODUCT APPLIES, applied here too.
+    //
+    // This bench reads the model cache, and the record is not the model's
+    // answer: `mergeModelValues` replaces an overall height with the one the
+    // drawing states in its own title block, because the model answers the body
+    // thickness instead on about a fifth of the pages that state it. Measuring
+    // the raw answer scores a field the product does not ship, which is the
+    // "one step away from the thing it is about" mistake this file has made
+    // before. See `statedMaxHeightMm`.
+    /** What the cited drawing calls its own max height, for `outlineFor`. */
+    let statedHeight: number | null = null;
+    const height = values["dimensions.bodyHeightMm"];
+    if (height && typeof height.value === "number") {
+      const doc = await documentFor(part);
+      const page = (height as { page?: unknown }).page;
+      const stated = doc ? statedMaxHeightMm(doc, typeof page === "number" ? page : null) : null;
+      if (stated !== null) {
+        values["dimensions.bodyHeightMm"] = { ...height, value: stated };
+        statedHeight = stated;
+      }
+    }
     const claimed = values["packageOutlineCode"]?.value;
     const code =
-      typeof claimed === "string" && DIMENSION_ORACLE[claimed] ? claimed : byPartName.get(part);
+      typeof claimed === "string" && DIMENSION_ORACLE[claimed]
+        ? claimed
+        : outlineFor(byPartName.get(part) ?? [], statedHeight);
     if (!code) {
       unmatched.push(part);
       continue;

@@ -19,7 +19,14 @@ import {
   type ThermalPadLand
 } from "./ipc7351";
 import { landDisagreements } from "./vendorland";
-import { declaredLeadCount, designatorToken, normaliseForMatch, outlineCodeDesignator, pinTableFor } from "./packagevariants";
+import {
+  declaredLeadCount,
+  designatorToken,
+  familyToken,
+  normaliseForMatch,
+  outlineCodeDesignator,
+  pinTableFor
+} from "./packagevariants";
 import {
   type FootprintGeometry,
   type Pad,
@@ -351,7 +358,15 @@ function askForBody(part: ResolvedPart): RequiredInput[] {
  * inside it throws rather than writing a shell that does not close, and a test
  * that can only reach it through a zip cannot say which face failed.
  */
-export function buildStepModel(part: ResolvedPart): { content: string; note: string; supported: boolean; fileName: string } {
+export function buildStepModel(
+  part: ResolvedPart,
+  /**
+   * Stamped into the STEP header. An INPUT, not a call to the clock: see
+   * `ExportOptions.generatedAt`. Defaults to now so a direct caller behaves as
+   * it always did.
+   */
+  generatedAt: Date = new Date()
+): { content: string; note: string; supported: boolean; fileName: string } {
   const lengthMm = part.dimensions.bodyLengthMm;
   const widthMm = part.dimensions.bodyWidthMm;
   const heightMm = part.dimensions.bodyHeightMm;
@@ -362,7 +377,7 @@ export function buildStepModel(part: ResolvedPart): { content: string; note: str
   }
   const halfLength = lengthMm / 2;
   const halfWidth = widthMm / 2;
-  const now = new Date().toISOString().replace(/\.\d{3}Z$/, "");
+  const now = generatedAt.toISOString().replace(/\.\d{3}Z$/, "");
 
   // THE BOARD SURFACE IS z = 0, AND THE PART SITS ON TOP OF IT.
   //
@@ -2344,6 +2359,28 @@ export interface ExportOptions {
   formedLeadContactMm?: number;
   /** Answers to what the datasheet did not print. See SuppliedDimensions. */
   supplied?: SuppliedDimensions;
+  /**
+   * When this bundle was generated, for the two files that record provenance.
+   *
+   * ## Why this is an input rather than a call to the clock
+   *
+   * Everything else this exporter emits is a pure function of the record: the
+   * KiCad footprint and symbol, and both Altium libraries, are byte-identical
+   * across two exports of one part, which was verified on 2026-08-21 and is
+   * asserted by a test. Only the STEP header and the manifest read the clock,
+   * and they did it by calling `new Date()` where they stood.
+   *
+   * That made the BUNDLE non-reproducible while the geometry was perfectly
+   * reproducible, and it hid the distinction: anyone diffing two zips saw a
+   * difference and could not tell whether the copper had moved.
+   *
+   * So the clock is lifted to the edge. Callers that want a reproducible bundle
+   * pin it; production leaves it out and gets the real time, because a file that
+   * claims to have been made at a time it was not is worse than a file that
+   * differs. This is the `SOURCE_DATE_EPOCH` convention the reproducible-builds
+   * work settled on, for the same reason.
+   */
+  generatedAt?: Date;
 }
 
 export async function createExportZip(
@@ -2422,7 +2459,7 @@ export async function createExportZip(
     );
   }
 
-  const stepModel = buildStepModel(part);
+  const stepModel = buildStepModel(part, options.generatedAt ?? new Date());
   const files: GeneratedFile[] = [];
 
   // A footprint that cannot be built to the standard fails the export rather
@@ -2471,7 +2508,7 @@ export async function createExportZip(
         partNumber: part.partNumber,
         manufacturer: part.manufacturer,
         exportFormat: format,
-        generatedAt: new Date().toISOString(),
+        generatedAt: (options.generatedAt ?? new Date()).toISOString(),
         checks: { summary: summariseChecks(checks), detail: checks },
         // The footprint is the file someone will fabricate from, so the manifest
         // states what it was computed from rather than making them open it.
@@ -2483,8 +2520,15 @@ export async function createExportZip(
     )
   );
 
+  // THE ZIP'S OWN ENTRY DATES ARE PART OF THE BYTES.
+  //
+  // JSZip stamps each entry with `new Date()` unless told otherwise, so two
+  // archives of identical files still differ. Found on 2026-08-21 while testing
+  // the two `new Date()` calls above: fixing those alone would have left the
+  // bundle non-reproducible for a third reason nobody had looked for.
+  const entryDate = options.generatedAt ?? new Date();
   for (const file of files) {
-    zip.file(file.name, file.content);
+    zip.file(file.name, file.content, { date: entryDate });
   }
 
   return {
@@ -2890,14 +2934,65 @@ function optionsFromPerPackageTables(
       (table) => table.pins !== undefined && table.pins.length > 0 && key(table.packageType).includes(wanted)
     );
     if (several.length < 2) return [variant];
+    // TWO DRAWINGS UNDER ONE CAPTION GET THE CODE THAT TELLS THEM APART.
+    //
+    // Offering `table.packageType` alone is enough while the captions differ,
+    // which is the LD39050 case this branch was written for: a 3x3 DFN6 and a
+    // 2x2 DFN6 that the ordering table calls both `DFN6`. It stops being enough
+    // once a document prints two drawings the model captions identically, which
+    // after 2026-08-20 stay two entries rather than merging:
+    //
+    //     UCC27524  "HVSSOP (DGN)"  ->  DGN0008G  and  DGN0008H
+    //
+    // Two options with the same label are not a choice. Appending the drawing
+    // code makes them distinguishable, and `pinTableFor` resolves the bracketed
+    // form back to the one table. Appended ONLY where the captions actually
+    // collide, so the common case keeps the plain name the user recognises.
+    const captionKey = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const collides = new Set(
+      several
+        .map((table) => captionKey(table.packageType))
+        .filter((name, index, all) => all.indexOf(name) !== index)
+    );
     return several.map((table) => ({
-      designator: table.packageType,
+      designator:
+        collides.has(captionKey(table.packageType)) && table.outlineCode
+          ? `${table.packageType} [${table.outlineCode}]`
+          : table.packageType,
       family: variant.family,
       leadCount: table.pins?.length ?? variant.leadCount
     }));
   });
 
-  const options = offered.map((variant) => {
+  // NOTHING MATCHED, AND THE PINOUTS ARE RIGHT HERE.
+  //
+  // The ordering table and the pinout section are two different vocabularies,
+  // and when they share no word at all every option above becomes "this document
+  // gives a pinout for each package it describes, and none of them matches X" -
+  // said about pinouts we are holding, located and complete.
+  //
+  // Refusing there is the failure this codebase keeps rediscovering: we had it
+  // and threw it away. The document names its own packages, so those names are
+  // offered and the user picks, which is what RULES.md asks for when the answer
+  // is specific to this part.
+  //
+  // NARROW ON PURPOSE. This fires only when NOT ONE harvested designator
+  // resolved to a table, so a part whose chooser already works cannot gain a
+  // spurious option, and a sibling's package cannot appear beside the real one.
+  // Entries reaching the record have already been filtered to this part by
+  // `isThisPart` during the join.
+  const anyResolved = offered.some((variant) => pinTableFor(tables, variant.designator) !== null);
+  const located = tables.filter((table) => table.pins !== undefined && table.pins.length > 0);
+  const choices =
+    !anyResolved && located.length > 0
+      ? located.map((table) => ({
+          designator: table.outlineCode ? `${table.packageType} [${table.outlineCode}]` : table.packageType,
+          family: familyToken(table.packageType) ?? offered[0]?.family ?? table.packageType,
+          leadCount: table.pins?.length ?? null
+        }))
+      : offered;
+
+  const options = choices.map((variant) => {
     const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
     const entry = pinTableFor(tables, variant.designator);
     // Two different absences, and telling the user they are the same misdirects

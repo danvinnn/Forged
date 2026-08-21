@@ -391,6 +391,40 @@ export async function extractDatasheetText(
  * page with a null region, which is exactly what an honest citation looks like
  * when the geometry is genuinely unavailable.
  */
+/**
+ * Does this document look like the WRONG DOCUMENT rather than a hard one?
+ *
+ * ## Why this is a product concern and not a bench one
+ *
+ * Retrieval occasionally lands on something that is not a component datasheet -
+ * a distributor page, a hobby-shop breakout board writeup, a "product brief".
+ * The extractor then does exactly what it should, finds no pin table, and the
+ * user is told no pinout could be read.
+ *
+ * That message is true and it points the wrong way. It reads as "your datasheet
+ * defeated us", so the user re-runs, or gives up, when the thing that would
+ * actually work is handing us the right PDF. Measured on the hold-out corpus:
+ * this is the single remaining part that cannot ship, and no amount of reading
+ * would ever fix it.
+ *
+ * ## The test is SIZE, deliberately, and not content
+ *
+ * A datasheet with no recognisable pinout section may still be a datasheet whose
+ * pinout is drawn as a figure, and that is a READING problem we want to keep
+ * working on rather than dismiss. But a component datasheet that is three pages
+ * long and carries two thousand characters is not a component datasheet.
+ *
+ * The thresholds are the ones `bench:holdout` has classified with since
+ * 2026-08-18. This function exists so the bench and the product share one rule:
+ * they were separate, and a bench that classifies a case the product cannot
+ * detect is a bench measuring something nobody ships.
+ */
+export function looksLikeWrongDocument(doc: DatasheetText): boolean {
+  if (doc.pages.length > 4) return false;
+  const chars = doc.pages.reduce((sum, page) => sum + page.text.length, 0);
+  return chars < 4000;
+}
+
 export function datasheetTextFromPages(pageTexts: string[]): DatasheetText {
   const pages: PageText[] = [];
   let combined = "";

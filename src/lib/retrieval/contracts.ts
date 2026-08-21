@@ -38,6 +38,17 @@ export type RetrievalErrorCode =
   // The PDF is structurally valid but too large or too complex to parse within
   // the resource limits (page count, extracted text size, object count, time).
   | "PARSE_LIMIT_EXCEEDED"
+  // Retrieval found something that is not a component datasheet: a distributor
+  // page, a breakout-board writeup, a product brief. Distinct from every reading
+  // failure because the ACTION is distinct - re-running finds the same page, and
+  // the user uploading the datasheet is what fixes it. See `looksLikeWrongDocument`.
+  | "NOT_A_DATASHEET"
+  // The pass that reads the package DRAWINGS could not be run, after a retry.
+  // Distinct from every other code here because it is the one the user should
+  // simply try again: the document is fine and the reader was briefly not.
+  // See `SecondPassFailedError` for why this is an error rather than a thinner
+  // record with a warning on it.
+  | "MODEL_UNAVAILABLE"
   | "INTERNAL";
 
 export interface RetrievalError {

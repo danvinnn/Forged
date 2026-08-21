@@ -1024,3 +1024,19 @@ button:disabled {
 .setting input, .setting select { padding: 0.45rem 0.55rem; font: inherit; }
 .settings-actions { display: flex; gap: 0.75rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
 .settings-actions .ghost { background: none; text-decoration: underline; padding: 0; }
+
+/* Offered only when the server says the failure is worth repeating. */
+.status-retry {
+  margin-left: 0.75rem;
+  padding: 0.15rem 0.6rem;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+.status-retry:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}

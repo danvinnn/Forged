@@ -1048,3 +1048,731 @@ Audited the whole corpus for the same thing; AD8495 is the only one.
 
 **Final: READ 58/59, SHIPS 58/59. Every part whose datasheet we actually
 fetched ships.**
+
+## A failed drawing pass is a failed parse, not a thinner one
+
+2026-08-20, Anthony's call, and the reasoning is worth keeping because it
+overturned what I proposed.
+
+`runExtraction` swallowed every second-pass failure with a bare `catch {}` and
+fell through to pass 1. That looks harmless and is not: pass 2 exists BECAUSE
+pass 1 reads dimensions off the text layer and is measurably wrong there.
+REF5025's page-1 prose says 6.9mm where its drawing says 7.035mm; RHF1201's front
+page implies `gullwing` where its drawing on page 33 shows `straight`. A lead
+form read wrong does not shift copper by a fraction of a millimetre - it changes
+the whole land pattern and the board does not solder.
+
+I proposed marking such values as text-read so the user could see it. **Anthony
+rejected that, correctly: a caveat on the deliverable makes the user verify
+everything, which is the entire job they came here to avoid.** It spends trust
+and buys nothing.
+
+So the product is binary. Either files nobody has to second-guess, or "we could
+not read it, try again". Three changes:
+
+1. **`askTwice`** - one further attempt at the pass level. `callWithRetry`
+   already retries three times inside a call and it is not enough: ADM3202 failed
+   on four separate runs, roughly a dozen provider attempts, then succeeded on
+   the fifth with no code change. Exactly one extra, because this pass carries a
+   megabyte of images and a loop would multiply the worst case.
+2. **`SecondPassFailedError`** - both routes answer 503 with `Retry-After` and a
+   `MODEL_UNAVAILABLE` code, and no half-built record. The UI keeps the file and
+   offers "Try again".
+3. **Logging** - a warn on the retry, an error on the second failure. Until now
+   a second-pass failure produced no note, no error and no log line anywhere, so
+   nobody could say whether this happens once a week or once a day. Today's
+   evidence: 5 of 42 live calls failed, and the image-carrying pass fails about
+   three times as often as the text-only one.
+
+**A RENDER failure is deliberately NOT this.** A host with no working renderer
+produces the first-pass answer, which is a supported deployment. One `catch` had
+been treating a missing rasteriser and a dead model as the same event, and the
+difference is exactly whether the user should press the button again.
+
+## A lead count is not an identity
+
+2026-08-20, and it is the same lesson as the `SOIC (D)` / `SOIC (DW)` one, found
+from the other end.
+
+`sameDesignator` accepted agreement on ANY of code, family or lead count. Two of
+those name a package; the third is shared by every 8-pin part ever made. The
+weak clause never fired while two pin tables were refused outright, so it sat
+there looking correct for a day. The moment that refusal was relaxed - because
+pass 2 started returning pinouts too - it chained four of OP27's packages into
+one entry:
+
+    8-Lead TO-99  aka  ["8-Lead PDIP", "8-Lead CERDIP", "8-Lead SOIC"]
+
+A metal can, a ceramic through-hole body and a 3.9mm surface-mount one, merged
+on "all three have 8 leads". `8-Lead CERDIP` is what let it start: its family
+reads as NULL, because `\bDIP\b` does not match inside "CERDIP" - the
+word-boundary trap for the fourth time in this repo - so the count was the only
+thing left to compare, and it agreed.
+
+The count may now CORROBORATE or CONTRADICT and can never be the whole case.
+
+**Two things worth keeping.** A guard that has never fired is not a guard that
+works; it is an untested branch, and relaxing something upstream is exactly when
+it gets its first real input. And when a fix costs one part, chase that part:
+OP27 going quiet-to-asking was the only visible symptom of a merge that was
+putting a TO-99's identity on a SOIC.
+
+## The pin-name oracle, run at last: 15/18, and nothing structural
+
+2026-08-20. The pinout path was rewritten across two days - pass 2 given a
+`pins` slot, shared captions distributed, the sibling-device rule, render
+citations - and none of it had been checked against a hand read. This is that
+check.
+
+    PIN NAMES       15/18 parts match       (38 parts have an entry)
+    PACKAGE FAMILY  13/13 designators
+    RHF1201       pin 7   got "D11"       want "D11(MSB)"
+    RHF1201       pin 18  got "D0"        want "D0(LSB)"
+    TPS7A4501-SP  pin 9   got "ADJ"       want "SENSE/ADJ"
+    ADS8688       pin 20  got "AIN_2GND"  want "AIN2_GND"
+
+**The thing to notice is what is NOT there.** No pin is in the wrong position,
+no package's names landed on another package, no table ran one row behind. Those
+are the failures that produce a board that does not work, and the ones this
+rewrite could plausibly have introduced. All four misses are name RENDERING:
+two dropped a bit-significance annotation, one truncated a dual-function name,
+one transposed an underscore.
+
+Only the last is a defect worth calling one - `AIN_2GND` is not `AIN2_GND` and a
+schematic would carry the wrong label - and it is a character slip rather than a
+wiring error.
+
+A floor, not a figure: 9 of 94 calls failed, so 18 of the 38 available entries
+were actually checked.
+
+## `--estimate` cannot price a two-pass run
+
+I quoted $1.16 for that run from `--estimate`, and it cost $2.43. The estimate
+said 53 live calls; the run made 94.
+
+The reason is structural and worth knowing before the next quote: pass 2's
+request contains the RENDERED PAGES, and which pages those are is pass 1's
+answer. Until pass 1 has run there is no pass-2 request to hash, so `--estimate`
+can only count first-pass misses and silently assumes the rest hit. On a cold
+corpus it therefore under-reports by roughly half.
+
+Two runs in two days have now been mispriced in opposite directions - the
+projection said $2.57 for a run that cost $0.89, and `--estimate` said $1.16 for
+one that cost $2.43. Quote a RANGE, and say which end is which.
+
+## 20/20, up from 17/20
+
+`bench:mutation` now kills every seeded defect, where it left three alive when it
+was last run. The suite grew by six tests over two days and they were not
+written for this; the score moved because the tests pin behaviour rather than
+shape.
+
+Snapshot every source file's hash before running it. It edits source in place and
+has left a live mutation in the tree before; a hash diff afterwards is what
+proves it did not.
+
+## Measured: the same datasheet does NOT produce the same record twice
+
+2026-08-20, `npm run bench:repeat`. Four tuned parts, three live parses each, a
+throwaway cache directory so nothing was replayed. 23 live calls, $0.61.
+
+    DRV8825       IDENTICAL across 3 runs (56 values)
+    LM358         same 8 pin names, filed under a REORDERED caption
+    TPS54360      landSpanMm 3.85 -> 5.4, and two mask fields null -> read
+    STM32F407VG   a complete 100-pin table in one run, NOTHING in another
+
+**One part in four is reproducible.** `temperature: 0` narrows the sampling and
+does not make the reader a function.
+
+Two of these are worse than "unstable":
+
+- **TPS54360 produced two different land spans from one datasheet.** 3.85mm and
+  5.4mm are two different footprints, both built faithfully, and an 8-pin HSOIC
+  is a 5.4mm part - so one run emitted copper that is simply wrong. This is a
+  correctness finding that fell out of a reproducibility test.
+- **STM32F407VG is complete or unreadable depending on the attempt.** Nothing in
+  the product tells the user which one they got.
+
+LM358 is the mildest and still awkward: the pin NAMES are identical and the
+entry they live under is keyed on a caption the model reordered, so the record
+differs even though the reading did not. Keys built from model prose are not
+stable identifiers.
+
+**Why this matters more than speed.** An engineer reviews a footprint, approves
+it, re-runs it next week and gets a different library. That is disqualifying
+regardless of which version is right, and no amount of accuracy work fixes it.
+
+The objection recorded in `modelcache.ts` - that a production cache "would have
+to answer when a stale answer becomes wrong" - has a good answer: key on the PDF
+bytes, the prompt fingerprint and the extractor version. Same document and same
+code returns the same record; change either and it re-asks. Staleness is solved
+when the key contains everything that could cause it.
+
+## Thinking budget: most of the instability for ~11% more
+
+2026-08-20. Same four parts, two live parses each, `FORGE_THINKING_BUDGET=8192`
+against the default (unset).
+
+                    default            thinking 8192
+    DRV8825         identical          identical
+    STM32F407VG     100 values         2 values
+    TPS54360        4 values           2 values
+    LM358           unstable           unstable
+
+STM32F407VG went from "a complete 100-pin table or nothing, depending on the
+attempt" to a stable pinout with two land-span values wobbling. **TPS54360's
+landSpanMm 3.85-vs-5.4 disagreement disappeared** - the one that was emitting
+two different footprints from one datasheet.
+
+Cost: $0.0294 per call against $0.0265, about 11%. No timeouts, so it still fits
+the route's 30 second budget.
+
+Not a fix: LM358 is still unstable, and a land span still moves on
+STM32F407VG (14.3 vs 15.5). But the failures that changed a part from readable
+to unreadable, and from one footprint to another, are gone.
+
+## A stronger model does not fit the product, and the reason is the ROUTE
+
+I proposed switching to a Pro-tier model as "a config line". It is not.
+
+    gemini-3.6-pro / gemini-3.5-pro    404, not published to this project
+    gemini-2.5-pro                     reachable, and every call timed out at 60s
+    parse route maxDuration            30 seconds
+
+`MODEL_TIMEOUT_MS` is already 60s, twice what the route can wait for. A model
+that needs longer cannot be used from a request/response path at all: it needs
+the parse to become a job the client polls. That is real work, not a flag.
+
+**Check the deadline before proposing a slower reader.** The constraint was two
+files away and I reasoned past it.
+
+# The exploration pass, 2026-08-20
+
+Nine candidates came out of a day of cross-industry research into how other
+people build LLM parsers. **Seven were killed by free measurement, one was
+adopted, one is still running.** Written down because the value of this pass was
+almost entirely in what it stopped us building.
+
+## Five instruments lied to me in one day
+
+This is the headline, above any individual result. Every one of these was a
+throwaway script I wrote to answer a question quickly, and every one produced a
+confident wrong answer that I nearly acted on:
+
+1. A package-name scan reported **0 order-variant collisions** across 1,974
+   names. It split on `/` without handling the device suffix, so it could not see
+   `ADA4522-4 (14-Lead TSSOP / 14-Lead SOIC)` against
+   `14-Lead SOIC / 14-Lead TSSOP (ADA4522-4)` sitting in its own input.
+2. The fixed version then grouped `X2SON (DPW0005A)` with `X2SON (DPW0005B)` -
+   two different drawings - and `TSSOP-38 (ADS8688)` with `(ADS8684)`.
+3. A lead-count audit reported **47 contradictions**. All 47 were the `23` in
+   `SOT-23` and the `220` in `TO-220`. Real count: zero.
+4. A "what did the model say" dump picked the cache entry with the MOST FIELDS
+   FILLED rather than the one the record uses, and told me ADXL345 was shipping a
+   wrong land pattern. It is not; the oracle proved it.
+5. **`bench:extraction`'s "parse latency p50 58.7s" is very nearly all rate
+   limiting.** The bench paces itself against a rolling 60s window and sleeps up
+   to a minute between calls. I got as far as drafting a production-readiness
+   finding on it.
+
+`validate-the-instrument` was already in this file from 2026-08-18. It did not
+save me once. The rule that would have: **a measurement that agrees with what
+you already suspected deserves MORE scrutiny than one that surprises you**, and
+every one of these five agreed with a story I was already telling.
+
+`CacheStats.pacedMs` now exists so latency can be reported net of the limiter.
+
+## What was killed, and by what
+
+    canonical merge keys    19 within-run candidates, ALL of them sibling
+                            devices or different outline codes. Merging any
+                            would reintroduce a defect we already fixed.
+    pitch from prose        6 checkable, 0 contradictions
+    lead count from name    234 explicit declarations, 0 contradictions
+    solder-mask from text   a TRAP: TI prints both variants as a LEGEND and the
+                            text layer interleaves them into "NON SOLDER MASK
+                            SOLDER MASK DEFINED DEFINED (PREFERRED)". A presence
+                            rule is wrong on nearly every TI datasheet.
+    no-lead IPC tables      0 of 8 printed patterns reproduced, two vendors
+    verifier feedback loop  REFUSED 1 of 135. Pre-registered kill line was 5.
+    constrained decoding    0.59% of 1,865 responses were unparseable, already
+                            handled, and the fix strands the whole cache
+
+The no-lead result deserves its own line. `ipc7351.ts` refuses to compute a
+no-lead land and its comment rests on **two** hand-read drawings. I widened it to
+eight across two vendors: **neither published table reproduces a single one.**
+Even on square packages where the axis is unambiguous, printed pad length is
+0.6 where the tables say 0.83 and 0.53. The likely root cause is now clearer -
+for a pull-back QFN the terminal-tip span is not the body size, and we do not
+extract it - so the refusal is not just correct, it is correct for a reason.
+RULES.md rule 1 already names this case.
+
+## Text-layer rules only work on TITLE BLOCKS, not on drawings
+
+The one deterministic rule that ever paid (`statedMaxHeightMm`) works because
+the number and its meaning are ADJACENT IN ONE STRING: "2.33mm max height". Every
+candidate that failed above needed the number's meaning to come from where it
+sits on the page, and the text layer destroys exactly that.
+
+**Filter for new rules: can the value and its meaning be read from one
+uninterrupted run of characters?** If the answer is "the label is above it on
+the drawing", the text layer cannot help and only the rendered page can.
+
+## Hand-reading four drawings found a defect that shipped
+
+`bench:dimensions` went from 13 drawings / 163 values to 18 / 204. Four
+drawings hand-read; **one of them was wrong, and the part SHIPS.**
+
+    ISL71001M  Q64.10x10J  bodyHeightMm   record 1.00   drawing "1.20 Max"
+
+The reader took `1.00 +/- 0.05` from Detail A - the lead's height above the
+seating plane - on a page that also prints `1.20 Max` on the side view. Two
+heights, wrong one taken. It is not copper, but it is what the exported STEP
+solid is built to, so every mechanical clearance check against that bundle was
+0.2mm short.
+
+Nothing else could have caught it. `bench:copper` reports no disagreement and is
+RIGHT to: the copper faithfully reproduces the record. The record was wrong.
+Guards never fire. Only a person looking at the drawing finds this.
+
+**115 of 135 cached parts still have no oracle entry.** At one defect per four
+drawings hand-read, that is not a comfortable place to be.
+
+## The fix, and why it is not a general rule
+
+`statedMaxHeightMm` now also accepts the ENVELOPE spelling: Renesas heads that
+drawing "64-QFP 10.0 x 10.0 x 1.2 mm Body, 0.5 mm Pitch", which is the same claim
+about the same measurement.
+
+Deliberately not generalised into "read dimensions off the title block". That
+phrasing appears on **one page of 55 datasheets**. It earns its place only as a
+second spelling of a rule that already exists, page-scoped, and required to agree
+with anything else the page says - a page stating a height two ways corrects
+nothing. Both behaviours have tests.
+
+## Absence is an assertion, and guessing it is worse than leaving it out
+
+Two entries this pass carry a deliberate hole:
+
+- `CC-14-1` has no `leadSides`. The obvious read is 2 - six pads left, six right.
+  But terminals 7 and 14 sit alone at the centre of the other two edges. The
+  record answers 4. **Asserting 2 would have marked a defensible answer WRONG on
+  the strength of my glance.**
+- `7983231_13` has no terminal dims. The drawing prints `0.25 +/-0.04 (9X)` and
+  `0.35 +/-0.04 (16X)`, and those counts do not describe one terminal.
+
+An oracle that guesses is worse than one with holes, because a false WRONG sends
+someone to fix working code.
+
+## What the failures actually are
+
+Three instruments agree and it changed how I read our numbers:
+
+    bench:guards    no guard fires anywhere, on any corpus
+    bench:copper    59 footprints, no disagreement with the record
+    bench:replay    REFUSED 1 of 135
+
+I first wrote this up as "our failures are absent values, not wrong ones." **That
+was wrong, and the oracle disproved it within the hour.** Wrong values exist -
+ISL71001M is one. What is true is narrower and worse: *we have almost no
+instrument that can see a wrong value.* Everything above measures internal
+consistency, and a confidently wrong reading is perfectly self-consistent.
+
+That is the argument for the oracle over every other candidate in this pass.
+
+## The route budget cannot fit the pipeline, measured net of pacing
+
+The thinking-budget trial was run with latency instrumented, because thinking
+costs time and time is what the routes are short of. The BASELINE arm settled a
+much bigger question and the trial became unnecessary.
+
+Six parts, two runs each, thinking OFF, every call live, **pacing subtracted**:
+
+    wall clock per parse   p50 75.6s   p90 128.8s   max 128.8s
+    parses over the ~25s the routes allow    9 of 9
+
+Both routes carve the model pass a budget out of `maxDuration = 30`, race it with
+`withDeadline`, and on expiry **discard the whole outcome** - including a pass 1
+that already succeeded. `budget.ts` says in its own header that a call takes up
+to 41.6 seconds. Two calls per part is ~75 seconds against a ~25 second budget.
+
+This is enforced in our own code, not by a platform, so no deployment escapes it.
+
+**Every accuracy number this project has ever published was measured with no
+deadline at all.** Both benches call `runExtraction` bare; only the routes wrap
+it. READ 98% / SHIPS 98% describe a pipeline given unlimited time.
+
+Two further things the same run showed:
+
+- `MODEL_TIMEOUT_MS` (60s) is being HIT, not approached. STM32F407VG timed out;
+  LM358 timed out on both runs and both retries and returned nothing at all;
+  ADS1115 timed out once per run and only succeeded on the retry.
+- A deadline and a second-pass failure get **different treatment for the same
+  user-visible outcome**. `SecondPassFailedError` returns 503 with a retry
+  button. `ModelDeadlineError` returns a record carrying a note that says
+  nothing was read - which cannot ship either, but offers no retry.
+
+### Why thinking budget was dropped without running the second arm
+
+It buys stability and costs ~11% more tokens and more wall clock. We are already
+**three times over** the budget the routes enforce. Spending another $0.53 to
+confirm that a slower reader is worse for a pipeline that cannot finish in time
+would have been buying a foregone conclusion.
+
+Same shape as the Pro-model finding above, and I walked most of the way into it
+again: **check the deadline before proposing anything slower.** The difference
+this time is that the deadline is not a limit on some better model we might
+adopt - it is being missed by what we ship today.
+
+### Stability, for the record (baseline arm)
+
+    DRV8825      IDENTICAL (56 values)
+    ISO7741      IDENTICAL (78 values)
+    TPS54360     2 values differed (solderMaskDefined, solderMaskExpansionMm)
+    ADS1115      22 values differed - the PACKAGE NAME moved, "SOT-5X3 (10)"
+                 one run and "SOT (10)" the next, taking the whole pin table
+                 with it
+    STM32F407VG  one run timed out, nothing comparable
+    LM358        both runs failed entirely
+
+ADS1115 is worth noting: nothing about the pinout changed, only what the model
+called the package, and that is enough to relocate every pin under a new key.
+
+## Omission in the dimension oracle is an ASSERTION, so a partial read cannot be a partial entry
+
+I hand-read LIS3DH's LGA-16 and recorded the four values I was sure of, leaving
+the terminal dimensions out with a comment explaining that the drawing's
+`0.25 +/-0.04 (9X)` and `0.35 +/-0.04 (16X)` do not describe one terminal.
+
+The bench immediately reported `leadContactMm read 0.31-0.39, expected the
+drawing prints none`, and it was right. `dimensions.ts` treats a missing key as
+the positive claim that a person looked and **the drawing is silent** - which is
+the whole point of the partial-entry design, and is what makes HKJ's missing
+`leadContactMm` mean something. That drawing is not silent; I just could not
+resolve which callout goes with which field.
+
+So the entry was removed rather than trimmed. **There is no way to say "I checked
+these four values and not those two" in this file, and that is deliberate.** An
+entry you cannot make truthfully in full does not belong in an oracle, because
+the cost of a false expectation is someone sent to fix working code.
+
+Related to the `CC-14-1` `leadSides` hole above, but not the same: there, the
+drawing genuinely does not settle the value. Here it does and I could not read it.
+
+# The vendor drawing code as a package's identity, 2026-08-20
+
+`packageType` is a caption the model composes, and it composes a different one
+each run. Measured with `bench:repeat`, the same LM358 twice:
+
+    run 1   "D, DDF, DGK, P, PS, PW, JG (8-pin)"
+    run 2   "8-pin (SOIC, SOT23-8, VSSOP, PDIP, SO, TSSOP, CDIP)"
+
+Identical pins, identical geometry, sixty values reported as changed because the
+entry moved to a new key. ADS1115 does the same (`SOT-5X3 (DYN)` against
+`SOT (DYN)`). It is not a misreading, and it is the largest single source of
+run-to-run difference in the record.
+
+It is also not just a key: `buildFootprintGeometry` names the emitted footprint
+`slugify(partNumber)-slugify(packageType)`, so a wobbling caption is a wobbling
+FILE NAME in the delivered library.
+
+So each entry now carries `outlineCode`, the vendor's own code for that
+package's drawing, and that is its identity for the join, the merge key and the
+chooser.
+
+## Measured on the run that introduced it
+
+    package entries carrying a code    172 of 214  (80.4%)
+
+    D0008A     "SOIC (D)"  "SOIC (8)"  "SOIC"  "D (SOIC, 8)"
+    DBV0005A   "SOT-23 (5)"  "SOT-23"  "SOT-23 (DBV)"  "DBV"  "5-Pin SOT-23"
+
+Six captions, one drawing.
+
+## The half that matters more: it CONTRADICTS
+
+27 pairs that the name-based proof would have called one package are kept apart
+by their codes, and every one inspected is right to be:
+
+    ADC128S102QML-SP  NAC0016A "16-Pin CFP"   vs  NAD0016A "16-Pin CFP"
+    OPA2189           D0008A   "SOIC (8)"     vs  D0014A   "SOIC"
+    LT1013            N8       "8-Lead PDIP"  vs  N14      "14-Lead PDIP"
+
+The OPA2189 pair is an eight-lead package and a fourteen-lead package whose
+captions the name proof was happy to merge. That is wrong copper, and it was
+reachable before this.
+
+## It costs nothing, and that was measured rather than assumed
+
+The temptation was to read the tuned corpus dropping from 23 fields to 19 as
+this change's fault. It is not. Because the model answers were CACHED, the join
+could be switched off and re-run on identical inputs:
+
+                          outline OFF   outline ON
+    tuned fields             20/53        20/53
+    tuned ships               8/53         8/53
+    tuned PIN NAMES          15/17        15/17
+    tuned PACKAGE FAMILY     12/12        12/12
+    hold-out READ            58/59        58/59
+    hold-out SHIPS           55/59        55/59
+
+Exactly neutral on every metric, on both corpora. **An A/B on cached answers is
+free and isolates one variable perfectly; reach for it before attributing a
+delta to the change you just made.** The remaining difference from earlier runs
+is the model reading differently under a changed prompt, which is the variance
+`bench:repeat` exists to measure.
+
+## Splitting correctly created a new refusal, and the fix is to ASK
+
+Keeping two drawings apart means a document that captions both the same way now
+has two entries with one name, and the chooser refused both:
+
+    UCC27524  "HVSSOP (DGN)"  ->  DGN0008G  and  DGN0008H
+    TLV9061   "X2SON (DPW)"   ->  DPW0005A  and  DPW0005B
+
+Two options with one label are not a choice. `packageOptions` now appends the
+drawing code where, and only where, the captions collide, and `pinTableFor`
+resolves the bracketed form back to the one table. Hold-out
+`unsupported: gives a pinout for each package` went 2 to 1 on a free re-run.
+
+This is RULES.md rule 3 taken literally: the document prints two drawings, which
+one this part uses is specific to the part, so ask rather than merge or refuse.
+
+## Why revisions are treated as different drawings
+
+`sameOutlineCode` matches a code wearing decoration (`751-07` against
+`CASE 751-07`, `1L` against `1L_LQFP100_ME_V3`, `DSJ` against
+`DSJ (R-PVSON-N14)`) and NOT a code differing in its trailing character
+(`D0008A` against `D0014A`, `DDA0008B` against `DDA0008C`).
+
+The suffix rule is a PREFIX AT A SEPARATOR rather than a truncation, because
+truncating at the first underscore would collapse ST's own codes into each
+other: `7983231_13` and `7983231_14` are two drawings.
+
+Whether `DGN0008G` and `DGN0008H` are one package redrawn or two packages is NOT
+settled here, and the chooser asking is the honest answer to that.
+
+## `bench:mutation` left a live mutation in the tree AGAIN
+
+It is recorded above, from 2026-08-16, that this bench edits source in place and
+once left a mutation behind. On 2026-08-20 it did it again, and only a habit of
+reading `git status` before finishing caught it:
+
+    src/lib/ipc7351.ts
+    -    B: { toe: 0.35, heel: 0.35, side: 0.03 },
+    +    B: { toe: 0.35, heel: 0.35, side: 0.35 },
+
+That is the gull-wing side fillet at density B, ten times too large, on the path
+that computes every land pattern not read from a printed footprint. Committed, it
+would have widened the pads on real boards.
+
+The cause was a TIMEOUT: the run was killed at ten minutes, part way through, so
+whatever restores the file never ran. The earlier note assumed the danger was a
+crash; a wall-clock kill does it just as well, and the bench takes long enough
+that killing it is the normal outcome rather than an exceptional one.
+
+**Never let `bench:mutation` be the last thing before a commit, and always
+`git diff --stat` after it whatever the exit code.** The tests all passed with
+the mutation in the tree, because the mutation is chosen to be one the tests
+catch only when the harness asserts on it - a green suite says nothing here.
+
+## Refusing while holding the answer, three times in one file
+
+Anthony's bar for finished, 2026-08-20, in his words: **"if the datasheet
+genuinely doesnt contain the answer then if the user inputs the answer then we're
+perfect."** That makes any refusal we could have turned into a question a defect,
+and the hold-out breakdown reads as a list of them:
+
+    1  NOT A DATASHEET (retrieval fetched the wrong document)
+    2  held: uncitable pins
+    1  unsupported: gives a pinout for each package
+
+Not one of those is a question the user is asked. Three were fixed and hold-out
+SHIPS went 55/59 to 58/59 (93% to 98%), with READ, the dimension oracle and the
+copper bench all unmoved.
+
+### Pin tables refused for want of a page number
+
+`citeSoleRenderedPinoutPage` required EXACTLY ONE rendered page to identify as a
+pinout page. That was sound when a handful of pages were sent; once the render
+budget went to 16, a multi-package datasheet sends two and a correctly-read table
+was discarded.
+
+Settled by CONTENT instead: among the candidate pages, the one whose text carries
+this table's pin names, needing over half of them and strictly more than any
+rival. A tie still refuses. Names are compared on letters and digits only,
+because a PDF text layer reorders characters within a label but does not invent
+them.
+
+The same proof then had to be applied to the FLAT `record.pins`, which is where
+the two hold-out parts were actually stuck: a pinout drawn as vector artwork has
+no text to quote, and the model cites the page it saw rather than one the drawing
+pass was shown, so `verifyCitation` and `citeRenderedPage` both fail on rows that
+are right. **Fixing the per-package path and assuming the flat path was the same
+code cost a whole measurement cycle - check which path the message comes from.**
+
+### Every harvested name failing to match
+
+The ordering table and the pinout section are two vocabularies, and when they
+share no word the chooser told the user no pinout matched, about pinouts it was
+holding. It now offers the document's own package names instead.
+
+Narrow deliberately: only when NOT ONE harvested designator resolved, so a
+working chooser cannot gain a spurious option and a sibling's package cannot
+appear beside the real one.
+
+### What is left, and it is not extraction
+
+The last non-shipping hold-out part is retrieval fetching the wrong document - a
+3-page hobby-shop breakout page instead of a datasheet. Layer 1, not Layer 2, and
+under Anthony's bar it is answered by the user supplying the PDF.
+
+# Finishing parsing and generation, 2026-08-21
+
+Work against the plan in `PLAN.md`. Phases 1 and 2 are done, 3 is advanced and
+by nature continuing, 4 is done for the part that blocked a bundle, 5 is a gate
+that needs someone other than me to pick the parts.
+
+## The generator was not a function, and nothing we had discussed would have found it
+
+Reproducibility had been treated as a model problem for two days. It was not
+only a model problem:
+
+    exporters.ts:372    new Date()   -> the STEP header
+    exporters.ts:2481   new Date()   -> the manifest
+    zip.file(...)                    -> JSZip stamps EVERY entry from the clock
+
+Three sources, and the third was found only because a test compared the raw
+archive rather than its contents. Two exports of one record differed byte for
+byte, so a perfect record cache would still have handed the user a different
+bundle.
+
+**The geometry was already fine.** Every file a board is fabricated from - the
+KiCad footprint and symbol, both Altium libraries - is a pure function of the
+record and always was. What the timestamps did was HIDE that: anyone diffing two
+bundles saw a difference and could not tell whether the copper had moved.
+
+The clock is now an input (`ExportOptions.generatedAt`), which is the
+`SOURCE_DATE_EPOCH` convention. Production still gets the real time, because a
+file claiming to have been made at a time it was not is worse than a file that
+differs. Three tests pin it: the whole archive byte-identical when pinned, every
+geometry file identical even when NOT pinned, and no geometry file containing the
+timestamp at all.
+
+## Every accuracy number before today was measured without the deadline
+
+`bench:extraction` and `bench:holdout` called `runExtraction` bare. The routes
+wrap it in `withDeadline` and DISCARD the whole pass on expiry. Both benches now
+apply `modelBudgetMs` against the same 150s the routes carry, with the limiter's
+sleeps added back because pacing belongs to the bench.
+
+Re-measured under it: hold-out unchanged at READ 58/59, SHIPS 58/59.
+
+## SHIPS and VERIFIED are two different claims
+
+`SHIPS 98%` says a bundle came out. It says nothing about whether the numbers in
+it are right, and the two were being read as one figure. ISL71001M shipped for
+weeks with a body height of 1.00 mm where its drawing prints 1.20 Max, with every
+check green.
+
+`bench:extraction` now prints VERIFIED: the fraction of SHIPPING parts whose
+drawing a person has actually read. It is 8 of 9.
+
+Its first run said 7 of 9, because it looked the oracle up by exact key while
+`bench:dimensions` matched with `sameOutlineCode`: NCP1200 reads `CASE 751-07`
+against an oracle keyed `751-07`. **Two instruments disagreeing about one part is
+how you find out one of them is wrong.**
+
+## The mutation bench needed a write-ahead journal, not a signal handler
+
+It left a live mutation in the tree on 2026-08-20. The first fix was signal
+handlers; while TESTING that fix, a kill left `HOLE_ALLOWANCE` at 0.05 instead of
+0.2 - the through-hole drill allowance. SIGKILL cannot be caught, and a harness
+killing a process tree does not politely send SIGTERM first.
+
+So the original contents are written to `.mutation-journal.json` BEFORE the file
+is mutated, and recovery happens at STARTUP. That survives SIGKILL and a power
+cut, because it needs this process to run no code at all.
+
+Then a second bug in the fix: recovery was placed AFTER the baseline check, so a
+leftover mutation would fail the baseline and the bench would exit reporting a
+red suite with the corruption still in the tree - worse than the original.
+Recovery now runs first.
+
+Proven end to end: SIGKILL mid-mutation, then a fresh run recovered the file and
+said so loudly. **All tests passed with the corruption present, both times.**
+
+## The seven guards are alive; zero firings is about the DATA
+
+`bench:guards` reports zero firings across three corpora, which reads as dead
+code. On 2026-08-21 that nearly got three of them deleted.
+
+A probe with deliberately absurd records trips every one of them. The three that
+appeared dead were being read through the wrong field: a rejected printed pattern
+does not raise, it falls back, and the fallback is visible in
+`provenance.source`, not in a discards array. **That was the seventh instrument
+error in two days, and the only one that would have deleted working safety
+checks.**
+
+Zero firings means no printed footprint in the corpus is bad enough to trip them.
+`guards-fire.test.ts` now trips each one on purpose, because a guard that never
+fires on real input is exactly the guard a refactor can disable with no bench
+number moving.
+
+## The outline code fixed the worst drift, measured
+
+`bench:repeat`, live, after the outline-code work:
+
+    STM32F407VG   IDENTICAL across 2 runs (28 values)   was 92+ differing
+    TPS54360      2 values differ
+
+STM32F407VG was the one uncharacterised case in the whole reproducibility
+picture and it is now clean.
+
+**The one known remaining drift**, and it is a real one:
+`solderMaskDefined` and `solderMaskExpansionMm` flip between a value and null on
+TPS54360. It reaches the deliverable: one run emits `solderMaskMarginMm: 0.07`
+and the other omits the key, leaving the CAD tool's own default.
+
+Not fixed, and deliberately not papered over. The document DOES print 0.07, so
+defaulting it would be inventing a number to cover a reading failure, which
+RULES.md rule 1 forbids. A fab-process setting would be the RULES rule 3 answer,
+but adding one is a product decision about the settings gate rather than a
+parsing fix. **Anthony's call.**
+
+## "We fetched the wrong document" is not "we could not read it"
+
+The last hold-out part that cannot ship is a three-page hobby-shop breakout page
+retrieved instead of a datasheet. The user was told no pinout could be read,
+which sends them to re-run a parse that will fail identically, instead of to the
+one action that works: uploading the datasheet.
+
+`looksLikeWrongDocument` now lives in `pdftext.ts` and BOTH the bench and the
+lookup route use it. It was previously a heuristic inside the bench only, so the
+bench could classify a case the product had no way to detect - a bench measuring
+something nobody ships. The route answers 422 `NOT_A_DATASHEET`, and it is
+deliberately not retryable: re-running finds the same page.
+
+Only on the lookup path. An uploaded PDF is whatever the user meant to give us
+and is never second-guessed.
+
+## Oracle coverage
+
+13 drawings and 163 values on 2026-08-19; **20 drawings and 228 values now**,
+zero wrong. Added this pass: ON Semi's SOIC-8, TI's ceramic dual flatpack,
+Renesas' 64-QFP, ADI's 14-terminal LGA, and both ST LQFPs.
+
+LQFP was the largest family in the corpus with no hand-read entry at all. Both
+sizes are in now, kept as separate entries on purpose: `1L` and `1A` are the same
+FAMILY and different DRAWINGS, and having both is what proves the reader is
+reading each drawing rather than recognising "an ST LQFP".
+
+Three ST footprint figures share one convention worth knowing: they print an
+OUTER extent and an INNER one and leave the centre span implied.
+
+    LQFP100   16.7 outer, 1.2 land   -> 14.3 inner (printed, confirming), span 15.5
+    LQFP144   22.60 outer, 1.35 land -> 19.90 inner (printed), span 21.25
+
+Each figure also prints a third number (12.3, 17.85) that is the pad ROW and not
+a span: N lands at 0.5 pitch plus one land width. Reading it as a span would put
+copper in the wrong place.

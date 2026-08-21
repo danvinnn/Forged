@@ -413,3 +413,125 @@ test("the pitch is asked for, not merely named in the refusal", () => {
     `the refusal names the pitch, so the ask must offer it; got ${JSON.stringify(asked.map((n) => n.field))}`
   );
 });
+
+// TWO DRAWINGS THE DOCUMENT CAPTIONS IDENTICALLY.
+//
+// The DFN6 case above works because the two captions differ. After 2026-08-20
+// entries carrying contradicting drawing codes are no longer merged on the
+// strength of a shared caption, so a document that prints two drawings under one
+// name leaves two entries with the SAME `packageType`. Measured that day on the
+// tuned corpus: UCC27524 offers "HVSSOP (DGN)" as both DGN0008G and DGN0008H,
+// TLV9061 offers "X2SON (DPW)" as DPW0005A and DPW0005B.
+//
+// Two options with one label are not a choice, so the drawing code is appended
+// where, and only where, the captions collide.
+test("two drawings under one caption are told apart by their drawing codes", () => {
+  const table = (name: string, outlineCode: string) => ({
+    packageType: name,
+    outlineCode,
+    pins: pins(8),
+    citation: { page: 3, snippet: name, region: null }
+  });
+  const choice = packageOptions(
+    record({
+      pins: nothing<PinRecord[]>(),
+      pinCount: nothing<number>(),
+      packageVariants: [variant("HVSSOP (DGN)", "HVSSOP", 8)],
+      packagesInThisDocument: [table("HVSSOP (DGN)", "DGN0008G"), table("HVSSOP (DGN)", "DGN0008H")]
+    })
+  );
+
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  const named = choice.options.map((option) => option.designator).sort();
+  assert.deepEqual(
+    named,
+    ["HVSSOP (DGN) [DGN0008G]", "HVSSOP (DGN) [DGN0008H]"],
+    "the code is what tells them apart, so the code is offered"
+  );
+  assert.ok(
+    choice.options.every((option) => option.status !== "unsupported" || !/none of them matches/.test(option.reason ?? "")),
+    "and neither is refused for being ambiguous with the other"
+  );
+});
+
+// The other half: the plain name survives where nothing collides. A user who
+// recognises "SOIC-8" should not be handed "SOIC-8 [D0008A]" for no reason.
+test("a drawing code is not appended when the captions already differ", () => {
+  const table = (name: string, outlineCode: string) => ({
+    packageType: name,
+    outlineCode,
+    pins: pins(6),
+    citation: { page: 3, snippet: name, region: null }
+  });
+  const choice = packageOptions(
+    record({
+      pins: nothing<PinRecord[]>(),
+      pinCount: nothing<number>(),
+      packageVariants: [variant("DFN6", "DFN", 6)],
+      packagesInThisDocument: [table("DFN6 (3x3 mm)", "AAA0006A"), table("DFN6 (2x2 mm)", "BBB0006A")]
+    })
+  );
+
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  const named = choice.options.map((option) => option.designator).sort();
+  assert.deepEqual(named, ["DFN6 (2x2 mm)", "DFN6 (3x3 mm)"], "unchanged: the names already distinguish them");
+});
+
+// THE ORDERING TABLE AND THE PINOUT SECTION SHARING NO WORD AT ALL.
+//
+// Every harvested designator then fails to match, and each option said "this
+// document gives a pinout for each package it describes, and none of them
+// matches X" - about pinouts on the record, located and complete. Recovering it
+// took hold-out SHIPS from 57/59 to 58/59 on 2026-08-20.
+test("when no harvested name matches, the document's own package names are offered", () => {
+  const table = (name: string) => ({
+    packageType: name,
+    pins: pins(8),
+    citation: { page: 3, snippet: name, region: null }
+  });
+  const choice = packageOptions(
+    record({
+      pins: nothing<PinRecord[]>(),
+      pinCount: nothing<number>(),
+      // Nothing here shares a word with either located table.
+      packageVariants: [variant("NDW", "NDW", 8)],
+      packagesInThisDocument: [table("SOIC (D)"), table("VSSOP (DGK)")]
+    })
+  );
+
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  const named = choice.options.map((option) => option.designator).sort();
+  assert.deepEqual(named, ["SOIC (D)", "VSSOP (DGK)"], "the document's own names, for the user to pick from");
+  assert.ok(
+    choice.options.every((option) => !/none of them matches/.test(option.reason ?? "")),
+    "and nothing is refused while its pinout is on the record"
+  );
+});
+
+// NARROW ON PURPOSE: a chooser that already works must not gain extra options.
+test("a part whose harvested name already matches gains no extra options", () => {
+  const table = (name: string) => ({
+    packageType: name,
+    pins: pins(8),
+    citation: { page: 3, snippet: name, region: null }
+  });
+  const choice = packageOptions(
+    record({
+      pins: nothing<PinRecord[]>(),
+      pinCount: nothing<number>(),
+      packageVariants: [variant("SOIC-8", "SOIC", 8)],
+      packagesInThisDocument: [table("SOIC-8"), table("VSSOP (DGK)")]
+    })
+  );
+
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  assert.deepEqual(
+    choice.options.map((option) => option.designator),
+    ["SOIC-8"],
+    "one harvested designator resolved, so the fallback stays out of the way"
+  );
+});

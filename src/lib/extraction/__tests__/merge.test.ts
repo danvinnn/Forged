@@ -1037,3 +1037,168 @@ test("the printed-page fallback resolves nothing when the number is ambiguous", 
   assert.equal(outcome.part.dimensions.bodyHeightMm.citation, null, "no page, so no citation");
   assert.ok(outcome.uncited.includes("dimensions.bodyHeightMm"));
 });
+
+// The envelope spelling of "N mm max height", added 2026-08-20. Renesas heads
+// its outline drawings "64-QFP 10.0 x 10.0 x 1.2 mm Body, 0.5 mm Pitch", and the
+// live ISL71001M record took 1.00 from Detail A instead, shipping a STEP solid
+// 0.2 mm short.
+test("a body envelope in the title block corrects the height the model returned", () => {
+  const drawing = datasheetTextFromPages([
+    "Cover",
+    "Package Outline Drawing Q64.10x10J\n64-QFP 10.0 x 10.0 x 1.2 mm Body, 0.5 mm Pitch\n1.00 +/- 0.05\n1.20 Max"
+  ]);
+  const outcome = mergeModelValues(
+    buildPartRecord(drawing, "ACME.pdf"),
+    drawing,
+    { values: { "dimensions.bodyHeightMm": { value: 1.0, page: 2 } } } as ExtractionResult,
+    "test-model",
+    [2]
+  );
+
+  assert.equal(outcome.part.dimensions.bodyHeightMm.value, 1.2, "the page states the envelope");
+});
+
+// The guard that keeps the addition from becoming a general "read the title
+// block" rule: a page that states the height two ways and disagrees with itself
+// corrects nothing.
+test("a page whose two height statements disagree corrects nothing", () => {
+  const conflicted = datasheetTextFromPages([
+    "Cover",
+    "CFP - 2.33mm max height\n16-CFP 9.9 x 6.5 x 1.2 mm Body"
+  ]);
+  const outcome = mergeModelValues(
+    buildPartRecord(conflicted, "ACME.pdf"),
+    conflicted,
+    { values: { "dimensions.bodyHeightMm": { value: 1.778, page: 2 } } } as ExtractionResult,
+    "test-model",
+    [2]
+  );
+
+  assert.equal(outcome.part.dimensions.bodyHeightMm.value, 1.778, "two candidates, so the model's answer stands");
+});
+
+// SEVERAL PINOUT PAGES, SETTLED BY CONTENT.
+//
+// `citeSoleRenderedPinoutPage` required exactly ONE rendered page to identify as
+// a pinout page. Once the render budget went to 16 pages, a multi-package
+// datasheet routinely sends two, and pin tables that had been read correctly
+// were refused for want of a page number. Measured 2026-08-20: two hold-out
+// parts held with uncitable pins.
+test("two pinout pages are settled by which one carries this table's pin names", () => {
+  const twoPinouts = datasheetTextFromPages([
+    "Cover",
+    "Pin Configuration\nVIN VOUT GND ENABLE NR SENSE FB COMP",
+    "Pin Configuration\nAIN0 AIN1 AIN2 AIN3 SCL SDA ADDR ALERT"
+  ]);
+  const outcome = mergeModelValues(
+    buildPartRecord(twoPinouts, "ACME.pdf"),
+    twoPinouts,
+    {
+      values: {},
+      packagesInThisDocument: [
+        {
+          packageType: "VSSOP (DGS)",
+          pins: [
+            { number: "1", name: "AIN0", electricalType: "unspecified" },
+            { number: "2", name: "AIN1", electricalType: "unspecified" },
+            { number: "3", name: "AIN2", electricalType: "unspecified" },
+            { number: "4", name: "SCL", electricalType: "unspecified" },
+            { number: "5", name: "SDA", electricalType: "unspecified" },
+            { number: "6", name: "ADDR", electricalType: "unspecified" }
+          ]
+        }
+      ]
+    } as ExtractionResult,
+    "test-model",
+    [2, 3]
+  );
+
+  const entry = outcome.part.packagesInThisDocument?.[0];
+  assert.ok(entry?.pins && entry.pins.length === 6, "the table survives instead of being discarded");
+  assert.equal(entry?.citation?.page, 3, "cited to the page that actually carries these names");
+});
+
+// THE TIE STILL REFUSES. This is the half that keeps it a proof.
+test("two pinout pages carrying the same names cite neither", () => {
+  const identical = datasheetTextFromPages([
+    "Cover",
+    "Pin Configuration\nOUT IN- IN+ VCC GND",
+    "Pin Configuration\nOUT IN- IN+ VCC GND"
+  ]);
+  const outcome = mergeModelValues(
+    buildPartRecord(identical, "ACME.pdf"),
+    identical,
+    {
+      values: {},
+      packagesInThisDocument: [
+        {
+          packageType: "SOIC (D)",
+          pins: [
+            { number: "1", name: "OUT", electricalType: "unspecified" },
+            { number: "2", name: "IN-", electricalType: "unspecified" },
+            { number: "3", name: "IN+", electricalType: "unspecified" },
+            { number: "4", name: "VCC", electricalType: "unspecified" }
+          ]
+        }
+      ]
+    } as ExtractionResult,
+    "test-model",
+    [2, 3]
+  );
+
+  // The table IS cited here, and by a better route: both pages carry the rows in
+  // their text layer, so the ordinary text proof fires first and names page 2.
+  // What must not happen is the AMBIGUOUS rendered-page proof claiming a page it
+  // cannot tell from its neighbour.
+  const entry = outcome.part.packagesInThisDocument?.[0];
+  assert.ok(
+    !/rendered pinout page/.test(entry?.citation?.snippet ?? ""),
+    "a tie between two pinout pages proves nothing, whatever else cites the table"
+  );
+});
+
+// THE SAME PROOF, FOR THE FLAT PIN TABLE.
+//
+// A pinout drawn as vector artwork has no text to quote, and the model cites the
+// page it saw rather than one the drawing pass was shown, so both the text check
+// and `citeRenderedPage` fail on rows that were read correctly. Measured
+// 2026-08-20: two hold-out parts held on exactly this, and recovering them took
+// SHIPS from 55/59 to 57/59.
+test("a pin table nothing else can cite is proven by the rendered page carrying its names", () => {
+  const artwork = datasheetTextFromPages([
+    "Cover",
+    "Ordering information",
+    // The pinout page: it identifies itself and prints the names, but the rows
+    // are not quotable as a table, so `verifyCitation` cannot carry it.
+    "Pin Configuration\nOUT1 IN1- IN1+ VEE IN2+ IN2- OUT2 VCC"
+  ]);
+  const outcome = mergeModelValues(
+    buildPartRecord(artwork, "ACME.pdf"),
+    artwork,
+    {
+      values: {
+        // Page 9 does not exist in this document and was never rendered, which
+        // is what makes both earlier checks fail.
+        pins: {
+          value: [
+            { number: "1", name: "OUT1" },
+            { number: "2", name: "IN1-" },
+            { number: "3", name: "IN1+" },
+            { number: "4", name: "VEE" },
+            { number: "5", name: "IN2+" },
+            { number: "6", name: "IN2-" },
+            { number: "7", name: "OUT2" },
+            { number: "8", name: "VCC" }
+          ],
+          page: 9
+        }
+      }
+    } as unknown as ExtractionResult,
+    "test-model",
+    [3]
+  );
+
+  assert.equal(outcome.part.pins.value?.length, 8, "the rows survive");
+  assert.equal(outcome.part.pins.citation?.page, 3, "cited to the rendered page that carries the names");
+  assert.ok(!outcome.uncited.includes("pins"), "and it is no longer held as uncitable");
+});

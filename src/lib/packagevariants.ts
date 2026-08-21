@@ -520,6 +520,59 @@ export function normaliseForMatch(name: string): string {
  * digits must follow immediately, so a JEDEC number like `MS-012` is rejected by
  * the hyphen rather than being mistaken for a package called `MS`.
  */
+/**
+ * One vendor drawing code, with the decoration a model adds around it removed.
+ *
+ * Kept separate from `outlineCodeDesignator`, which reduces a TI code to its
+ * letter designator (`D0008A` to `D`). That is the right reduction for matching
+ * a code against a package NAME and the wrong one for asking whether two entries
+ * describe the same DRAWING: `D0008A` and `D0014A` both designate `D`, and they
+ * are a SOIC-8 and a SOIC-14.
+ */
+export function normalizeOutlineCode(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  let value = raw.trim();
+  if (value.length === 0) return null;
+  // "CASE 751-07" is ON Semiconductor's own heading for the code "751-07", and
+  // the model returns it both ways on the same document.
+  value = value.replace(/^(?:CASE|PACKAGE\s+OUTLINE|OUTLINE)\s+/i, "");
+  // "DSJ (R-PVSON-N14)" is the code with the JEDEC style spelled out beside it.
+  value = value.replace(/\s*\([^)]*\)\s*/g, " ");
+  value = value.trim().replace(/\s+/g, " ").toUpperCase();
+  return value.length > 0 && value.length <= 32 ? value : null;
+}
+
+/**
+ * Do two drawing codes name the same drawing?
+ *
+ * MEASURED over the cached corpus on 2026-08-20: the code came back identical on
+ * 44 of 52 parts. Of the eight that differed, six were one code wearing
+ * decoration and two were genuinely different drawings:
+ *
+ *     751-07   vs  CASE 751-07              same, a heading
+ *     DSJ      vs  DSJ (R-PVSON-N14)        same, a style spelled out
+ *     1L       vs  1L_LQFP100_ME_V3         same, ST's descriptive suffix
+ *     DDA0008B vs  RGT0016C                 DIFFERENT drawings
+ *     DCK0006A vs  DBV0006A                 DIFFERENT: SC-70 against SOT-23
+ *
+ * The suffix case is handled as a PREFIX AT A SEPARATOR rather than by stripping
+ * everything after the first underscore, because stripping would collapse ST's
+ * own codes into each other: `7983231_13` and `7983231_14` are two drawings, and
+ * neither is a prefix of the other at a boundary, so they stay apart.
+ *
+ * Two codes that merely start with the same letters do NOT match: `DDA0008B` and
+ * `DDA0008C` are a revision apart, and `D0008A` against `D0014A` differs by six
+ * leads. Only a separator counts as the end of a code.
+ */
+export function sameOutlineCode(a: string | null | undefined, b: string | null | undefined): boolean {
+  const left = normalizeOutlineCode(a);
+  const right = normalizeOutlineCode(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
+  return longer.startsWith(shorter) && /^[\s_\-.]/.test(longer.slice(shorter.length));
+}
+
 export function outlineCodeDesignator(outlineCode: string | null): string | null {
   if (!outlineCode) return null;
   const match = /^([A-Za-z]{1,5})\d{2,}[A-Za-z]?$/.exec(outlineCode.trim());
@@ -674,14 +727,39 @@ export function findOrderablePackages(text: string, partNumber: string): Package
  * answer rather than a guess. `buildFootprintGeometry` refuses anything left
  * contradictory.
  */
-export function pinTableFor<T extends { packageType: string; alsoKnownAs?: string[]; pins?: unknown[] }>(
-  tables: readonly T[] | undefined,
-  designator: string
-): T | null {
+export function pinTableFor<
+  T extends { packageType: string; alsoKnownAs?: string[]; outlineCode?: string; pins?: unknown[] }
+>(tables: readonly T[] | undefined, designator: string): T | null {
   if (!tables || tables.length === 0) return null;
 
   /** Letters and digits only, so `VQFN (RGE)` and `VQFNRGE` are one string. */
   const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  // A DRAWING CODE IN THE DESIGNATOR SETTLES IT BEFORE ANY NAME IS COMPARED.
+  //
+  // A document can print two drawings under one caption, and after 2026-08-20
+  // those stay two entries rather than being merged on the strength of the
+  // caption. Measured on the tuned corpus that day:
+  //
+  //     UCC27524   "HVSSOP (DGN)"  ->  DGN0008G  and  DGN0008H
+  //     TLV9061    "X2SON (DPW)"   ->  DPW0005A  and  DPW0005B
+  //     OPA2189    "SOIC"          ->  D0008A    and  D0014A
+  //
+  // Every name-based rule below then finds two tables, picks neither, and the
+  // user is told no pinout matches a package whose pinout we are holding twice.
+  // So `packageOptions` offers the code alongside the caption, and an answer
+  // carrying one is resolved here, by the one thing that tells the two apart.
+  const bracketed = /\[([^\]]+)\]\s*$/.exec(designator.trim());
+  if (bracketed) {
+    const wantedCode = bracketed[1];
+    const matched = tables.filter((table) => sameOutlineCode(table.outlineCode, wantedCode));
+    if (matched.length === 1) return matched[0];
+    // A code that names no table, or two, is not an answer. Falling through to
+    // the name rules would then match on the caption the two SHARE, which is
+    // the ambiguity this branch exists to resolve; better to refuse.
+    if (matched.length > 1) return null;
+    designator = designator.slice(0, bracketed.index).trim();
+  }
   // EVERY NAME THE DOCUMENT PRINTS FOR THIS PACKAGE, not only the one the entry
   // happens to be filed under. An entry assembled from two passes carries both,
   // and the designator arriving here comes from a third place again: the

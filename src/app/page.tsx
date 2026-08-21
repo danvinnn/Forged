@@ -369,6 +369,14 @@ export default function HomePage() {
   const [settings, setSettings] = useState<ForgeSettings>({});
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * The last action that failed for a reason worth trying again, or null.
+   *
+   * A drawing pass that could not be run is not a verdict on the document, so
+   * the user is offered the same attempt rather than an empty record and a
+   * sentence about it. See `SecondPassFailedError`.
+   */
+  const [retry, setRetry] = useState<(() => void) | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -564,6 +572,7 @@ export default function HomePage() {
     }
 
     setBusy(true);
+    setRetry(null);
     setStatus(packageType ? `Re-reading ${file.name} as ${packageType}…` : `Reading ${file.name}…`);
 
     try {
@@ -573,7 +582,18 @@ export default function HomePage() {
 
       const response = await fetch("/api/parse", { method: "POST", body: formData });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Could not read that datasheet.");
+      if (!response.ok) {
+        // RETRYABLE MEANS THE DOCUMENT WAS FINE AND WE WERE NOT.
+        //
+        // The server says which failures are worth repeating; the UI does not
+        // guess from the status code. A 503 from the drawing pass keeps the
+        // file in hand and offers the same attempt, because re-uploading and
+        // hoping was the only recourse before this.
+        if (payload.retryable || payload.code === "MODEL_UNAVAILABLE") {
+          setRetry(() => () => void handleFile(file, packageType));
+        }
+        throw new Error(payload.error || "Could not read that datasheet.");
+      }
 
       const record = payload.part as PartRecord;
       absorb(payload, record, Boolean(packageType));
@@ -1474,6 +1494,11 @@ export default function HomePage() {
       <footer className={`status${busy ? " status-busy" : ""}`} role="status" aria-live="polite">
         <span className="status-dot" aria-hidden="true" />
         {status}
+        {retry !== null && !busy && (
+          <button type="button" className="status-retry" onClick={retry}>
+            Try again
+          </button>
+        )}
       </footer>
     </div>
   );

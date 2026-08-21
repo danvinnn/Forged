@@ -12,8 +12,9 @@ import {
   type RetrievalSuccess
 } from "../../../lib/retrieval";
 import { extractPartRecord } from "../../../lib/datasheet";
-import { PdfExtractionError, type DatasheetText } from "../../../lib/pdftext";
+import { looksLikeWrongDocument, PdfExtractionError, type DatasheetText } from "../../../lib/pdftext";
 import { makeExtractionModel, runExtraction } from "../../../lib/extraction";
+import { SecondPassFailedError } from "../../../lib/extraction/contracts";
 import {
   ModelDeadlineError,
   modelBudgetMs,
@@ -27,6 +28,24 @@ import { type PackageChoice } from "../../../lib/exporters";
 import { type ConfidenceCheck } from "../../../lib/confidence";
 import { type ReviewItem } from "../../../lib/review";
 import { type PartRecord } from "../../../lib/types";
+
+/**
+ * Retrieval found something that is not a datasheet.
+ *
+ * A distinct type rather than a note on the record, because the ACTION is
+ * distinct: every other failure here is answered by trying again, and this one
+ * is answered by the user handing us the right PDF. Telling them "no pinout
+ * could be read" sends them to re-run a parse that will fail the same way.
+ */
+class WrongDocumentError extends Error {
+  constructor(readonly source: string) {
+    super(
+      `The document found for this part number does not look like a component datasheet ` +
+        `(it is a few pages with almost no text). Upload the datasheet PDF directly and it will be read.`
+    );
+    this.name = "WrongDocumentError";
+  }
+}
 
 /**
  * How much of a route's remaining budget rendering may take.
@@ -45,7 +64,10 @@ const RENDER_SHARE_OF_BUDGET = 1 / 3;
 
 export const runtime = "nodejs";
 // Ceiling so a slow retrieval or parse cannot hold a serverless function open indefinitely.
-export const maxDuration = 30;
+// Raised from 30 on 2026-08-20 with `/api/parse`; the reasoning is recorded
+// there. This route ALSO fetches the PDF over the network before it starts, so
+// it has less of the budget left than the other one and needs it more.
+export const maxDuration = 150;
 
 /**
  * The model pass gets a budget carved out of this route's own, exactly as on
@@ -95,6 +117,21 @@ async function extractPart(
     packageType: packageHint
   });
 
+  // WE FETCHED THE WRONG DOCUMENT, and saying so is worth more than reading it.
+  //
+  // Retrieval sometimes lands on a distributor page or a breakout-board writeup
+  // rather than a datasheet. Extraction then correctly finds no pin table, and
+  // the user is told no pinout could be read - which points them at re-running a
+  // parse that will fail identically, instead of at the one action that works:
+  // uploading the datasheet themselves.
+  //
+  // Only reachable on the LOOKUP path, because it is about what retrieval found.
+  // An uploaded PDF is whatever the user meant to give us and is never second
+  // guessed here.
+  if (looksLikeWrongDocument(doc)) {
+    throw new WrongDocumentError(ref.pdfUrl ?? ref.fileName);
+  }
+
   const model = await makeExtractionModel(mode);
   if (!model) return { part, method: "text only", doc, rendered: [] };
 
@@ -102,7 +139,7 @@ async function extractPart(
   //
   // This route ran the model with no budget at all while the other one carved
   // one out, checked it was worth asking, and raced the call against it. Both
-  // have `maxDuration = 30`, a model call can take 41.6 seconds, and THIS route
+  // have `maxDuration = 150`, a model call can take 90 seconds, and THIS route
   // spends part of its budget fetching the PDF over the network first, so it is
   // the likelier of the two to be killed by the platform. Being killed costs the
   // user the record that had already succeeded and returns a 504, which is
@@ -121,6 +158,8 @@ async function extractPart(
       rendered: []
     };
   }
+
+
 
   try {
     const outcome = await withDeadline(
@@ -146,6 +185,11 @@ async function extractPart(
       rendered: outcome.renderedImages
     };
   } catch (error) {
+    // The drawing pass failing is a failed lookup, not a thinner one. Rethrown
+    // rather than noted, so the caller answers 503 with a retry exactly as
+    // `/api/parse` does; see `SecondPassFailedError`. Degrading here would ship
+    // text-layer dimensions as though they had been read off a drawing.
+    if (error instanceof SecondPassFailedError) throw error;
     // The record is still useful; a model outage must not lose it. A deadline is
     // reported as what it is rather than as a failure, because the two call for
     // different actions: one is retryable, the other means this document is too
@@ -253,6 +297,23 @@ export async function POST(request: Request) {
       return NextResponse.json<RetrievalError>(
         { error: error.message, code: "PARSE_LIMIT_EXCEEDED", mode },
         { status: 422 }
+      );
+    }
+    // We fetched the wrong document. NOT retryable, because re-running finds the
+    // same page again; the user uploading the datasheet is what fixes it, and
+    // saying so is the whole point of separating this from a read failure.
+    if (error instanceof WrongDocumentError) {
+      return NextResponse.json<RetrievalError>(
+        { error: error.message, code: "NOT_A_DATASHEET", mode },
+        { status: 422 }
+      );
+    }
+    // The pass that reads the drawings died. Retryable, and said as such rather
+    // than returned as a thinner record; see `SecondPassFailedError`.
+    if (error instanceof SecondPassFailedError) {
+      return NextResponse.json<RetrievalError>(
+        { error: error.message, code: "MODEL_UNAVAILABLE", mode },
+        { status: 503, headers: { "Retry-After": "5" } }
       );
     }
     throw error;

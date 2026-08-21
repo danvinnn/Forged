@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { datasheetTextFromPages } from "../../pdftext";
 import { buildPartRecord } from "../../datasheet";
 import { runExtraction } from "../run";
@@ -37,6 +39,19 @@ function stub(answers: ExtractionResult[]): ExtractionModel & { seen: Extraction
       return answers[Math.min(call++, answers.length - 1)];
     }
   };
+}
+
+/** A real cached datasheet when one is present, for the tests that must render. */
+function anyCachedPdf(): ArrayBuffer | null {
+  for (const dir of [".bench-cache", ".holdout-cache"]) {
+    const path = join(process.cwd(), dir);
+    if (!existsSync(path)) continue;
+    const pdf = readdirSync(path).find((file) => file.endsWith(".pdf"));
+    if (!pdf) continue;
+    const bytes = readFileSync(join(path, pdf));
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  }
+  return null;
 }
 
 /** A one-page PDF is enough: rendering is allowed to fail and must not matter. */
@@ -676,4 +691,277 @@ test("a joined package answers to both names the document prints for it", async 
   assert.equal(tables.length, 1, "one package");
   assert.equal(pinTableFor(tables, "SOT-23 (DBV)")?.pins?.length, 5, "found by the pinout section's name");
   assert.equal(pinTableFor(tables, "SOT-23 (5)")?.pins?.length, 5, "and by the drawing's");
+});
+
+// ---------------------------------------------------------------------------
+// When the pass that reads the DRAWINGS fails
+// ---------------------------------------------------------------------------
+
+const imageRequest = (): ExtractionRequest => ({
+  pages: [],
+  images: [{ page: 3, mimeType: "image/png", base64: "x", widthPx: 10, heightPx: 10 }],
+  fileName: "ACME555.pdf",
+  fields: ["dimensions.pitchMm"]
+});
+
+test("the drawing pass is asked a second time before it is allowed to fail", async () => {
+  // `callWithRetry` already retries three times inside one call, and it is not
+  // enough: ADM3202 failed on four separate runs, roughly a dozen provider
+  // attempts, then succeeded on the fifth with no code change.
+  const { askTwice } = await import("../run");
+  let calls = 0;
+  const flaky: ExtractionModel = {
+    name: "flaky",
+    isConfigured: () => true,
+    extract: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("503 service unavailable");
+      return { values: { "dimensions.pitchMm": { value: 0.65, page: 3 } } };
+    }
+  };
+
+  const result = await askTwice(flaky, imageRequest(), 1);
+  assert.equal(calls, 2, "asked again rather than given up on");
+  assert.equal(result.values["dimensions.pitchMm"]?.value, 0.65);
+});
+
+test("a drawing pass that fails twice refuses, rather than returning text-layer numbers", async () => {
+  // The whole point. Pass 1 answers these same dimensions off the text layer
+  // and is measurably wrong there, so falling through silently ships a
+  // footprint that may be wrong with nothing saying so. Either files nobody has
+  // to second-guess, or "we could not read it, try again".
+  const { askTwice } = await import("../run");
+  const { SecondPassFailedError } = await import("../contracts");
+  let calls = 0;
+  const dead: ExtractionModel = {
+    name: "dead",
+    isConfigured: () => true,
+    extract: async () => {
+      calls += 1;
+      throw new Error("503 service unavailable");
+    }
+  };
+
+  await assert.rejects(
+    () => askTwice(dead, imageRequest(), 1),
+    (error: unknown) => {
+      assert.ok(error instanceof SecondPassFailedError, `got ${(error as Error)?.name}`);
+      assert.match((error as Error).message, /try again/i, "the user is told what to do");
+      return true;
+    }
+  );
+  assert.equal(calls, 2, "twice, and not a loop: this pass carries a megabyte of images");
+});
+
+test("a RENDER failure is not a drawing-pass failure", async () => {
+  // A host with no working renderer produces the first-pass answer, which is a
+  // supported deployment rather than an error. One `catch` used to treat this
+  // and a dead model as the same thing, and the difference is whether the user
+  // should retry.
+  const part = buildPartRecord(doc, "ACME555.pdf");
+  const model = stub([
+    { values: {}, pagesWorthRendering: [3] },
+    { values: { "dimensions.pitchMm": { value: 1.27, page: 3 } } }
+  ]);
+
+  // `NOT_A_PDF` cannot be rasterised, so rendering throws inside the pass.
+  const outcome = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf");
+
+  assert.ok(outcome, "the first pass still produced a record");
+  assert.equal(outcome.renderedPages.length, 0, "nothing was rendered");
+  assert.equal(model.seen.length, 1, "and the model was never asked a second time");
+});
+
+test("runExtraction propagates a dead drawing pass instead of degrading", async () => {
+  // The WIRING, not the retry: `askTwice` refusing is only useful if
+  // `runExtraction` lets it out. Needs a real renderable PDF, so it uses a
+  // cached one when present and skips otherwise, the same posture as
+  // `pagerender.test.ts`; no vendor PDF is committed to this repo.
+  const { SecondPassFailedError } = await import("../contracts");
+  const pdf = anyCachedPdf();
+  if (!pdf) return;
+
+  let call = 0;
+  const diesOnTheDrawings: ExtractionModel = {
+    name: "dies",
+    isConfigured: () => true,
+    extract: async () => {
+      call += 1;
+      if (call === 1) return { values: {}, pagesWorthRendering: [1] };
+      throw new Error("503 service unavailable");
+    }
+  };
+
+  const part = buildPartRecord(doc, "ACME555.pdf");
+  await assert.rejects(
+    () => runExtraction(part, doc, pdf, diesOnTheDrawings, "ACME555.pdf"),
+    (error: unknown) => error instanceof SecondPassFailedError
+  );
+});
+
+test("a shared lead count is not enough to call two packages one package", async () => {
+  // A TO-99 is a metal can, a CERDIP a ceramic through-hole body, a SOIC a
+  // 3.9mm surface-mount one. All three are 8-lead, and "both have 8" was
+  // accepted as proof of identity: OP27 chained four of its packages into one
+  // entry. `8-Lead CERDIP` gets away with it because its family reads as null -
+  // `\bDIP\b` does not match inside "CERDIP" - so the count was all that was
+  // left to compare, and the count agreed.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "8-Lead TO-99", pins: rows(8) },
+        { packageType: "8-Lead CERDIP", pins: rows(8) }
+      ]
+    },
+    { values: {}, packagesInThisDocument: [{ packageType: "8-Lead SOIC", dimensions: leadCount(8) }] }
+  );
+
+  assert.equal(merged.packagesInThisDocument?.length, 3, "three packages stay three");
+  const can = merged.packagesInThisDocument?.find((e) => /TO-99/.test(e.packageType));
+  assert.ok(
+    !(can?.alsoKnownAs ?? []).some((name) => /SOIC|CERDIP/.test(name)),
+    `a metal can must not answer to another package's name; got ${JSON.stringify(can?.alsoKnownAs)}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The vendor drawing code as an entry's identity.
+//
+// Added 2026-08-20. `packageType` is a caption the model composes and it
+// composes a different one each run: LM358 came back as
+// "D, DDF, DGK, P, PS, PW, JG (8-pin)" once and
+// "8-pin (SOIC, SOT23-8, VSSOP, PDIP, SO, TSSOP, CDIP)" the next time, which
+// moved every pin to a new key and reported sixty changed values for a record
+// that had not changed. The code is ink on the drawing and does not move.
+// ---------------------------------------------------------------------------
+
+test("one drawing code joins two entries whose captions share nothing", async () => {
+  // A REAL two-pass run, because the join it exercises only happens between the
+  // two passes: the pin table comes from the document text and the measurements
+  // come from a rendered drawing, and nothing joins them if only one pass runs.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { extractDatasheetText } = await import("../../pdftext");
+
+  const path = fileURLToPath(new URL("../../../../test-data/LMP7704-SP.pdf", import.meta.url));
+  const bytes = readFileSync(path);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const real = await extractDatasheetText(buffer);
+  const outline = real.pages.find((page) => /PACKAGE OUTLINE/.test(page.text))!;
+  const part = buildPartRecord(real, "LMP7704-SP.pdf");
+
+  const model = stub([
+    {
+      values: {},
+      pagesWorthRendering: [outline.page],
+      packagesInThisDocument: [
+        {
+          packageType: "D, DDF, DGK, P, PS, PW, JG (8-pin)",
+          outlineCode: "D0008A",
+          pins: [{ number: "1", name: "OUT1", electricalType: "unspecified" }]
+        }
+      ]
+    },
+    {
+      values: {},
+      packagesInThisDocument: [
+        {
+          packageType: "8-pin (SOIC, SOT23-8, VSSOP, PDIP)",
+          outlineCode: "D0008A",
+          dimensions: { "dimensions.pitchMm": { value: 1.27, page: outline.page } }
+        }
+      ]
+    }
+  ]);
+
+  const outcome = await runExtraction(part, real, buffer, model, "LMP7704-SP.pdf");
+  assert.equal(model.seen.length, 2, "both passes ran, so there is something to join");
+
+  const entries = outcome?.part.packagesInThisDocument ?? [];
+  assert.equal(entries.length, 1, "one package, not two, however differently it was captioned");
+  assert.ok(entries[0].pins && entries[0].pins.length > 0, "the pin table survived the join");
+  assert.ok(entries[0].dimensions, "so did the measurements");
+});
+
+// THE HALF THAT PROTECTS US. A code contradicts as well as agrees.
+test("two drawing codes keep two packages apart however alike they are captioned", async () => {
+  const model = stub([
+    {
+      values: {},
+      packagesInThisDocument: [
+        {
+          packageType: "SOIC (8)",
+          outlineCode: "D0008A",
+          pins: [{ number: "1", name: "OUT", electricalType: "unspecified" }]
+        },
+        {
+          packageType: "SOIC (8)",
+          outlineCode: "DW0016A",
+          pins: [{ number: "1", name: "OUT", electricalType: "unspecified" }]
+        }
+      ]
+    }
+  ]);
+
+  const part = buildPartRecord(doc, "ACME555.pdf");
+  const run = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
+
+  assert.equal(
+    run?.part.packagesInThisDocument?.length,
+    2,
+    "identical captions, different drawings: a wrong body is copper in the wrong place"
+  );
+});
+
+// A code is an ADDITION, not a precondition. Most drawings print none.
+test("entries without a drawing code join exactly as they did before", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { extractDatasheetText } = await import("../../pdftext");
+
+  const path = fileURLToPath(new URL("../../../../test-data/LMP7704-SP.pdf", import.meta.url));
+  const bytes = readFileSync(path);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const real = await extractDatasheetText(buffer);
+  const outline = real.pages.find((page) => /PACKAGE OUTLINE/.test(page.text))!;
+  const part = buildPartRecord(real, "LMP7704-SP.pdf");
+
+  const model = stub([
+    {
+      values: {},
+      pagesWorthRendering: [outline.page],
+      packagesInThisDocument: [
+        {
+          packageType: "HTSSOP (20)",
+          pins: Array.from({ length: 20 }, (_, i) => ({
+            number: String(i + 1),
+            name: `P${i + 1}`,
+            electricalType: "unspecified" as const
+          }))
+        }
+      ]
+    },
+    {
+      values: {},
+      packagesInThisDocument: [
+        {
+          packageType: "HTSSOP (PWP)",
+          dimensions: {
+            "dimensions.pitchMm": { value: 0.65, page: outline.page },
+            "dimensions.leadCount": { value: 20, page: outline.page }
+          }
+        }
+      ]
+    }
+  ]);
+
+  const outcome = await runExtraction(part, real, buffer, model, "LMP7704-SP.pdf");
+  assert.equal(model.seen.length, 2, "both passes ran");
+
+  const entries = outcome?.part.packagesInThisDocument ?? [];
+  assert.equal(entries.length, 1, "the name-based proof still joins them with no code in sight");
+  assert.ok(entries[0].pins && entries[0].pins.length > 0, "pins kept");
+  assert.ok(entries[0].dimensions, "measurements kept");
 });

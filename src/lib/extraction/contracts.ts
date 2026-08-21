@@ -300,6 +300,40 @@ export interface ExtractionResult {
   packagesInThisDocument?: Array<{
     packageType: string;
     /**
+     * The VENDOR'S OWN CODE for this package's outline drawing, e.g. `D0008A`,
+     * `PWP0028C`, `CC-14-1`, `Q64.10x10J`.
+     *
+     * ## Why an entry needs an identity that is not its name
+     *
+     * `packageType` is a caption the model writes, and it writes a different one
+     * each time. Measured 2026-08-20, the same LM358 twice:
+     *
+     *     run 1   "D, DDF, DGK, P, PS, PW, JG (8-pin)"
+     *     run 2   "8-pin (SOIC, SOT23-8, VSSOP, PDIP, SO, TSSOP, CDIP)"
+     *
+     * Identical pins, identical geometry, and sixty values reported as changed
+     * because the entry moved to a new key. ADS1115 does the same thing
+     * (`SOT-5X3 (DYN)` against `SOT (DYN)`). This is the single largest source
+     * of run-to-run difference in the record, and none of it is a misreading.
+     *
+     * It is not only a key. `buildFootprintGeometry` names the emitted footprint
+     * `slugify(partNumber)-slugify(packageType)`, so a wobbling caption is a
+     * wobbling FILE NAME in the delivered library.
+     *
+     * The outline code does not wobble, because it is ink on the drawing rather
+     * than a phrase somebody composes. Over the cached corpus it came back
+     * identical on 44 of 52 parts, and six of the eight exceptions are the same
+     * code wearing decoration (`751-07` against `CASE 751-07`, `1L` against
+     * `1L_LQFP100_ME_V3`), which `outlineCodeDesignator` already reduces. The
+     * two real exceptions are multi-package datasheets where the model settled
+     * on a different package, which is a genuine question and not noise.
+     *
+     * Optional because plenty of drawings print no code at all; an entry without
+     * one falls back to the name-based proofs in `sameDesignator`, exactly as
+     * every entry did before this field existed.
+     */
+    outlineCode?: string;
+    /**
      * The OTHER name this document prints for the same package.
      *
      * The two passes read the same package from different sections and each
@@ -396,6 +430,43 @@ export interface ExtractionModel {
 }
 
 /** Thrown when a model is misconfigured or its response cannot be used. */
+/**
+ * The pass that reads the DRAWINGS could not be run, after being retried.
+ *
+ * Its own error rather than a note on the record, because the two call for
+ * opposite handling and for months got the same one: silence.
+ *
+ * ## Why this is not a degraded result
+ *
+ * Pass 2 exists because pass 1 reads dimensions off the text layer and is
+ * measurably wrong there. REF5025's page-1 prose says 6.9mm where its drawing
+ * says 7.035mm; RHF1201's front page implies `gullwing` where its drawing on
+ * page 33 shows `straight`. The drawing is right both times, and a lead form
+ * read wrong does not shift copper by a fraction of a millimetre - it changes
+ * the whole land pattern, and the board does not solder.
+ *
+ * So when the drawings cannot be read, shipping pass 1's numbers means handing
+ * someone a footprint that may be wrong with nothing saying so. The alternative
+ * that was considered and rejected is marking the values as text-read: a
+ * caveat on the deliverable makes the user verify everything, which is the
+ * entire job they came here to avoid, and it spends trust to buy nothing.
+ *
+ * The product's answer is binary. Either files nobody has to second-guess, or
+ * "we could not read it, try again". This is how the second one is said.
+ *
+ * A RENDER failure is deliberately NOT this: a host with no working renderer
+ * produces the first-pass answer, which is a supported deployment.
+ */
+export class SecondPassFailedError extends Error {
+  readonly attempts: number;
+
+  constructor(message: string, attempts: number) {
+    super(message);
+    this.name = "SecondPassFailedError";
+    this.attempts = attempts;
+  }
+}
+
 export class ExtractionModelError extends Error {
   readonly kind: "config" | "transport" | "bad_response";
 

@@ -1,4 +1,214 @@
-# Plan
+# Plan: finishing parsing and generation
+
+> **Status, 2026-08-21.** This replaces the 2026-08-14 plan, which is complete
+> and kept at the bottom of this file. What follows is scoped to LAYER 2
+> (extraction) and LAYER 3 (generation) only. Deployment, hosting and retrieval
+> beyond one fallback are deliberately out of scope.
+>
+> **Phase 1: done.** Both benches enforce the route deadline; VERIFIED is
+> reported apart from SHIPS; `bench:mutation` recovers from a write-ahead
+> journal; all seven guards are proven to fire by `guards-fire.test.ts`.
+>
+> **Phase 2: done except 2.4.** The generator is a function of its inputs and
+> three tests hold it there. The one known remaining drift is TPS54360's solder
+> mask pair, written up in LEARNINGS.md and needing a decision rather than a fix.
+> 2.4, the record store, is deliberately still last and still optional.
+>
+> **Phase 3: advanced and continuing.** 13 drawings to 20, 163 values to 228,
+> zero wrong. This does not have a finish line in one sitting; the rate is about
+> four drawings an hour and roughly one real defect per four.
+>
+> **Phase 4: done for the part that blocked a bundle** (`NOT_A_DATASHEET`). The
+> land-pattern and `vacantLeadSlot` items reduce QUESTIONS rather than unblock
+> parts - every affected part already ships once answered - so they are ordinary
+> feature work, not a gate.
+>
+> **Phase 5: not started, and cannot be by me.** It needs part numbers chosen by
+> someone who did not build the corpus. Mechanism is ready: add them to a corpus
+> list and run `npm run bench:holdout -- --fetch --model`.
+
+## What "finished" means, stated so it can fail
+
+Four guarantees. Each one has a test that can go red; none of them is a feeling
+about the code.
+
+| # | Guarantee | The test that proves it |
+|---|---|---|
+| 1 | **Correct** — every value that places copper is read from the document and confirmed against a human read, or supplied by the user | `bench:dimensions` WRONG 0, at meaningful coverage |
+| 2 | **Complete** — the product never refuses what it is already holding | `bench:holdout` SHIPS with settings and answers |
+| 3 | **Reproducible** — the same datasheet produces the same bytes | `bench:repeat`, plus a byte-identical export test |
+| 4 | **Honest** — it refuses rather than guesses, and names its source | RULES.md rule 1; citation coverage; the guards |
+
+Coverage is not correctness. `SHIPS 98%` says a bundle came out, not that the
+bundle is right. Those are different numbers and this plan keeps them apart.
+
+## Where we stand, measured
+
+| Guarantee | Measured | Gap |
+|---|---|---|
+| Correct | 204 values, 18 drawings, 0 wrong | **114 of 135 cached parts have no oracle entry** |
+| Complete | hold-out READ 58/59, SHIPS 58/59, 45 asking nothing | 1 part: retrieval fetched the wrong document |
+| Reproducible | 2 of 6 parts bit-identical across runs | **the generator itself is nondeterministic**; drift on 4 parts, 1 uncharacterised |
+| Honest | citations enforced; no guard fires anywhere | 7 guards, 0 firings across 3 corpora - unresolved |
+
+---
+
+## Phase 1 - make the instruments measure the product
+
+Free. Nothing else is trustworthy until this is done, because every number above
+is produced by these benches.
+
+**1.1 The benches must enforce the route deadline.** `bench:extraction` and
+`bench:holdout` call `runExtraction` bare. The routes wrap it in `withDeadline`
+and discard the whole pass on expiry. Every accuracy number this project has
+published was therefore measured on a pipeline with unlimited time.
+`bench:repeat` already does this correctly and is the model to copy.
+*Exit: all three benches apply `modelBudgetMs`, and the hold-out is re-measured under it.*
+
+**1.2 Report CORRECT separately from SHIPS.** Today one number carries both
+meanings. Add a second: of the parts that shipped, how many had every
+geometry-determining value either oracle-checked or citation-verified. This is
+the number that should be quoted to a customer.
+*Exit: `bench:holdout` prints READ, SHIPS and VERIFIED.*
+
+**1.3 `bench:mutation` must restore source on timeout.** It left a live
+10x error in the gull-wing fillet on 2026-08-20 and all 703 tests passed with it
+in the tree. A wall-clock kill is the normal outcome, not an exceptional one.
+*Exit: a killed run leaves `git status` clean; a test asserts it.*
+
+**1.4 Resolve the guards.** Seven plausibility guards fire zero times across
+three corpora. Either the population never violates them, or they are
+miscalibrated and are dead code wearing a safety label - which is worse than no
+guard, because it invites false confidence. Decide, with evidence, and delete or
+fix.
+*Exit: each guard has either a firing case in a corpus or a recorded reason it cannot.*
+
+---
+
+## Phase 2 - reproducibility, end to end
+
+Free. The order matters: the generator is fixed first, because no amount of
+extraction stability helps if the exporter stamps the clock into the file.
+
+**2.1 Make the generator a function.** `exporters.ts:372` and `exporters.ts:2481`
+call `new Date()`. Two exports of one record differ byte-for-byte today. Follow
+the reproducible-builds convention: accept the timestamp as an input, default it
+from the record rather than the clock. Provenance is kept; nondeterminism is not.
+*Exit: exporting the same record twice yields identical bytes, asserted by a test.*
+
+**2.2 A byte-identical export test.** Golden files for one part per package
+family, compared byte for byte. This is what catches the next `new Date()`
+before it ships.
+
+**2.3 Characterise the drift that is left.** STM32F407VG had 92+ values differ
+between runs and nobody knows what they were. Presence-versus-absence drift
+(`solderMaskExpansionMm` flipping null to 0.07) is a READING gap with a cause,
+not noise, and is fixed at the source the way the outline code was.
+*Exit: every drifting field on the repeat corpus has a named cause.*
+
+**2.4 A record store, LAST and optional.** Keyed on PDF bytes + extractor
+version + prompt fingerprint. It makes the product bit-reproducible by
+construction. It is deliberately last: it does not create errors, but it does
+stop us seeing disagreements, so it should land only once 2.1 to 2.3 have
+removed the causes rather than hidden them. `bench:repeat` must keep bypassing it.
+
+---
+
+## Phase 3 - correctness
+
+Free, slow, and the highest-value work in this plan. It is also the only item
+here that finds bugs we do not already know about.
+
+**3.1 Oracle coverage, 18 drawings to 60+.** A person renders the page, reads the
+dimension lines, and writes down what the drawing says - including which values
+it does NOT print, because omission in that file is an assertion.
+
+Order: parts that SHIP first (a wrong value there is already in a customer's
+hands), then one drawing per package family, then the rest.
+
+The value is not the per-part answer key. It is the failure SHAPES that
+generalise: ISL71001M's wrong body height was "a drawing prints `1.20 Max` on the
+side view and `1.00` in Detail A, and the reader takes the wrong one", which
+recurs on every drawing with a Detail A. The fix that followed applies to
+datasheets we will never see.
+
+Rate observed 2026-08-20: about four drawings an hour, one real defect per four.
+
+*Exit: every SHIPPING part in both corpora has an oracle entry, and WRONG is 0.*
+
+**3.2 Pin-name oracle parity.** 38 parts have entries and 17 are checked on a
+given run, because the rest did not return pins. Track the checked fraction so a
+falling denominator cannot look like a rising score.
+
+---
+
+## Phase 4 - close the coverage classes
+
+These are the named reasons a read part does not ship. Each is a question we do
+not ask or a value we do not read.
+
+**4.1 The land pattern.** The dominant blocker in every breakdown:
+`landSpanMm`, `landPadLengthMm`, `landPadWidthMm`. Most affected parts have a
+printed footprint we failed to read. For no-lead packages there is no computed
+route at all and there must not be one - measured 2026-08-20, neither published
+IPC table reproduces a single one of eight real drawings, and RULES.md rule 1
+forbids reverse-engineering one vendor's house rule. So: read the printed
+pattern, or ask.
+
+**4.2 `vacantLeadSlot`.** Four hold-out parts. An odd lead count on a two-row
+package leaves one position empty and the drawing shows which. Read it or ask it.
+
+**4.3 One retrieval fallback.** The last non-shipping hold-out part is a
+3-page hobby-shop breakout page fetched instead of a datasheet. Detect
+"this is not a datasheet" and let the user hand us the PDF. That is Layer 1, but
+it is the last thing standing between the corpus and 59/59.
+
+---
+
+## Phase 5 - honest external validation
+
+Everything above is measured on 135 datasheets we chose. The published gap
+between benchmark and reality is large and well documented: text-to-SQL systems
+score 85% on their own benchmark and 10-20% on real enterprise databases.
+
+Before quoting a number to a customer, run a batch of 20 parts chosen by
+somebody who is not the person who built the corpus, once, and report what
+happens. Treat today's 98% as an upper bound until then.
+
+---
+
+## What NOT to do
+
+Each of these was tested or reasoned through on 2026-08-20 and rejected on
+evidence. Do not reopen without new data; the reasoning is in LEARNINGS.md.
+
+| Rejected | Why |
+|---|---|
+| Canonical merge keys | All 19 within-run candidates were sibling devices or different drawings |
+| Deterministic rules for pitch / lead count | 0 contradictions in 6 and 234 checkable cases |
+| A solder-mask rule from the text layer | TI prints both variants as a legend; the text interleaves them |
+| Computed no-lead land patterns | 0 of 8 printed patterns reproduced, two vendors, both published tables |
+| A verifier feedback loop | 1 geometry refusal in 135 parts; nothing to feed back |
+| Constrained decoding | 0.59% unparseable, already handled, and it strands the whole cache |
+| Thinking budget, Pro models, panel-of-judges | All buy accuracy with latency, against a route budget we had already blown |
+
+---
+
+## Sequencing
+
+Phases 1 and 2 are free and unblock honest measurement of everything else.
+Phase 3 runs continuously alongside them and is the long pole. Phase 4 is
+ordinary feature work. Phase 5 is a gate, not a task.
+
+Nothing in this plan requires model spend except re-measuring after Phase 1.1,
+and the Phase 5 batch.
+
+---
+---
+
+# Superseded: the 2026-08-14 plan
+
+Kept for the record. Steps 1 to 9 are done and what each found is in `AUDIT.md`.
 
 > **Status, 2026-08-14.** Steps 1 to 9 are done. See `AUDIT.md` for what each one
 > found and what it measured. Step 10, the hold-out run, is the only step that

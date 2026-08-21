@@ -26,6 +26,7 @@
 // Air-gap safe: no networking here. The model is injected.
 
 import { MAX_PAGES_TO_MODEL } from "./contracts";
+import { SecondPassFailedError } from "./contracts";
 import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "./contracts";
 import type { DatasheetText } from "../pdftext";
 import type { PartRecord } from "../types";
@@ -36,7 +37,9 @@ import {
   declaredLeadCount,
   familyToken,
   namesPackageFamily,
+  normalizeOutlineCode,
   packageCodeOf,
+  sameOutlineCode,
   spellOut,
   PACKAGE_FAMILY_PATTERN
 } from "../packagevariants";
@@ -180,28 +183,85 @@ function sameDesignator(
   // package seen twice, and merging them would silently drop a pinout.
   const hits: string[] = [];
   for (const [otherKey, other] of held) {
-    // Two entries with a pin table each are two packages, not one seen twice,
-    // and merging them would silently drop a pinout. Judged on CONTENT rather
-    // than on the key being present: the model returns `"pins": []` on an entry
-    // it has only measured, and reading that as "has a pin table" made every
-    // candidate look like a conflict, so nothing ever joined.
+    // TWO PIN TABLES ARE USUALLY TWO PACKAGES, and since 2026-08-20 not always.
+    //
+    // This refused any pair where both halves carried the same KIND of content,
+    // on the reasoning that merging them would silently drop a pinout. That was
+    // right while only pass 1 could return a pin table. Pass 2 was then given
+    // somewhere to put a pinout it reads off a rendered figure, and both halves
+    // of one package started arriving with pins:
+    //
+    //     LM5117  pass 1 "HTSSOP (20)" 20 pins   pass 2 "HTSSOP (PWP)" 20 pins
+    //
+    // The rule then split one package into two entries, each holding half of
+    // what is needed to build it. A blanket check about content is the wrong
+    // question: whether these are one package is exactly what the PROOF below
+    // decides, and it is stricter than this was.
+    //
+    // DIMENSIONS still block, and the asymmetry is deliberate. Two measured
+    // entries are two bodies, and the proof cannot separate a `SOIC (D)` from a
+    // `SOIC (DW)` whose codes the model did not report; a wrong body is copper
+    // in the wrong place. Two pin tables that the proof calls one package are
+    // the same terminals read twice, and the precedence rule below already
+    // keeps pass 1's.
     const has = (value: unknown) => Array.isArray(value) ? value.length > 0 : value !== undefined && Object.keys(value as object).length > 0;
-    const overlaps =
-      (has(entry.pins) && has(other.pins)) || (has(entry.dimensions) && has(other.dimensions));
-    if (overlaps) continue;
+    if (has(entry.dimensions) && has(other.dimensions)) continue;
+    // A pin table may only meet another when both state a lead count and agree
+    // on it. Without that this would be judging two pinouts on the name alone.
+    if (has(entry.pins) && has(other.pins)) {
+      const oneCount = featuresOf(entry).leads;
+      const otherCount = featuresOf(other).leads;
+      if (oneCount === null || otherCount === null || oneCount !== otherCount) continue;
+    }
     if (namesSeveralPackages(other.packageType)) continue;
     if (!isThisPart(other.packageType, partNumber)) continue;
     const theirs = featuresOf(other);
-    let agreed = false;
+    // A LEAD COUNT IS NOT AN IDENTITY.
+    //
+    // Agreement had to come from any one of the three, and "both have 8 leads"
+    // is shared by every 8-pin package ever made. It never fired while two pin
+    // tables were refused outright, and the moment that was relaxed on
+    // 2026-08-20 it chained four of OP27's packages into one entry:
+    //
+    //     8-Lead TO-99  aka  ["8-Lead PDIP", "8-Lead CERDIP", "8-Lead SOIC"]
+    //
+    // A TO-99 is a metal can, a CERDIP is a ceramic through-hole body and a SOIC
+    // is a 3.9mm surface-mount one. `8-Lead CERDIP` gets away with it because
+    // its family reads as NULL - `\bDIP\b` does not match inside "CERDIP", the
+    // word-boundary trap again - so the only thing left to compare was the
+    // count, and the count agreed.
+    //
+    // So the count may now CORROBORATE or CONTRADICT, and can no longer be the
+    // whole case. The identity has to come from the vendor code or the family,
+    // which are the two things that actually name a package.
+    // THE DRAWING CODE DECIDES, IN BOTH DIRECTIONS, WHEN BOTH ENTRIES HAVE ONE.
+    //
+    // Added 2026-08-20. Everything below infers an identity from the caption the
+    // model wrote, because until now that was all an entry had. A vendor drawing
+    // code is not an inference: `D0008A` is one drawing, and the document prints
+    // it beside the dimensions we are trying to match.
+    //
+    // It contradicts as well as agrees, which is the half that protects us. Two
+    // entries carrying DIFFERENT codes are different drawings however alike
+    // their captions read, and that is precisely the `SOIC (D)` against
+    // `SOIC (DW)` case the dimensions guard above exists to avoid: a wrong body
+    // is copper in the wrong place. THS3491 really did answer `DDA0008B` on one
+    // run and `RGT0016C` on another.
+    const outlineAgrees = mine.outline !== null && theirs.outline !== null && sameOutlineCode(mine.outline, theirs.outline);
+    const outlineContradicts = mine.outline !== null && theirs.outline !== null && !outlineAgrees;
+    if (outlineContradicts) continue;
+
+    let agreedOnIdentity = outlineAgrees;
     let contradicted = false;
     for (const part of ["code", "family", "leads"] as const) {
       const a = mine[part];
       const b = theirs[part];
       if (a === null || b === null) continue;
-      if (a === b) agreed = true;
-      else contradicted = true;
+      if (a === b) {
+        if (part !== "leads") agreedOnIdentity = true;
+      } else contradicted = true;
     }
-    if (agreed && !contradicted) hits.push(otherKey);
+    if (agreedOnIdentity && !contradicted) hits.push(otherKey);
   }
   // Exactly one, or nothing. Two candidates means the document cannot tell them
   // apart either, and picking is the guess this exists to avoid.
@@ -233,6 +293,7 @@ function namesSeveralPackages(name: string): boolean {
 
 /** The checkable features of one entry: its code, its family and its lead count. */
 function featuresOf(entry: NonNullable<ExtractionResult["packagesInThisDocument"]>[number]): {
+  outline: string | null;
   code: string | null;
   family: string | null;
   leads: number | null;
@@ -260,6 +321,10 @@ function featuresOf(entry: NonNullable<ExtractionResult["packagesInThisDocument"
   const leads =
     rows > 0 ? rows : typeof measured === "number" && Number.isInteger(measured) ? measured : declaredLeadCount(name);
   return {
+    // The drawing code the model reported for THIS entry, when it reported one.
+    // Distinct from `code` below, which is a designator inferred from the NAME:
+    // this one is ink on a drawing and is the strongest identity an entry has.
+    outline: normalizeOutlineCode(entry.outlineCode),
     code: packageCodeOf(name),
     family: familyToken(spellOut(name)),
     leads: leads !== null && leads > 0 ? leads : null
@@ -296,7 +361,18 @@ function mergePackageEntries(
     // Fixing it in the PROMPT was tried three times and lost the population
     // every time; see the record above `candidates` in `models/prompt.ts`. So it
     // is fixed here, where the two vocabularies actually meet.
-    const merged = key(entry.packageType);
+    // KEYED ON THE DRAWING CODE WHEN THE ENTRY HAS ONE.
+    //
+    // `key` folds a caption down to its letters and digits, which makes
+    // "SOIC (D)" and "SOIC(D)" one key and leaves "SOT (DYN)" and
+    // "SOT-5X3 (DYN)" as two. Those are the same package, and ADS1115 returns
+    // one spelling on one run and the other on the next.
+    //
+    // A code is not a caption, so it does not drift. Prefixed rather than used
+    // raw so a code can never collide with a caption that happens to fold to the
+    // same letters.
+    const code = normalizeOutlineCode(entry.outlineCode);
+    const merged = code ? `outline:${key(code)}` : key(entry.packageType);
     const existing = byKey.get(merged) ? merged : sameDesignator(entry, byKey, partNumber);
     if (existing === null) {
       byKey.set(merged, { ...entry });
@@ -353,6 +429,12 @@ function mergePackageEntries(
       // `SOIC (D)`, and filing OPA192's under its drawing's `SOT-23 (5)` hides
       // it from one asking for `SOT-23 (DBV)`.
       alsoKnownAs: [...new Set([held.packageType, entry.packageType, ...(held.alsoKnownAs ?? []), ...(entry.alsoKnownAs ?? [])])],
+      // The drawing code survives the join, from whichever half read a drawing.
+      // The two halves cannot disagree here: `sameDesignator` refuses to join
+      // entries whose codes contradict, so at most one code is in play.
+      ...(held.outlineCode || entry.outlineCode
+        ? { outlineCode: held.outlineCode ?? entry.outlineCode }
+        : {}),
       ...(pins ? { pins } : {}),
       ...(Object.keys(dimensions).length > 0 ? { dimensions } : {})
     });
@@ -520,6 +602,59 @@ function nameFromTheDrawing(
 /** Exported for the tests that pin the two-pass join. */
 export const combineForTest = (first: ExtractionResult, second: ExtractionResult, partNumber?: string): ExtractionResult =>
   combine(first, second, partNumber);
+
+/**
+ * The second pass, asked ONE more time before it is allowed to fail.
+ *
+ * `callWithRetry` in `transport.ts` already retries three times inside a single
+ * call, and it is not enough here: ADM3202 failed on four separate bench runs
+ * on 2026-08-19 and 20, roughly a dozen provider attempts, then succeeded on the
+ * fifth with no code change. Whatever is being hit clears on a timescale longer
+ * than the transport backoff, so one further attempt at THIS level buys a
+ * measurably different outcome.
+ *
+ * Exactly one, and the cost is why. This pass carries about a megabyte of
+ * images and is the expensive half of a part; a loop here would multiply the
+ * worst case for a document that may simply be too big. Two attempts is the
+ * difference between "we gave up at the first refusal" and "we tried again",
+ * which is the whole complaint.
+ *
+ * Exported so the retry can be tested directly: reaching it through
+ * `runExtraction` needs a renderable PDF, and the behaviour under test is not
+ * about rendering.
+ *
+ * Logged on both the retry and the final failure. Until now a second-pass
+ * failure produced no note, no error and no log line anywhere, so nobody could
+ * say whether this happens once a week or once a day.
+ */
+export async function askTwice(
+  model: ExtractionModel,
+  request: ExtractionRequest,
+  pageCount: number
+): Promise<ExtractionResult> {
+  try {
+    return await model.extract(request);
+  } catch (first) {
+    console.warn(
+      `[extraction] drawing pass failed on ${request.fileName} (${pageCount} page(s)); retrying once: ` +
+        `${first instanceof Error ? first.message.slice(0, 200) : String(first)}`
+    );
+    try {
+      return await model.extract(request);
+    } catch (second) {
+      const message = second instanceof Error ? second.message : String(second);
+      console.error(
+        `[extraction] drawing pass failed TWICE on ${request.fileName} (${pageCount} page(s)): ${message.slice(0, 300)}`
+      );
+      throw new SecondPassFailedError(
+        `The package drawings could not be read on this attempt. The dimensions a footprint is built from ` +
+          `are measured off those drawings, so no record is produced rather than one built from the text ` +
+          `layer. This is usually temporary: try again.`,
+        2
+      );
+    }
+  }
+}
 
 function combine(first: ExtractionResult, second: ExtractionResult, partNumber?: string): ExtractionResult {
   const values = { ...first.values, ...second.values };
@@ -689,12 +824,22 @@ export async function runExtraction(
   let rendered: number[] = [];
   let images: RenderedPage[] = [];
   if (pages.length > 0) {
+    // RENDERING and ASKING are separated, because their failures mean opposite
+    // things and one `catch` treated them the same.
+    //
+    // A render failure is a deployment fact: `renderPages` returns fewer pages
+    // rather than throwing, and a host with no working renderer produces the
+    // first-pass answer, which is supported. A MODEL failure is a transient
+    // network error on the pass that reads the drawings, and falling through
+    // from it silently ships text-layer dimensions as though they were read off
+    // a drawing. See `SecondPassFailedError`.
+    let withImages: ExtractionRequest | null = null;
     try {
       // Pass 1's own package answer goes with it. See `withRenderedPages`: the
       // second pass sees only the drawing pages, and a pass asked to measure a
       // package nobody has named refuses the whole document and says so.
       const chosen = typeof first.values.packageType?.value === "string" ? first.values.packageType.value : null;
-      const withImages = await withRenderedPages(
+      withImages = await withRenderedPages(
         request,
         pdfBytes,
         pages,
@@ -703,9 +848,13 @@ export async function runExtraction(
       );
       images = withImages.images;
       rendered = images.map((image) => image.page);
-      if (rendered.length > 0) second = await model.extract(withImages);
     } catch {
-      // Fall through with the first pass, which is a complete answer on its own.
+      // No renderer, or none of the pages could be rasterised. Pass 1 stands.
+      withImages = null;
+    }
+
+    if (withImages !== null && rendered.length > 0) {
+      second = await askTwice(model, withImages, pages.length);
     }
   }
 

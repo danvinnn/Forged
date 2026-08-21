@@ -67,6 +67,17 @@ export interface CacheStats {
   rateLimitWaits: number;
   /** Times the limiter held a call back BEFORE sending it. Expected, and free. */
   pacedWaits: number;
+  /**
+   * Milliseconds SLEPT by the limiter, as opposed to spent waiting on the API.
+   *
+   * Recorded because wall-clock latency measured through this module is not the
+   * product's latency: the bench paces itself against a rolling window and can
+   * sleep up to a minute between calls, which production never does. A
+   * measurement that forgets this reports the rate limiter and calls it the
+   * model. That mistake was made on 2026-08-20 with the extraction bench's p50
+   * of 58.7s, which is very nearly all pacing.
+   */
+  pacedMs: number;
   inputTokens: number;
   outputTokens: number;
   /** Tokens that were NOT spent because an entry was already on disk. */
@@ -416,6 +427,7 @@ async function extractWithRateLimitRetry(
     // is what let the retries dig the hole deeper.
     await waitForSlot((ms) => {
       stats.pacedWaits += 1;
+      stats.pacedMs += ms;
       if (ms > 5_000) console.error(`  pacing: ${Math.round(ms / 1000)}s to stay under ${requestsPerWindow()}/min`);
     });
     try {
@@ -453,6 +465,7 @@ export function cachingModel(inner: ExtractionModel, mode: CacheMode, labelFor: 
     skipped: 0,
     rateLimitWaits: 0,
     pacedWaits: 0,
+    pacedMs: 0,
     inputTokens: 0,
     outputTokens: 0,
     savedInputTokens: 0,
