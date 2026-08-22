@@ -737,9 +737,10 @@ export default function HomePage() {
       <main className="flow">
         {/* 1. SOURCE --------------------------------------------------------- */}
         <section className="step">
-          <h2 className="step-title">
-            <span className="step-n">1</span> Datasheet
-          </h2>
+          <div className="step-head">
+            <span className="step-eyebrow">Step 01</span>
+            <h2 className="step-title">Datasheet</h2>
+          </div>
 
           <div className="source">
             <label className="drop" htmlFor="datasheet-upload">
@@ -800,9 +801,10 @@ export default function HomePage() {
           <>
             {/* 2. WHAT WAS READ ---------------------------------------------- */}
             <section className="step">
-              <h2 className="step-title">
-                <span className="step-n">2</span> What was read
-              </h2>
+              <div className="step-head">
+                <span className="step-eyebrow">Step 02</span>
+                <h2 className="step-title">What was read</h2>
+              </div>
 
               <div className="identity">
                 <div className="identity-main">
@@ -864,12 +866,13 @@ export default function HomePage() {
             {/* 3. REVIEW ------------------------------------------------------ */}
             {review.length > 0 && (
               <section className="step">
-                <h2 className="step-title">
-                  <span className="step-n">3</span> Worth a look
+                <div className="step-head">
+                  <span className="step-eyebrow">Step 03</span>
+                  <h2 className="step-title">Worth a look</h2>
                   {blockingReview.length > 0 && (
                     <span className="badge">{blockingReview.length} blocking export</span>
                   )}
-                </h2>
+                </div>
                 <p className="step-note">
                   Read, but not verified. Open one to see the page it came from, then confirm it or correct it.
                 </p>
@@ -937,9 +940,10 @@ export default function HomePage() {
             {/* 4. PACKAGE ----------------------------------------------------- */}
             {offeredVariants.length > 1 && (
               <section className="step">
-                <h2 className="step-title">
-                  <span className="step-n">4</span> Package
-                </h2>
+                <div className="step-head">
+                  <span className="step-eyebrow">Step 04</span>
+                  <h2 className="step-title">Package</h2>
+                </div>
                 <p className="step-note">
                   This datasheet describes {offeredVariants.length} packages, and a footprint is per package. Each one says
                   what it would actually build.
@@ -988,9 +992,10 @@ export default function HomePage() {
 
             {/* 5. EXPORT ------------------------------------------------------ */}
             <section className="step">
-              <h2 className="step-title">
-                <span className="step-n">{exportStep}</span> Export
-              </h2>
+              <div className="step-head">
+                <span className="step-eyebrow">Step {String(exportStep).padStart(2, "0")}</span>
+                <h2 className="step-title">Export</h2>
+              </div>
 
               <div className="formats">
                 {formatOptions.map((option) => (

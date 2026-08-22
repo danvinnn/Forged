@@ -24,14 +24,14 @@
   color-scheme: light dark;
 
   /* Paper and ink. Light first, because these documents are read like paper. */
-  --paper: #fbfbfa;
+  --paper: #f8f8f6;
   --surface: #ffffff;
-  --sunken: #f4f4f2;
-  --ink: #16181c;
-  --ink-2: #4a4f57;
+  --sunken: #f1f1ee;
+  --ink: #14161a;
+  --ink-2: #484d55;
   --ink-3: #767c86;
-  --rule: #dcdcd8;
-  --rule-strong: #c2c2bc;
+  --rule: #e2e2dd;
+  --rule-strong: #c7c7c0;
 
   /* One accent, for the next thing to click and nothing else. */
   --accent: #1b4dc1;
@@ -49,26 +49,30 @@
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
   --gap: 1.5rem;
-  --radius: 3px;
+  --radius: 2px;
 }
 
+/* Dark is not the light palette dimmed — it drops to a near-black surface
+   rather than the usual dark-slate compromise. Sharper contrast, same
+   restraint: one accent, nothing decorative added because the lights went
+   off. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #16181b;
-    --surface: #1c1f23;
-    --sunken: #121417;
-    --ink: #e8e9ea;
-    --ink-2: #b3b7bd;
-    --ink-3: #838a93;
-    --rule: #2c3037;
-    --rule-strong: #3d434b;
+    --paper: #0a0b0c;
+    --surface: #131416;
+    --sunken: #08090a;
+    --ink: #f0f1f2;
+    --ink-2: #a9adb4;
+    --ink-3: #71767d;
+    --rule: #212226;
+    --rule-strong: #323438;
     --accent: #6f9bff;
-    --accent-ink: #10131a;
-    --accent-soft: #1b2438;
+    --accent-ink: #0b0e14;
+    --accent-soft: #182238;
     --warn: #e0a355;
-    --warn-soft: #2a2115;
-    --bad: #f07a7a;
-    --bad-soft: #2c1a1b;
+    --warn-soft: #241d13;
+    --bad: #f0807f;
+    --bad-soft: #291819;
     --good: #6cc08d;
   }
 }
@@ -134,22 +138,26 @@ body {
 }
 
 .wordmark {
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 1.0625rem;
 }
 
 .bar-sub {
   color: var(--ink-3);
-  font-size: 0.8125rem;
+  font-size: 0.6875rem;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .mode {
   font-family: var(--mono);
   font-size: 0.6875rem;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 0.15rem 0.45rem;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
   color: var(--ink-2);
@@ -174,31 +182,32 @@ body {
   gap: 0.875rem;
 }
 
-.step-title {
+.step-head {
   display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  align-items: baseline;
+  gap: 0.75rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--rule);
 }
 
-/* The step number is a wayfinding device, so it reads as a label rather than as
-   a heading: same size, quieter, and monospace so the column lines up. */
-.step-n {
+/* The step number is a wayfinding device, so it reads as a label rather than
+   as a heading: tracked-out and quiet, sitting above the title rather than
+   beside it, the way a spec sheet marks a section before naming it. */
+.step-eyebrow {
   font-family: var(--mono);
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--ink-3);
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--radius);
-  width: 1.35rem;
-  height: 1.35rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  white-space: nowrap;
+}
+
+.step-title {
+  margin: 0;
+  font-size: 1.1875rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .step-note {
@@ -210,8 +219,10 @@ body {
 
 .badge {
   margin-left: auto;
+  align-self: center;
   font-size: 0.75rem;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--bad);
   background: var(--bad-soft);
   border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent);
@@ -319,6 +330,7 @@ input[type="number"],
   border-radius: var(--radius);
   padding: 0.4rem 0.5rem;
   min-width: 0;
+  transition: border-color 0.15s ease;
 }
 
 input:focus-visible,
@@ -341,17 +353,22 @@ button:focus-visible,
   border-radius: var(--radius);
   padding: 0.4rem 0.8rem;
   cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
 }
 
 .btn:hover:not(:disabled),
 .lookup button:hover:not(:disabled) {
   border-color: var(--ink-3);
+  transform: translateY(-1px);
 }
 
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -400,9 +417,9 @@ button:disabled {
 }
 
 .ident-part {
-  font-size: 1.375rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 1.875rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .ident-sub {
@@ -425,7 +442,7 @@ button:disabled {
 .identity-facts dt {
   font-size: 0.6875rem;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--ink-3);
 }
 
@@ -522,6 +539,7 @@ button:disabled {
   text-align: left;
   font: inherit;
   color: inherit;
+  transition: background-color 0.15s ease;
 }
 
 .rev-head:hover {
@@ -664,10 +682,12 @@ button:disabled {
   cursor: pointer;
   font: inherit;
   color: inherit;
+  transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
 .pkg:hover:not(:disabled) {
   border-color: var(--ink-3);
+  transform: translateY(-1px);
 }
 
 .pkg-active {
@@ -719,6 +739,11 @@ button:disabled {
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
   cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.fmt:not(.fmt-off):hover {
+  border-color: var(--ink-3);
 }
 
 .fmt input {
