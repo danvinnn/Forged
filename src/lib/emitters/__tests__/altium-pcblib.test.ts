@@ -161,7 +161,8 @@ function onePadGeometry(): FootprintGeometry {
       padWidthMm: 0.6,
       padLengthMm: 1.55,
       centreToCentreMm: 5.4,
-      pitchMm: 1.27
+      pitchMm: 1.27,
+      discards: []
     }
   };
 }

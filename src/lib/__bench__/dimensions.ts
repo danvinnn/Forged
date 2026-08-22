@@ -399,7 +399,14 @@ async function main(): Promise<void> {
 
   console.log(`\n  CORRECT ${correct}   WRONG ${wrong.length}   NOT READ ${unread}`);
   console.log(`  ${unmatched.length} cached parts have no oracle entry, so nothing about them is checked.`);
-  if (unmatched.length > 0) console.log(`    ${unmatched.slice(0, 12).join(", ")}${unmatched.length > 12 ? ", ..." : ""}`);
+  // ALL of them, not the first twelve. The truncated list was unusable for the
+  // one job it has: deciding which drawing to read next. `--verbose` printed
+  // nothing extra here, so the remaining names were simply unavailable.
+  if (unmatched.length > 0) {
+    for (let i = 0; i < unmatched.length; i += 6) {
+      console.log(`    ${unmatched.slice(i, i + 6).join(", ")}`);
+    }
+  }
 
   if (wrong.length > 0) {
     console.log(`\n  Every WRONG above is a number that would have placed copper.`);

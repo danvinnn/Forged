@@ -131,6 +131,22 @@ export interface FootprintProvenance {
    */
   centreToCentreCrossMm?: number;
   pitchMm: number;
+  /**
+   * What was READ OFF THE DATASHEET and then thrown away on the way to this
+   * footprint. Empty on the ordinary path.
+   *
+   * Here because a discard that ends in a refusal is named in the refusal, and a
+   * discard that ends in a SUCCESSFUL fallback used to leave no trace at all.
+   * That asymmetry made `bench:guards` report every plausibility guard as
+   * "never fires" while one of them was firing on DRV8825 on every single run:
+   * the printed footprint was rejected, IPC-7351B computed a pattern instead,
+   * the export succeeded, and the only instrument that could have said so only
+   * looked at exports that threw.
+   *
+   * A reviewer reading the provenance six months later is owed the same fact:
+   * this footprint is not the one the datasheet printed, and here is why not.
+   */
+  discards: string[];
 }
 
 export interface FootprintGeometry {

@@ -45,33 +45,91 @@ interface CachedValue {
 interface CachedEntry {
   label?: string;
   prompt?: string;
+  storedAt?: string;
   result?: { values?: Record<string, CachedValue> };
 }
 
-/** Every cached answer, newest per part, keyed by the part it was read for. */
+/**
+ * Every cached answer for a part, oldest first, merged field by field.
+ *
+ * ## Order is the whole point
+ *
+ * This used to iterate `readdirSync` order and let the last file seen win each
+ * field. Directory order is not date order and is not stable across machines, so
+ * two runs of `bench:copper` on the same cache could build different footprints
+ * and neither was reproducible. Sorting by `storedAt` makes "newest wins" true
+ * rather than merely claimed, which is what the old comment said and the old
+ * code did not do.
+ *
+ * ## Why answers from OLD prompt versions are still merged in
+ *
+ * Deliberate, and it is the trade this bench is built on. Restricting to the
+ * newest prompt version per part was measured on 2026-08-21: it cut the bench
+ * from 59 footprints to 24, because most parts have only a first pass cached
+ * under the newest version and the drawing fields live in the second.
+ *
+ * That trade is acceptable HERE and nowhere else, because this bench does not
+ * measure extraction. A record stitched from two prompt versions is still a real
+ * record shape for the generator to consume, which is all that is being
+ * exercised. Anything asking whether the model READ correctly belongs in
+ * `bench:dimensions`, which scores one prompt version against a hand-read
+ * drawing and would be meaningless on a stitched record.
+ *
+ * Within a part, a later pass overwrites an earlier one, which is the precedence
+ * `combine` applies in the pipeline: the second pass sees the rendered drawing
+ * and the first only saw text.
+ */
 function cachedAnswers(): Map<string, Record<string, CachedValue>> {
-  const byPart = new Map<string, Record<string, CachedValue>>();
-  for (const name of readdirSync(CACHE_DIR)) {
+  const entries: CachedEntry[] = [];
+  for (const name of readdirSync(CACHE_DIR).sort()) {
     if (!name.endsWith(".json") || name.startsWith("_")) continue;
-    let entry: CachedEntry;
     try {
-      entry = JSON.parse(readFileSync(join(CACHE_DIR, name), "utf8")) as CachedEntry;
+      entries.push(JSON.parse(readFileSync(join(CACHE_DIR, name), "utf8")) as CachedEntry);
     } catch {
       continue;
     }
+  }
+  // Oldest first. The filename tiebreak keeps two answers stored in the same
+  // millisecond from depending on directory order, which is the bug being fixed.
+  entries.sort((left, right) => (left.storedAt ?? "").localeCompare(right.storedAt ?? ""));
+
+  const byPart = new Map<string, Record<string, CachedValue>>();
+  for (const entry of entries) {
     const label = entry.label;
     const values = entry.result?.values;
     if (!label || !values) continue;
-    // Later passes carry more: the second pass of a two-pass run answers the
-    // drawing fields the first could not. Merged rather than replaced, the same
-    // way `combine` in the extraction pipeline merges them.
     const existing = byPart.get(label) ?? {};
+    const versions = STITCHED_FROM.get(label) ?? new Set<string>();
     for (const [field, value] of Object.entries(values)) {
-      if (value && value.value !== null && value.value !== undefined) existing[field] = value;
+      if (value && value.value !== null && value.value !== undefined) {
+        existing[field] = value;
+        versions.add(entry.prompt ?? "");
+      }
     }
+    STITCHED_FROM.set(label, versions);
     byPart.set(label, existing);
   }
   return byPart;
+}
+
+/**
+ * Which prompt versions each record's surviving fields actually came from.
+ *
+ * Needed because a stitched record can MANUFACTURE A DEFECT that no run
+ * produces. ADXL345 was reported as shipping a wrong land span on 2026-08-22:
+ * three cached answers read it correctly at 2.195 and one stale one read 2.29,
+ * the stale one was newest, so it won the field. The live pipeline reads that
+ * part correctly, and `bench:dimensions` says so.
+ *
+ * Stitching is still the right trade for exercising the GENERATOR, which is what
+ * this bench is for. It is the wrong basis for a claim about what the READER
+ * got, so a check that makes one asks this first.
+ */
+const STITCHED_FROM = new Map<string, Set<string>>();
+
+/** True when this record's fields came from more than one prompt version. */
+export function isStitched(partNumber: string): boolean {
+  return (STITCHED_FROM.get(partNumber)?.size ?? 0) > 1;
 }
 
 const asNumber = (value: unknown): number | null =>

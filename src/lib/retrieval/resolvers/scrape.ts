@@ -12,6 +12,7 @@
 import type { DatasheetRef, DatasheetResolver, ResolveOptions } from "../resolver";
 import { SearchClient } from "./search";
 import { finalizeRef } from "../ref";
+import { documentNamesPart } from "../identity";
 import { PdfValidationError } from "../pdf";
 import { ResolverError } from "./errors";
 import {
@@ -23,6 +24,7 @@ import {
   DOWNLOAD_TIMEOUT_MS
 } from "./http";
 import { buildPartVariants, normalizePartNumber } from "../partnumber";
+import { logger } from "../logging";
 
 /**
  * How many PDF links to try on one scraped page.
@@ -349,6 +351,20 @@ export class ScrapeResolver implements DatasheetResolver {
       // An oversized body is not a datasheet. Not found, so the user can still upload.
       if (error instanceof ResponseTooLargeError) return null;
       throw error;
+    }
+
+    // Search ranks by URL text and host, which says nothing about what is INSIDE
+    // the document. Asked for TPS7A4700 it returned TPS7A20's datasheet: same
+    // vendor, same family prefix, a real PDF, and completely the wrong chip.
+    //
+    // Unlike the manufacturer resolver this cannot fall through to the next
+    // candidate - `locatePdf` has already committed to one - so a rejection ends
+    // the chain and the user is offered the upload path. That is the right trade:
+    // a lower-ranked candidate we never try is a miss the user can fix in one
+    // step, and a wrong datasheet is a wrong footprint nobody downstream can see.
+    if (!(await documentNamesPart(bytes, partNumber))) {
+      logger.info({ event: "resolver_wrong_part", resolver: "scrape", partNumber, url: located.pdfUrl });
+      return null;
     }
 
     try {

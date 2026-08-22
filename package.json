@@ -17,6 +17,7 @@
     "oracle:build": "bash tools/altium-oracle/setup.sh",
     "bench:mutation": "tsx src/lib/__bench__/mutation.ts",
     "bench:dimensions": "tsx src/lib/__bench__/dimensions.ts",
+    "bench:corpus": "tsx src/lib/__bench__/corpus.ts",
     "bench:copper": "tsx src/lib/__bench__/copper.ts",
     "bench:repeat": "tsx src/lib/__bench__/repeat.ts"
   },

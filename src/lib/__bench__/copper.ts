@@ -34,7 +34,8 @@
 
 import { buildFootprintGeometry, FootprintUnavailableError } from "../exporters";
 import { DIMENSION_ORACLE } from "./dimension-oracle";
-import { replayRecords } from "./replay";
+import { sameOutlineCode } from "../packagevariants";
+import { isStitched, replayRecords } from "./replay";
 import type { Pad } from "../geometry";
 import type { ResolvedPart } from "../types";
 
@@ -106,7 +107,32 @@ function usesPrintedLand(source: string): boolean {
   return source.includes("printed in this datasheet");
 }
 
-function checkPart(part: ResolvedPart, pads: Pad[], source: string): Finding[] {
+/**
+ * The hand-read entry for this part's drawing, by code or by name.
+ *
+ * Two ways because the outline code is itself a model reading and often comes
+ * back null. `sameOutlineCode` rather than equality so a decorated code
+ * ("CASE 751-07" against "751-07") still matches, and so a DIFFERING trailing
+ * character ("D0008A" against "D0014A") still does not.
+ */
+function oracleFor(part: ResolvedPart) {
+  const byPart = Object.values(DIMENSION_ORACLE).find((entry) =>
+    entry.parts.some((name) => name.toUpperCase() === part.partNumber.split("#")[0].toUpperCase())
+  );
+  if (byPart) return byPart;
+  const code = part.packageOutlineCode;
+  if (!code) return undefined;
+  const key = Object.keys(DIMENSION_ORACLE).find((name) => sameOutlineCode(name, code));
+  return key ? DIMENSION_ORACLE[key] : undefined;
+}
+
+function checkPart(
+  part: ResolvedPart,
+  pads: Pad[],
+  source: string,
+  declined: string[],
+  stitched: string[]
+): Finding[] {
   const findings: Finding[] = [];
   const record = (check: string, detail: string) => findings.push({ part: part.partNumber, check, detail });
 
@@ -219,16 +245,52 @@ function checkPart(part: ResolvedPart, pads: Pad[], source: string): Finding[] {
 
   // AND AGAINST THE HAND-READ DRAWING, where one exists. This is the only path
   // in the project that runs from a printed footprint all the way to copper.
-  const oracle = part.packageOutlineCode ? DIMENSION_ORACLE[part.packageOutlineCode] : undefined;
-  if (oracle?.land) {
+  //
+  // Matched by outline code OR by the entry's `parts` list, the same two ways
+  // `oracleCovers` matches in `bench:extraction`. Keying on the code alone meant
+  // this check was silently skipped for every record that carries no code, which
+  // on the replay corpus is most of them: DRV8825's emitted span went unchecked
+  // against its own hand-read drawing for exactly that reason.
+  const oracle = oracleFor(part);
+  // NOT ON A STITCHED RECORD. This check compares emitted copper against a
+  // hand-read drawing, which is a claim about what the READER got, and a record
+  // assembled from two prompt versions is not evidence about any run.
+  //
+  // It manufactured one on 2026-08-22: ADXL345 was reported as emitting 2.290
+  // against a printed 2.195. Three cached answers read that part correctly and
+  // one stale one read it wrong; the stale one was newest, so it won the field.
+  // The live pipeline reads it correctly and `bench:dimensions`, which runs the
+  // real pipeline against the current prompt, says so.
+  if (oracle?.land && isStitched(part.partNumber)) {
+    stitched.push(part.partNumber);
+  } else if (oracle?.land) {
     const lines = [...grouped.x].filter(([, group]) => group.length === widest).map(([line]) => line);
     if (lines.length >= 2) {
       const measured = Math.max(...lines) - Math.min(...lines);
       if (!near(measured, oracle.land.spanMm)) {
-        record(
-          "ORACLE SPAN",
-          `emitted ${measured.toFixed(4)} mm, drawing prints ${oracle.land.spanMm} (${oracle.land.source})`
-        );
+        // A DEFECT only where the footprint claims to BE the printed pattern.
+        //
+        // Where the generator computed the pattern instead, a difference from the
+        // vendor's drawing is not a defect: IPC-7351B and a vendor's own pattern
+        // legitimately differ, and both DRV8825 (5.876 against 5.8) and ADXL345
+        // (2.290 against 2.195) sit inside a tenth of a millimetre. Reporting
+        // those as wrong copper would make this bench cry wolf on its two most
+        // interesting rows.
+        //
+        // Still SAID, because each one means the datasheet printed a pattern and
+        // the generator declined it. That is worth knowing and nothing else
+        // reports it.
+        if (usesPrintedLand(source)) {
+          record(
+            "ORACLE SPAN",
+            `emitted ${measured.toFixed(4)} mm, drawing prints ${oracle.land.spanMm} (${oracle.land.source})`
+          );
+        } else {
+          declined.push(
+            `${part.partNumber.padEnd(18)} computed ${measured.toFixed(3)} mm, this datasheet prints ${oracle.land.spanMm} ` +
+              `(${(measured - oracle.land.spanMm >= 0 ? "+" : "") + (measured - oracle.land.spanMm).toFixed(3)} mm)`
+          );
+        }
       }
     }
   }
@@ -238,6 +300,10 @@ function checkPart(part: ResolvedPart, pads: Pad[], source: string): Finding[] {
 
 function main(): void {
   const findings: Finding[] = [];
+  /** Parts whose datasheet printed a pattern the generator did not use. Not defects. */
+  const declined: string[] = [];
+  /** Parts whose record mixed prompt versions, so the oracle comparison is not evidence. */
+  const stitched: string[] = [];
   let built = 0;
   let printed = 0;
   let refused = 0;
@@ -267,7 +333,7 @@ function main(): void {
     }
     built += 1;
     if (usesPrintedLand(source)) printed += 1;
-    findings.push(...checkPart(part, pads, source));
+    findings.push(...checkPart(part, pads, source, declined, stitched));
   }
 
   console.log(`\nMeasured the emitted pads of ${built} footprints. No network, no spend.`);
@@ -283,6 +349,18 @@ function main(): void {
     console.log(`\n  ${findings.length} finding(s). Every one is copper that does not match its own record.\n`);
   }
   if (refused > 0) console.log(`  ${refused} part(s) failed to build for a reason that was not a refusal.\n`);
+  if (stitched.length > 0) {
+    console.log(
+      `  ${stitched.length} footprint(s) have a hand-read drawing but a record stitched from more than one\n` +
+        `  prompt version, so their span was NOT compared against it. ` +
+        `bench:dimensions checks these on the real pipeline.\n`
+    );
+  }
+  if (declined.length > 0) {
+    console.log(`  ${declined.length} footprint(s) were COMPUTED although this datasheet prints its own pattern:`);
+    for (const line of declined) console.log(`    ${line}`);
+    console.log("    Not defects. Each one is a printed pattern the generator's own bounds rejected.\n");
+  }
 }
 
 if (process.argv[1]?.endsWith("copper.ts")) {

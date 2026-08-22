@@ -959,7 +959,13 @@ test("an odd lead count is refused on the datasheet path too, not just the table
 // ---------------------------------------------------------------------------
 
 test("a mask clearance the datasheet states reaches the KiCad pad", async () => {
-  const files = await filesFrom(printedPart({ solderMaskExpansionMm: 0.05 }));
+  // The VARIANT is set alongside the figure, because since 2026-08-21 the figure
+  // alone is not enough: the same number means an expansion on one variant and an
+  // overlap on the other, so an unread variant emits nothing. See the mask tests
+  // in `landpattern.test.ts` for the drawing this was hand-read from.
+  const files = await filesFrom(
+    printedPart({ solderMaskExpansionMm: 0.05, solderMaskDefined: "non-solder-mask-defined" })
+  );
   const name = [...files.keys()].find((f) => f.endsWith(".kicad_mod"))!;
   assert.match(files.get(name)!, /\(solder_mask_margin 0\.050\)/);
 });
@@ -974,7 +980,9 @@ test("a datasheet that states no clearance emits none, rather than zero", async 
 });
 
 test("a stated clearance of zero is emitted, because that is a real instruction", async () => {
-  const files = await filesFrom(printedPart({ solderMaskExpansionMm: 0 }));
+  const files = await filesFrom(
+    printedPart({ solderMaskExpansionMm: 0, solderMaskDefined: "non-solder-mask-defined" })
+  );
   const name = [...files.keys()].find((f) => f.endsWith(".kicad_mod"))!;
   assert.match(files.get(name)!, /\(solder_mask_margin 0\.000\)/);
 });

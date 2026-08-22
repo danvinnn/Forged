@@ -682,9 +682,22 @@ test("a solder-mask-defined clearance is NOT written as an expansion", async () 
   );
 });
 
-test("an unstated variant still takes the clearance, because unstated is the ordinary case", async () => {
-  // Most drawings print one detail and do not label it. Refusing those would
-  // throw away a figure the document states, which is the opposite failure.
+test("an UNREAD variant does not take the clearance, because the number means two opposite things", async () => {
+  // This test asserted the opposite until 2026-08-21, on the premise that "most
+  // drawings print one detail and do not label it". MEASURED over the 57 cached
+  // tuned datasheets: 24 of the 25 that carry a mask detail print BOTH variants,
+  // labelled, side by side. Exactly one does not. The premise was backwards.
+  //
+  // Hand-read from LM139AQML-SP page 31 (NAC0014A): the two details carry THE
+  // SAME FIGURE - ".003 MAX ALL AROUND [0.07]" for non-solder-mask-defined and
+  // ".003 MIN ALL AROUND [0.07]" for solder-mask-defined. One opens the mask
+  // wider than the copper; the other holds it back inside the copper. The number
+  // cannot tell you which, so writing it as an expansion is a coin flip on a
+  // value the fabricator builds to.
+  //
+  // Omitting is not a refusal to answer, it is the ordinary library behaviour:
+  // the board's own mask rule applies, exactly as it does for every footprint
+  // that carries no per-pad override.
   const footprint = await footprintOf(
     withDimensions({
       pitchMm: 1.27,
@@ -697,5 +710,9 @@ test("an unstated variant still takes the clearance, because unstated is the ord
       solderMaskDefined: null
     })
   );
-  assert.match(footprint, /\(solder_mask_margin 0\.050\)/);
+  assert.doesNotMatch(
+    footprint,
+    /solder_mask_margin/,
+    "the variant was not read, so which of the two opposite meanings this 0.05 carries is unknown"
+  );
 });

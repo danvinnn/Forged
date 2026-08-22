@@ -34,7 +34,11 @@ const AIR_GAP_SAFE = [
   "ratelimit.ts",
   // Structured logging writes to stdout only. No transport, no vendor SDK, so
   // it stays safe on the air-gapped path where every host still ingests stdout.
-  "logging.ts"
+  "logging.ts",
+  // Reads bytes the caller already holds and parses two pages of text. No
+  // transport of its own, and it must stay that way: it is called from inside
+  // the resolvers, which is the one place a network import would look natural.
+  "identity.ts"
 ];
 
 test("air-gap-safe modules contain no fetch call", () => {

@@ -42,6 +42,8 @@ import { PdfValidationError } from "../pdf";
 import { ResolverError } from "./errors";
 import { fetchWithTimeout, readBodyWithLimit, DOWNLOAD_TIMEOUT_MS } from "./http";
 import { buildPartVariants, normalizePartNumber } from "../partnumber";
+import { documentNamesPart } from "../identity";
+import { logger } from "../logging";
 
 const RESOLVER_NAME = "manufacturer";
 
@@ -237,6 +239,16 @@ export class ManufacturerResolver implements DatasheetResolver {
       bytes = await readBodyWithLimit(response, url);
     } catch {
       return { kind: "error" };
+    }
+
+    // The vendor served a real PDF. That is not the same as serving THIS PART's
+    // datasheet: a retired literature name redirects, a family URL can land on a
+    // sibling, and both come back 200 with valid PDF bytes. A document for the
+    // wrong device is reported as a MISS so the remaining candidates still run.
+    // See `identity.ts`.
+    if (!(await documentNamesPart(bytes, partNumber))) {
+      logger.debug({ event: "resolver_wrong_part", resolver: RESOLVER_NAME, partNumber, url });
+      return { kind: "miss" };
     }
 
     try {

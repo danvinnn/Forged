@@ -1973,3 +1973,208 @@ stated better than any number could.
 The three bad PDFs are still in the corpora, deliberately, until they are
 replaced: deleting them quietly would move the numbers with no record of why.
 Whoever replaces them should re-run and expect READ and SHIPS to move slightly.
+
+# 2026-08-21/22
+
+## The wrong-part datasheets were a RETRIEVAL bug, not a stale cache
+
+`bench:corpus` (new, free) runs the product's own `namesThePart` over every
+cached PDF. Re-fetching the three bad documents through the real resolver
+returned **the same wrong document again**, which is what turned a housekeeping
+task into a defect:
+
+TI retired the literature names `tps7a4700` and `tps7a4901`. Both now redirect to
+a product-category page, so the constructed URL missed, the chain fell through to
+search, and search returned a SIBLING's datasheet. It scored well: same vendor,
+same family prefix, a real PDF. Every resolver checked exactly one thing about a
+candidate - that the bytes begin with `%PDF`. **Nothing had ever compared the
+document to the request.**
+
+Two changes, and the order matters:
+
+1. `retrieval/identity.ts` asks whether a downloaded PDF names the part it was
+   fetched for. Called where each resolver decides a candidate is a hit, so a
+   wrong document is reported as a MISS and the remaining candidates still run.
+   Rejecting at the resolver boundary instead would throw away every remaining
+   candidate the moment the first was wrong.
+2. `buildPartVariants` offers the two-digit stem TI files these families under
+   (`TPS7A4700 -> TPS7A47`, whose first line reads "TPS7A4700, TPS7A4701").
+
+**(2) is only safe because of (1).** A broader variant that can fetch a real but
+wrong document is a coverage win and a correctness loss; with the identity check
+in front of it, the worst case is one wasted request. Build the check first, then
+the guess.
+
+**Unreadable means ACCEPT.** A PDF whose text layer will not parse is common and
+legitimate - scanned rad-hard datasheets are why the renderer exists - so the
+check passes them. It exists to catch a confident wrong answer, not to demand a
+readable one.
+
+## Correcting my own plan: one hold-out part, not two
+
+The plan said two of the three contaminated files were in the hold-out.
+`bench:corpus` reported `.holdout-cache/TPS7A4700.pdf` as an ORPHAN: TPS7A4700
+was removed from `HOLDOUT_CORPUS` on 2026-08-17 and the file was never deleted.
+Nothing scored it. **A file sitting in a corpus directory is not evidence that a
+corpus contains it.**
+
+The same run found nine more orphans and, in the other direction, two parts that
+had been TUNED AGAINST while belonging to no corpus at all: LTC6563 (its
+"RECOMMENDED SOLDER PAD" caption is in `sections.ts`) and RHFL4913A (its
+"Flat-16P" is the glued-designator rule's worked example). Both had `PINOUT_ORACLE`
+entries. Rules had been fitted to them and no number counted them.
+
+## Three instruments could not see what they existed to see
+
+Found in one afternoon, all three by reading a drawing and then asking why no
+bench had said so.
+
+**`bench:copper`** looked its oracle entry up by outline code alone. Most replay
+records carry no code, so the only hand-read check in the project was silently
+skipped for most of the corpus. Matching by part name as well - the two ways
+`oracleCovers` already matched - immediately surfaced **ADXL345 shipping copper
+0.095 mm from its own printed drawing**, a defect documented in the oracle since
+2026-08-20 with the note "bench:copper reports no disagreement here and is right
+to". It was not right to. It could not see.
+
+**`bench:replay`** merged cached answers in `readdirSync` order and let the last
+file seen win each field, under a comment claiming "newest per part". Directory
+order is not date order and is not stable across machines, so no run was
+reproducible. Restricting to one prompt version per part was tried and REJECTED:
+measured, it cut the bench from 59 footprints to 24, because most parts have only
+a first pass cached under the newest version. Sorting by `storedAt` fixes the
+reproducibility without the cost.
+
+**`bench:guards`** read guard names out of REFUSAL MESSAGES, so a guard that
+fires and then ships anyway was invisible. It reported every plausibility guard
+as "never fires" while `printed-outside-ipc-band` was firing on DRV8825 and
+TPS54360 on **every single run**: the printed footprint is rejected, IPC-7351B
+computes a pattern instead, the export succeeds, and the message that would have
+named the discard is never thrown. `FootprintProvenance.discards` now carries
+them out of the successful path.
+
+**This overturns a finding recorded on 2026-08-16** ("no plausibility guard fires
+on the tuned corpus, only the output invariant does"). It was an artifact of an
+instrument that could only see fires ending in a refusal.
+
+The same file also held a drifted COPY of replay's cache reader - missing
+`jedecOutline` and the whole radiation block, so it judged guards against a record
+the generator never sees - and scraped the hold-out part list out of `holdout.ts`
+with a regex, which silently matched nothing the moment that list moved into its
+own module, reclassifying all 50 hold-out parts as "neither corpus". Both now use
+the shared modules. `holdout-corpus.ts` exists because importing `holdout.ts`
+starts a measurement run; the answer to that is a data module, not a regex over
+another file's source.
+
+## An unread variant is not a default variant
+
+`solderMaskExpansionMm` was written as a mask EXPANSION whenever it was read,
+including when `solderMaskDefined` was null. Hand-read from LM139AQML-SP page 31:
+
+    NON SOLDER MASK DEFINED    .003 MAX [0.07] ALL AROUND
+    SOLDER MASK DEFINED        .003 MIN [0.07] ALL AROUND
+
+**The same number, meaning opposite things.** One opens the mask wider than the
+copper; the other holds it back inside it. The figure cannot tell you which.
+
+The test asserting the old behaviour carried its premise in a comment - "most
+drawings print one detail and do not label it" - and the premise was backwards.
+Measured over the 57 tuned datasheets: **24 of the 25 that carry a mask detail
+label BOTH variants**. Exactly one does not. An unread variant is a missed
+reading, not an unlabelled drawing.
+
+Omitting is not a refusal to answer. It is what every footprint without a per-pad
+override already does: the board's own mask rule applies. It also removed a
+run-to-run difference in the emitted file, which is what put this on the list.
+
+**A comment stating a frequency is a claim. Measure it before building on it.**
+
+## A degenerate range is a legitimate answer
+
+DRV8825 reads its lead span as `{6.6, 6.6}` where the drawing prints "6.6 / 6.2
+TYP" stacked - the top line only. The obvious fix is to refuse a degenerate
+range. **Do not.** Across every current-prompt cached answer, 7 spans come back
+with `min === max` and 6 of them are RIGHT: ST prints the LQFP span as a single
+basic value, and `DIMENSION_ORACLE` records `{16.0, 16.0}` for STM32F407VG and
+`{22.0, 22.0}` for STM32H743ZI, both hand-read. The guard would fix one part and
+break four.
+
+The defect is in which line of a stacked pair gets read, and nothing downstream
+can see the pair. Recorded beside the entry as a measured negative.
+
+## Three examples is a pattern you matched, not a class you measured
+
+The sharpest lesson of 2026-08-22, and it came from Anthony asking one question:
+**"is that tailoring?"**
+
+I had found three parts misreading a land span, all by the same arithmetic - the
+printed centre distance minus one pad length, which is exactly the inner gap
+between opposing lands:
+
+    DRV8825     read 4.30   printed 5.80    5.80 - 1.50 = 4.30
+    TPS54360    read 3.85   printed 5.40    5.40 - 1.55 = 3.85
+    TPS7A4700   read 3.90   printed 4.65    4.65 - 0.75 = 3.90
+
+I called it systematic, said the prompt's question was ambiguous, and put a
+prompt change at the top of the plan. Then I counted the denominator.
+
+**Fourteen land spans are checked against a hand-read drawing. Eleven are
+RIGHT** - the same TI convention, read correctly, including three validated by
+drawings read the same afternoon. If the question were ambiguous they would not
+be. The "systematic" claim was three examples and no denominator.
+
+### The line between fixing a question and tailoring
+
+    tailoring       changing the question until THESE parts pass
+    not tailoring   the question is genuinely ambiguous, so you fix the question
+
+Both look identical in the diff. What separates them is whether the ambiguity
+shows up in parts you did NOT pick, and the only honest test is the hold-out:
+change the question ONCE, re-run, accept the number. Change it repeatedly until
+the number improves and you have tailored, however the wording is justified.
+
+The 2026-08-17 `leadForm` case is what a genuinely broken question looks like:
+the prompt offered 2 of 3 valid values, so EVERY ceramic flat pack answered null.
+It failed everywhere, not on three documents out of fourteen.
+
+### And the fourth "instance" was my own instrument
+
+I had also reported ADXL345 shipping a wrong land span. **It reads correctly.**
+`bench:copper` was comparing a replay record STITCHED from two prompt versions:
+three cached answers read that part right, one stale one read 2.29, the stale one
+was newest so it won the field. `bench:dimensions`, which runs the real pipeline
+against the current prompt, said 2.195 all along.
+
+That is the fourth instrument to lie this week, and it lied in the direction that
+supported the change I already wanted to make. `bench:copper` now skips the
+oracle comparison on any stitched record and reports how many it skipped.
+
+**Before arguing from a rate, count the denominator. Before arguing from a
+defect, check which instrument produced it.**
+
+### What is left of the finding, after testing it
+
+Read five more drawings on 2026-08-22 specifically to attack my own hypothesis.
+
+**"The exposed thermal pad crowds the figure": FALSIFIED.** LTC6563 is an
+exposed-pad QFN whose land figure is HARDER than any of the three failures - ADI
+prints an outer extent and an inner gap and never states the centre distance, so
+it has to be derived ((5.50 + 4.10) / 2 = 4.80). The reader gets it right, and
+its cross axis too. ISL71001M, ADS8688 and MSP430F5529 all carry thermal pads and
+all read correctly.
+
+**"The figure draws THERMAL VIAS": 3 of 3 wrong have them, 12 of 12 right do
+not.** A perfect split on 15 cases. Still only 3 positives, so it is a lead and
+not a finding. 19 tuned land pages draw vias and 15 are unread; a via-drawing
+figure that reads CORRECTLY would kill this the way LTC6563 killed the last one,
+and that is worth more than another confirmation.
+
+**Attack your own hypothesis with the next drawing, not confirm it.** The first
+guess died on the first part read to test it, which is the cheapest possible
+outcome and only happens if the part is picked to break the rule rather than to
+support it.
+
+Two gull-wing cases are contained: `printed-outside-ipc-band` fires on DRV8825
+and TPS54360 and IPC-7351B takes over, 0.08 mm and 0.67 mm from the vendor
+pattern. TPS7A4700 is no-lead, where the band check cannot run by design, and it
+ships 0.75 mm narrow. ONE live wrong footprint.

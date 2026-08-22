@@ -161,6 +161,408 @@ export interface DimensionOracleEntry {
  * as every line of it was read by a person.
  */
 export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
+  // TI's WIDE-BODY SOIC-16. Read 2026-08-22 off MAX232 pages 23 and 24.
+  //
+  // Worth having next to D0008A and D0014A because it is the same family name
+  // and a completely different size: 7.4-7.6 body against 3.81-3.98, a 10.63
+  // span against 6.19, 2 mm lands on a 9.3 centre span. "SOIC" settles nothing
+  // about geometry, which is why this file is keyed on the drawing code.
+  DW0016A: {
+    packageType: "SOIC (16), wide body",
+    // MAX232 and PCF8574 both print this drawing and both offer several
+    // packages, so no part is claimed. Matched on the outline code.
+    parts: [],
+    source: "MAX232 datasheet, page 23, PACKAGE OUTLINE DW0016A, rev 4220721/A 07/2016",
+    leadForm: "gullwing",
+    // 10.63 over 9.97, marked TYP.
+    leadSpanMm: { minMm: 9.97, maxMm: 10.63 },
+    // 16X 0.51 over 0.31.
+    leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
+    // 1.27 over 0.40 on DETAIL A, the seated foot.
+    leadContactMm: { minMm: 0.4, maxMm: 1.27 },
+    pitchMm: 1.27,
+    // 10.5 over 10.1, NOTE 3: excludes mold flash.
+    bodyLengthMm: { minMm: 10.1, maxMm: 10.5 },
+    // 7.6 over 7.4, NOTE 4: excludes interlead flash.
+    bodyWidthMm: { minMm: 7.4, maxMm: 7.6 },
+    bodyHeightMaxMm: 2.65,
+    leadSides: 2,
+    jedecOutline: "MS-013",
+    land: {
+      source: "MAX232 datasheet, page 24, LAND PATTERN EXAMPLE DW0016A",
+      padLengthMm: 2.0,
+      padWidthMm: 0.6,
+      // (9.3) between the two pad-column centrelines.
+      spanMm: 9.3,
+      // 0.07 MAX all around non-solder-mask-defined, 0.07 MIN all around
+      // solder-mask-defined. Neither marked preferred on this revision.
+      solderMaskExpansionMm: 0.07
+    }
+  },
+
+  // TI's PowerPAD HVSSOP-8. Read 2026-08-22 off UCC27524 pages 43 and 44.
+  //
+  // DGK0008A above with a thermal pad added, and the lead geometry is identical
+  // to the millimetre: same 5.05/4.75 span, same 0.38/0.25 width, same 0.7/0.4
+  // foot, same 1.4 x 0.45 lands on a 4.4 centre span. Two drawings read
+  // independently on different days agreeing is worth more than either alone.
+  DGN0008G: {
+    packageType: "PowerPAD HVSSOP (8)",
+    // UCC27524 offers this drawing AND its sibling DGN0008H under one caption
+    // ("HVSSOP (DGN)"), which is the collision `packageOptions` disambiguates by
+    // appending the outline code. Which one a record settles on is therefore not
+    // decidable from here, so no part is claimed.
+    parts: [],
+    source: "UCC27524 datasheet, page 43, PACKAGE OUTLINE DGN0008G, rev 4225480/C 11/2024",
+    leadForm: "gullwing",
+    // 5.05 over 4.75, marked TYP.
+    leadSpanMm: { minMm: 4.75, maxMm: 5.05 },
+    leadWidthMm: { minMm: 0.25, maxMm: 0.38 },
+    // 0.7 over 0.4 on DETAIL A.
+    leadContactMm: { minMm: 0.4, maxMm: 0.7 },
+    pitchMm: 0.65,
+    // 3.1 over 2.9 on both axes, NOTE 3 along the rows and NOTE 4 across them.
+    bodyLengthMm: { minMm: 2.9, maxMm: 3.1 },
+    bodyWidthMm: { minMm: 2.9, maxMm: 3.1 },
+    bodyHeightMaxMm: 1.1,
+    // Bottom view: 2.15/1.95 along the row axis, 1.846/1.646 across it.
+    thermalPadLengthMm: { minMm: 1.95, maxMm: 2.15 },
+    thermalPadWidthMm: { minMm: 1.646, maxMm: 1.846 },
+    leadSides: 2,
+    jedecOutline: "MO-187",
+    land: {
+      source: "UCC27524 datasheet, page 44, LAND PATTERN EXAMPLE DGN0008G",
+      padLengthMm: 1.4,
+      padWidthMm: 0.45,
+      // (4.4) between the two pad-column centrelines, the same span DGK0008A
+      // prints: a thermal pad changes what sits BETWEEN the rows, not where the
+      // rows sit.
+      spanMm: 4.4,
+      // 0.05 MAX all around non-solder-mask-defined, marked PREFERRED. The
+      // THERMAL land is separately drawn as a solder-mask-defined pad with its
+      // own opening, so this figure is the signal pads' and is recorded as such.
+      solderMaskExpansionMm: 0.05
+    }
+  },
+
+  // Analog Devices' 24-lead side-solderable QFN, 3 x 5 mm. Read 2026-08-22 off
+  // LTC6563 page 33.
+  //
+  // HERE TO TEST A HYPOTHESIS, AND IT FAILED IT. Three parts misread their land
+  // span on 2026-08-21 and all three carried an exposed thermal pad, so the
+  // guess was that a crowded exposed-pad figure is what defeats the reader. This
+  // is an exposed-pad QFN whose figure is MORE awkward than any of them - it
+  // prints an OUTER extent and an INNER gap and never states the centre distance
+  // at all, so the answer has to be derived:
+  //
+  //     5.50 outer, 4.10 inner  ->  centre 4.80
+  //     3.50 outer, 2.10 inner  ->  centre 2.80
+  //
+  // The reader gets 4.80 right. So "exposed pad" is not the class, and neither is
+  // "outer-and-inner figure" - ADXL345 is drawn the same way and also reads
+  // correctly now. Recorded so nobody re-runs this guess.
+  //
+  // Not a JEDEC outline: note 1 on the drawing says so outright, so no
+  // `jedecOutline` is claimed.
+  "05-08-1795": {
+    packageType: "UDDM QFN (24)",
+    // The only package this datasheet offers.
+    parts: ["LTC6563"],
+    source: "LTC6563 datasheet, page 33, PACKAGE DESCRIPTION, LTC DWG 05-08-1795 Rev 0",
+    leadForm: "nolead",
+    // NO `leadSpanMm`. The terminals are flush with the body on a no-lead
+    // package and this drawing prints no tip-to-tip dimension; the body is
+    // recorded below instead.
+    //
+    // 0.25 +/- 0.05, the terminal across the row.
+    leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
+    // DETAIL A prints TERMINAL LENGTH 0.40 +/- 0.10 outright.
+    leadContactMm: { minMm: 0.3, maxMm: 0.5 },
+    pitchMm: 0.5,
+    // 5.00 +/- 0.10 is the axis the land's 4.80 centre span runs along, and
+    // 3.00 +/- 0.10 is across it. Paired that way rather than by which number is
+    // bigger, so the entry and the land block describe the same axis.
+    bodyLengthMm: { minMm: 4.9, maxMm: 5.1 },
+    bodyWidthMm: { minMm: 2.9, maxMm: 3.1 },
+    // 0.75 +/- 0.05.
+    bodyHeightMm: { minMm: 0.7, maxMm: 0.8 },
+    // 3.65 +/- 0.10 along the 5 mm axis, 1.65 +/- 0.10 across it.
+    thermalPadLengthMm: { minMm: 3.55, maxMm: 3.75 },
+    thermalPadWidthMm: { minMm: 1.55, maxMm: 1.75 },
+    leadSides: 4,
+    land: {
+      source: "LTC6563 datasheet, page 33, RECOMMENDED SOLDER PAD PITCH AND DIMENSIONS",
+      padLengthMm: 0.7,
+      padWidthMm: 0.25,
+      // DERIVED, and the derivation is the point: this figure states 5.50 outer
+      // and 4.10 inner and no centre distance, so the centre is their mean.
+      // (5.50 + 4.10) / 2 = 4.80, which is also 5.50 - 0.70.
+      spanMm: 4.8,
+      // The other axis, by the same arithmetic: (3.50 + 2.10) / 2 = 2.80.
+      spanCrossMm: 2.8,
+      // NO `solderMaskExpansionMm`. The figure says only "APPLY SOLDER MASK TO
+      // AREAS THAT ARE NOT SOLDERED" and prints no clearance. Absent because a
+      // person looked and the drawing is silent.
+    }
+  },
+
+  // TI's SC-70 5-lead. Read 2026-08-21 off OPA333 pages 37 and 38, rendered.
+  //
+  // The SMALLEST package in this file, and it is here for that reason: every
+  // dimension is under a millimetre and a decimal point read wrongly is a
+  // footprint nobody can hand-solder. Same axis convention as DBV0005A above -
+  // the rows run vertically, so the horizontal 2.4/1.8 is the LEAD SPAN and the
+  // horizontal 1.4/1.1 across the body alone is the body WIDTH.
+  DCK0005A: {
+    packageType: "SC-70 (5)",
+    // OPA333, SN74LVC1G08 and TLV9061 all print this drawing and all offer
+    // several packages, so no part is claimed. Matched on the outline code.
+    parts: [],
+    source: "OPA333 datasheet, page 37, PACKAGE OUTLINE DCK0005A, rev 4214834/G 11/2024",
+    leadForm: "gullwing",
+    leadSpanMm: { minMm: 1.8, maxMm: 2.4 },
+    // 5X 0.33 over 0.15. NOTE 5 on the drawing says this width does not comply
+    // with JEDEC, which is the vendor's own warning and is recorded as read.
+    leadWidthMm: { minMm: 0.15, maxMm: 0.33 },
+    // 0.46 over 0.26 TYP on the side view, the seated foot.
+    leadContactMm: { minMm: 0.26, maxMm: 0.46 },
+    // 2X 0.65. Five leads in a six-position grid, so one position is empty.
+    pitchMm: 0.65,
+    bodyLengthMm: { minMm: 1.85, maxMm: 2.15 },
+    bodyWidthMm: { minMm: 1.1, maxMm: 1.4 },
+    bodyHeightMaxMm: 1.1,
+    leadSides: 2,
+    jedecOutline: "MO-203",
+    land: {
+      source: "OPA333 datasheet, page 38, LAND PATTERN EXAMPLE DCK0005A",
+      padLengthMm: 0.95,
+      padWidthMm: 0.4,
+      // (2.2) between the two pad-column centrelines.
+      spanMm: 2.2,
+      // 0.07 MAX all around non-solder-mask-defined, marked PREFERRED, and
+      // 0.07 MIN all around solder-mask-defined.
+      solderMaskExpansionMm: 0.07
+    }
+  },
+
+  // TI's TSSOP-14. Read 2026-08-21 off OPA2189 pages 52 and 53, rendered.
+  //
+  // Its land is IDENTICAL to PW0008A's below - 1.5 x 0.45 lands on a 5.8 centre
+  // span - which is right and worth stating: the two packages differ in lead
+  // COUNT and body length, not in lead span or land geometry. Two entries read
+  // independently off two drawings agreeing is the cheapest confirmation this
+  // file can produce.
+  //
+  // The lead span is printed as the same stacked "6.6 over 6.2 TYP" pair that
+  // PWP0028C carries, and PWP0028C is the entry the reader collapses to 6.6-6.6.
+  // Reading this one is what makes that a class rather than a one-off.
+  PW0014A: {
+    packageType: "TSSOP (14)",
+    // OPA2189, TLV9061 and TXB0104 all print this drawing and all offer several
+    // packages, so no part is claimed. Matched on the outline code.
+    parts: [],
+    source: "OPA2189 datasheet, page 52, PACKAGE OUTLINE PW0014A, rev 4220202/B 12/2023",
+    leadForm: "gullwing",
+    leadSpanMm: { minMm: 6.2, maxMm: 6.6 },
+    // 14X 0.30 over 0.17.
+    leadWidthMm: { minMm: 0.17, maxMm: 0.3 },
+    // 0.75 over 0.50 on DETAIL A, the seated foot.
+    leadContactMm: { minMm: 0.5, maxMm: 0.75 },
+    pitchMm: 0.65,
+    // 5.1 over 4.9, NOTE 3: excludes mold flash.
+    bodyLengthMm: { minMm: 4.9, maxMm: 5.1 },
+    // 4.5 over 4.3, NOTE 4: excludes interlead flash.
+    bodyWidthMm: { minMm: 4.3, maxMm: 4.5 },
+    bodyHeightMaxMm: 1.2,
+    leadSides: 2,
+    jedecOutline: "MO-153",
+    land: {
+      source: "OPA2189 datasheet, page 53, LAND PATTERN EXAMPLE PW0014A",
+      padLengthMm: 1.5,
+      padWidthMm: 0.45,
+      // (5.8) between the two pad-column centrelines.
+      spanMm: 5.8,
+      // 0.05 MAX all around non-solder-mask-defined, marked PREFERRED, and
+      // 0.05 MIN all around solder-mask-defined.
+      solderMaskExpansionMm: 0.05
+    }
+  },
+
+  // TI's 20-terminal VQFN with an exposed pad. Read 2026-08-21 off TPS7A4700
+  // pages 29 and 30, rendered, the day that datasheet was fetched correctly for
+  // the first time.
+  //
+  // ADDED BECAUSE IT SHIPS AND WAS UNCHECKED, and the read is WRONG. The record
+  // carries `landSpanMm: 3.9`, which is 4.65 less the 0.75 pad length: the reader
+  // took the printed (4.65) as an OUTER extent and subtracted a pad. It is not an
+  // outer extent. The (4.65) extension lines drop from the two pad-column
+  // CENTRELINES, and the same drawing dimensions its 5-pad row as (2.6) - four
+  // 0.65 pitches between outermost pad CENTRES - so the convention is
+  // centre-to-centre throughout.
+  //
+  // The geometry settles it independently: at a 3.9 centre span a 0.75 land ends
+  // 0.175 mm INSIDE the 5.0 mm body edge, so it would not reach the terminal it
+  // is meant to solder. At 4.65 it overhangs the body edge by 0.2 mm, which is
+  // the ordinary toe extension.
+  //
+  // SAME SHAPE AS ADXL345: a figure dimensioned as an extent misread as a span,
+  // where both readings stay plausible on their own. Third instance of it.
+  RGW0020A: {
+    packageType: "VQFN (20)",
+    // The only package this datasheet offers.
+    parts: ["TPS7A4700"],
+    source: "TPS7A4700 datasheet, page 29, PACKAGE OUTLINE RGW0020A, rev 4219039/A 06/2018",
+    leadForm: "nolead",
+    // NO `leadSpanMm`. A no-lead package's terminals are flush with the body, so
+    // the drawing prints a body dimension and no tip-to-tip span. 5.1/4.9 is the
+    // BODY, recorded below as such.
+    //
+    // 20X 0.36 over 0.26, the terminal across the row.
+    leadWidthMm: { minMm: 0.26, maxMm: 0.36 },
+    // 20X 0.65 over 0.45, the terminal along the outward axis. This is the
+    // no-lead equivalent of dimension L and is what the land is built from.
+    leadContactMm: { minMm: 0.45, maxMm: 0.65 },
+    pitchMm: 0.65,
+    // 5.1 over 4.9 on BOTH axes. A square package, so both keys carry it.
+    bodyLengthMm: { minMm: 4.9, maxMm: 5.1 },
+    bodyWidthMm: { minMm: 4.9, maxMm: 5.1 },
+    bodyHeightMaxMm: 1.0,
+    // Square 3.15 +/- 0.1, the exposed pad on the underside.
+    thermalPadLengthMm: { minMm: 3.05, maxMm: 3.25 },
+    thermalPadWidthMm: { minMm: 3.05, maxMm: 3.25 },
+    leadSides: 4,
+    land: {
+      source: "TPS7A4700 datasheet, page 30, LAND PATTERN EXAMPLE RGW0020A",
+      padLengthMm: 0.75,
+      padWidthMm: 0.31,
+      // (4.65), centre to centre. See the note above; the record says 3.9.
+      spanMm: 4.65,
+      // 0.07 MAX all around on the non-solder-mask-defined detail, marked
+      // PREFERRED, and 0.07 MIN on the other.
+      solderMaskExpansionMm: 0.07
+    }
+  },
+
+  // TI's SOT-23-5. Read 2026-08-21 off OPA333 pages 43 and 44, rendered.
+  //
+  // The axes are the trap on this drawing and are worth stating. The pin rows run
+  // VERTICALLY (1,2,3 left and 5,4 right), so the horizontal 3.0/2.6 across the
+  // whole top view is the LEAD SPAN, the horizontal 1.75/1.45 across the body
+  // alone is the body WIDTH, and the vertical 3.05/2.75 marked A is the body
+  // LENGTH. Reading the 3.0/2.6 as a body dimension is the obvious mistake and
+  // would put the lands 0.4 mm out.
+  DBV0005A: {
+    packageType: "SOT-23 (5)",
+    // Every corpus datasheet printing this drawing (OPA333, OPA2189, TLV9061,
+    // SN74LVC1G08) offers several packages, so no part is claimed. Matched on the
+    // outline code.
+    parts: [],
+    source: "OPA333 datasheet, page 43, PACKAGE OUTLINE DBV0005A, rev 4214839/K 08/2024",
+    leadForm: "gullwing",
+    leadSpanMm: { minMm: 2.6, maxMm: 3.0 },
+    // 5X 0.5 over 0.3.
+    leadWidthMm: { minMm: 0.3, maxMm: 0.5 },
+    // 0.6 over 0.3 TYP on the side view, the seated foot.
+    leadContactMm: { minMm: 0.3, maxMm: 0.6 },
+    // 2X 0.95 between lead centres. Five leads in a six-position grid, so one
+    // position is empty; which one is on the drawing but is not an oracle field.
+    pitchMm: 0.95,
+    bodyLengthMm: { minMm: 2.75, maxMm: 3.05 },
+    bodyWidthMm: { minMm: 1.45, maxMm: 1.75 },
+    // 1.45 over 0.90 on the side view. A RANGE, not a max-only drawing, even
+    // though the title block says "1.45 mm max height": the drawing prints both
+    // ends, so any value inside is a correct reading.
+    bodyHeightMm: { minMm: 0.9, maxMm: 1.45 },
+    leadSides: 2,
+    jedecOutline: "MO-178",
+    land: {
+      source: "OPA333 datasheet, page 44, LAND PATTERN EXAMPLE DBV0005A",
+      padLengthMm: 1.1,
+      padWidthMm: 0.6,
+      // (2.6) between the two pad-column centrelines.
+      spanMm: 2.6,
+      // 0.07 MAX all around on the non-solder-mask-defined detail, which this
+      // drawing marks PREFERRED, and 0.07 MIN on the other.
+      solderMaskExpansionMm: 0.07
+    }
+  },
+
+  // TI's SOIC-14. Read 2026-08-21 off OPA2189 pages 49 and 50, rendered.
+  //
+  // Dimensioned in MILLIMETRES with no inch equivalents, which is the contrast
+  // with D0008A above: same vendor, same family, same year range, and the other
+  // way round on units. Anything that assumed one convention would get one of
+  // these two wrong.
+  D0014A: {
+    packageType: "SOIC (14)",
+    // No part claimed: every corpus datasheet printing this drawing (OPA2189,
+    // OPA2277, TLV9061, TXB0104) offers several packages, and which one a record
+    // settles on has not been hand-checked. Matched on the outline code instead.
+    parts: [],
+    source: "OPA2189 datasheet, page 49, PACKAGE OUTLINE D0014A, rev 4220718/A 09/2016",
+    leadForm: "gullwing",
+    // 6.2 over 5.8, marked TYP, across the leads.
+    leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+    // 14X 0.51 over 0.31.
+    leadWidthMm: { minMm: 0.31, maxMm: 0.51 },
+    // 1.27 over 0.40 on DETAIL A, the seated foot.
+    leadContactMm: { minMm: 0.4, maxMm: 1.27 },
+    pitchMm: 1.27,
+    // 8.75 over 8.55, NOTE 3: excludes mold flash.
+    bodyLengthMm: { minMm: 8.55, maxMm: 8.75 },
+    // 4.0 over 3.8, NOTE 4: excludes interlead flash.
+    bodyWidthMm: { minMm: 3.8, maxMm: 4.0 },
+    bodyHeightMaxMm: 1.75,
+    leadSides: 2,
+    jedecOutline: "MS-012 AB",
+    land: {
+      source: "OPA2189 datasheet, page 50, LAND PATTERN EXAMPLE D0014A",
+      padLengthMm: 1.55,
+      padWidthMm: 0.6,
+      // (5.4) between the two pad-column centrelines. The same span as D0008A,
+      // which is right: the two packages differ in lead COUNT, not in lead span.
+      spanMm: 5.4,
+      // 0.07 MAX all around non-solder-mask-defined, 0.07 MIN all around
+      // solder-mask-defined. Neither marked preferred on this revision.
+      solderMaskExpansionMm: 0.07
+    }
+  },
+
+  // TI's VSSOP-8 at 0.65 pitch. Read 2026-08-21 off LM358 pages 56 and 57.
+  DGK0008A: {
+    packageType: "VSSOP (8)",
+    // Shared by LM358, OPA2189, OPA333 and TLV9061, all of which offer several
+    // packages, so no part is claimed. Matched on the outline code.
+    parts: [],
+    source: "LM358 datasheet, page 56, PACKAGE OUTLINE DGK0008A, rev 4214862/A 04/2023",
+    leadForm: "gullwing",
+    // 5.05 over 4.75, marked TYP.
+    leadSpanMm: { minMm: 4.75, maxMm: 5.05 },
+    // 8X 0.38 over 0.25.
+    leadWidthMm: { minMm: 0.25, maxMm: 0.38 },
+    // 0.7 over 0.4 on DETAIL A.
+    leadContactMm: { minMm: 0.4, maxMm: 0.7 },
+    pitchMm: 0.65,
+    // 3.1 over 2.9 on BOTH axes, NOTE 3 along the rows and NOTE 4 across them.
+    // Recorded on both keys because the drawing prints both, not because one was
+    // copied to the other.
+    bodyLengthMm: { minMm: 2.9, maxMm: 3.1 },
+    bodyWidthMm: { minMm: 2.9, maxMm: 3.1 },
+    bodyHeightMaxMm: 1.1,
+    leadSides: 2,
+    jedecOutline: "MO-187",
+    land: {
+      source: "LM358 datasheet, page 57, LAND PATTERN EXAMPLE DGK0008A",
+      padLengthMm: 1.4,
+      padWidthMm: 0.45,
+      // (4.4) between the two pad-column centrelines.
+      spanMm: 4.4,
+      // 0.05 MAX all around on the non-solder-mask-defined detail, which this
+      // drawing marks PREFERRED, and 0.05 MIN on the other.
+      solderMaskExpansionMm: 0.05
+    }
+  },
+
   // Ceramic flat pack, 10 lead, dimensioned in INCHES with no millimetre
   // equivalents. Read 2026-08-18 off the rendered page.
   //
@@ -378,7 +780,21 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     bodyWidthMm: { minMm: 11.8, maxMm: 12.2 },
     bodyHeightMaxMm: 1.6,
     leadSides: 4,
-    jedecOutline: "MS-026"
+    jedecOutline: "MS-026",
+    land: {
+      // Read 2026-08-21 off the rendered page. MSP430F5529 SHIPS from this
+      // pattern and nothing checked it until now.
+      source: "MSP430F5529 datasheet, page 142, LAND PATTERN EXAMPLE PN0080A, rev 4215166/A 08/2022",
+      padLengthMm: 1.5,
+      padWidthMm: 0.3,
+      // (13.4) on BOTH axes, dimensioned between the opposing rows' pad
+      // CENTRELINES. Square, so no `spanCrossMm`: the drawing prints one number
+      // twice rather than two different ones.
+      spanMm: 13.4,
+      // 0.05 MAX all around non-solder-mask-defined, 0.05 MIN all around
+      // solder-mask-defined. Neither marked preferred on this revision.
+      solderMaskExpansionMm: 0.05
+    }
   },
   // PowerPAD SOIC-8. Read 2026-08-18 off the rendered page. The second entry
   // with an exposed pad, and deliberately a SOIC rather than another TSSOP: the
@@ -407,9 +823,21 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     thermalPadLengthMm: { minMm: 2.8, maxMm: 3.4 },
     thermalPadWidthMm: { minMm: 2.11, maxMm: 2.71 },
     leadSides: 2,
-    jedecOutline: "MS-012"
-    // No `land`: the recommended footprint is on another page and has not been
-    // read, and an entry claiming one nobody looked at is worse than none.
+    jedecOutline: "MS-012",
+    land: {
+      // Read 2026-08-21 off the rendered page. TPS54360 SHIPS from this pattern.
+      source: "TPS54360 datasheet, page 48, LAND PATTERN EXAMPLE DDA0008B, rev 4214849/B 09/2025",
+      padLengthMm: 1.55,
+      padWidthMm: 0.6,
+      // (5.4) between the two pad-column centrelines. The SAME span D0008A
+      // prints, which is right: a PowerPAD SOIC-8 and a plain SOIC-8 differ in
+      // what sits between the rows, not in where the rows sit.
+      spanMm: 5.4,
+      // 0.07 MAX / 0.07 MIN, labelled "PADS 1-8". The thermal land is separately
+      // drawn as a SOLDER MASK DEFINED PAD with its own opening, which is why
+      // that detail is scoped to the signal pads and is recorded as read.
+      solderMaskExpansionMm: 0.07
+    }
   },
   // PowerPAD TSSOP-28. Read 2026-08-18 off the rendered page. Chosen because it
   // is the first entry with an EXPOSED PAD, which nothing here could check
@@ -423,6 +851,21 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     parts: ["DRV8825"],
     source: "DRV8825 datasheet, page 30, PACKAGE OUTLINE PWP0028C, rev 4223582/A 03/2017",
     leadForm: "gullwing",
+    // THE STANDING WRONG. The model reads this as 6.6-6.6, taking the top line of
+    // the stacked "6.6 / 6.2 TYP" pair and dropping the bottom. Re-verified by
+    // hand from the rendered page on 2026-08-21: the range is right and the read
+    // is wrong. Costs 0.2mm of span, so 0.1mm per pad centre, and only where the
+    // printed land pattern is unavailable - here it is rejected by the vendor
+    // land guard because the same page's land span is misread too.
+    //
+    // MEASURED NEGATIVE, do not retry: refusing a degenerate range would fix this
+    // and break four parts. Across every current-prompt cached answer, 7 spans
+    // come back with minMm === maxMm and 6 of them are CORRECT - ST prints the
+    // LQFP span as a single basic value, and this oracle itself records
+    // `leadSpanMm: { 16.0, 16.0 }` for STM32F407VG and `{ 22.0, 22.0 }` for
+    // STM32H743ZI, both hand-read. A degenerate range is a legitimate answer.
+    // The defect is in which line of a stacked pair gets read, and no guard
+    // downstream can see the pair.
     leadSpanMm: { minMm: 6.2, maxMm: 6.6 },
     leadWidthMm: { minMm: 0.19, maxMm: 0.3 },
     leadContactMm: { minMm: 0.5, maxMm: 0.75 },
@@ -435,9 +878,24 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     thermalPadLengthMm: { minMm: 4.48, maxMm: 5.18 },
     thermalPadWidthMm: { minMm: 2.4, maxMm: 3.1 },
     leadSides: 2,
-    jedecOutline: "MO-153"
-    // No `land`: the recommended footprint is on a later page and has not been
-    // read, and an entry claiming one that was not looked at is worse than none.
+    jedecOutline: "MO-153",
+    land: {
+      // Read 2026-08-21 off the rendered page. This is the check that would have
+      // caught the defect above: the model reads this drawing's span as 4.3, and
+      // 4.3 is what you get by subtracting the 1.5 pad length from the printed
+      // 5.8 as though 5.8 were an outer-edge dimension. It is not - the (5.8)
+      // extension lines drop from the two pad-column CENTRELINES, and 5.8 is also
+      // what the package geometry gives (a 6.4 mid lead span less a ~0.6 foot).
+      // The vendor land guard rejects the 4.3 and falls back to IPC-7351B, so no
+      // wrong copper shipped, but nothing until now asserted which value is right.
+      source: "DRV8825 datasheet, page 31, LAND PATTERN EXAMPLE PWP0028C, rev 4223582/A 03/2017",
+      padLengthMm: 1.5,
+      padWidthMm: 0.45,
+      spanMm: 5.8,
+      // 0.05 MAX all around non-solder-mask-defined, which this drawing marks
+      // PREFERRED, and 0.05 MIN all around solder-mask-defined.
+      solderMaskExpansionMm: 0.05
+    }
   },
 
   // Ceramic flat pack, straight untrimmed leads. The part that exposed both the
@@ -497,9 +955,25 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   // SOIC-8, dimensioned in INCHES with millimetres in brackets. Kept
   // specifically because it is the unit-conversion case: every number below is
   // the bracketed millimetre figure the drawing prints.
+  //
+  // INDEPENDENTLY RE-READ 2026-08-21 off SN65HVD230 pages 40 and 41 without
+  // looking at this entry first, and again off MC33063A pages 28 and 29. All
+  // three datasheets print revision 4214825/C 02/2019 and every number matches.
+  // That is the strongest evidence in this file that keying on the outline code
+  // is sound: one drawing, three documents, no drift. It is also the most reused
+  // drawing in the corpus - LM358, OPA333, UCC27524, OPA2189 and INA240 print it
+  // too - so this one entry covers seven datasheets.
+  //
+  // The `land` block was added by that re-read. Until then this drawing's
+  // recommended footprint, which is what the generator actually builds from for
+  // every SOIC-8 here, had no check on it at all.
   D0008A: {
     packageType: "SOIC (8)",
-    parts: [],
+    // Listed only where the datasheet offers this package ALONE, per the rule at
+    // the top of this file. The other five offer several packages each, so which
+    // one a given record settles on is not decidable from here; they are covered
+    // by the outline-code match instead.
+    parts: ["SN65HVD230", "MC33063A"],
     source: "INA240 datasheet, page 36, PACKAGE OUTLINE D0008A, rev 4214825/C 02/2019",
     leadForm: "gullwing",
     leadSpanMm: { minMm: 5.8, maxMm: 6.19 },
@@ -510,7 +984,21 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     bodyWidthMm: { minMm: 3.81, maxMm: 3.98 },
     bodyHeightMaxMm: 1.75,
     leadSides: 2,
-    jedecOutline: "MS-012 AA"
+    jedecOutline: "MS-012 AA",
+    land: {
+      source: "SN65HVD230 datasheet, page 41, LAND PATTERN EXAMPLE D0008A, and MC33063A page 29, identical",
+      padLengthMm: 1.55,
+      padWidthMm: 0.6,
+      // (.213) [5.4], dimensioned between the two pad-column CENTRELINES rather
+      // than across the outer edges. Confirmed against the package geometry: a
+      // 6.0 mid lead span less a foot of roughly 0.6 puts the foot centres 5.4
+      // apart, where an outer-edge reading would put them at 3.85.
+      spanMm: 5.4,
+      // .0028 MAX all around on the non-solder-mask-defined detail and .0028 MIN
+      // on the solder-mask-defined one. Both are labelled, both read [0.07], and
+      // neither is marked preferred on this revision.
+      solderMaskExpansionMm: 0.07
+    }
   },
 
   // A ceramic flat pack that IS formed, which is the contrast that makes
@@ -742,8 +1230,21 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   // Both wrong numbers reproduce the correct 3.34 outer envelope, which is why
   // no plausibility guard catches this and why only a hand read could.
   //
-  // `bench:copper` reports no disagreement here and is right to: the copper
-  // faithfully reproduces the record. The record is what is wrong.
+  // FIXED, and this entry is what proves it. `bench:dimensions` reads 1.145 and
+  // 2.195 off the LIVE pipeline, matching this hand read exactly.
+  //
+  // Do not be misled by an ORACLE SPAN finding for this part. On 2026-08-22
+  // `bench:copper` reported ADXL345 emitting 2.290 against a printed 2.195, and
+  // it was the BENCH, not the part: that check ran on a replay record STITCHED
+  // from two prompt versions, where three cached answers read this part
+  // correctly and one stale one read 2.29 and happened to be newest, so it won
+  // the field. `bench:copper` now skips the oracle comparison on any stitched
+  // record. It lied in the direction that supported a change I already wanted to
+  // make, which is the reason that correction is written down here.
+  //
+  // The reasoning below is kept in full because the 2026-08-20 read really was
+  // wrong, and because it is what a hand read has to look like when two answers
+  // both reproduce the same outer envelope.
   //
   // These same values are already written down in `ipc7351.ts`, in the comment
   // recording why no-lead has no computed route ("ADI CC-14-1 1.145 x 0.550

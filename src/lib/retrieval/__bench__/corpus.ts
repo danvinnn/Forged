@@ -49,6 +49,11 @@ export const BENCH_CORPUS: BenchPart[] = [
   { partNumber: "RHF310A", manufacturer: "STMicroelectronics", category: "radhard-major", expect: "hit", note: "RHA QML-V, 300krad" },
   { partNumber: "RHF1201", manufacturer: "STMicroelectronics", category: "radhard-major", expect: "hit", note: "rad-hard ADC" },
   { partNumber: "RHFL4913", manufacturer: "STMicroelectronics", category: "radhard-major", expect: "hit", note: "rad-hard LDO" },
+  // ADOPTED 2026-08-21 for the same reason as LTC6563: cached, tuned against,
+  // scored by nothing. RHFL4913A is a SEPARATE 5MB document from RHFL4913's
+  // 1MB one, and it is the RHFL4913A page that the glued-designator rule in
+  // `packagevariants.ts` was fitted to ("Flat-16P", no separator).
+  { partNumber: "RHFL4913A", manufacturer: "STMicroelectronics", category: "radhard-major", expect: "hit", note: "adopted: tuned against while in no corpus" },
   { partNumber: "TPS7A4501-SP", manufacturer: "Texas Instruments", category: "radhard-major", expect: "hit" },
   { partNumber: "LM139AQML-SP", manufacturer: "Texas Instruments", category: "radhard-major", expect: "hit" },
   { partNumber: "ADC128S102QML-SP", manufacturer: "Texas Instruments", category: "radhard-major", expect: "hit" },
@@ -121,6 +126,13 @@ export const BENCH_CORPUS: BenchPart[] = [
   { partNumber: "AD8232", category: "analog", expect: "hit", note: "no hint" },
   { partNumber: "MAX232", manufacturer: "Analog Devices", category: "analog", expect: "miss", note: "Maxim legacy naming, ADI pattern may not cover it" },
   { partNumber: "LTC3105", manufacturer: "Analog Devices", category: "analog", expect: "miss", note: "Linear legacy files often use a trailing f" },
+  // ADOPTED 2026-08-21, not promoted: it was never in the hold-out, it was in
+  // NEITHER corpus. Its datasheet sat in .bench-cache scoring nothing while
+  // reader rules were fitted to it - `sections.ts` carries its "RECOMMENDED
+  // SOLDER PAD" caption and PINOUT_ORACLE carries its 24 hand-read pin names.
+  // A part that has been tuned against belongs in the tuned corpus; leaving it
+  // out understated the denominator and hid it from every measurement.
+  { partNumber: "LTC6563", manufacturer: "Analog Devices", category: "analog", expect: "hit", note: "adopted: tuned against while in no corpus" },
 
   // --- MCUs ------------------------------------------------------------------------------------
   { partNumber: "STM32F407VG", manufacturer: "STMicroelectronics", category: "mcu", expect: "hit" },

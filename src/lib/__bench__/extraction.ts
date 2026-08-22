@@ -35,6 +35,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { BENCH_CORPUS, type BenchCategory, type BenchPart } from "../retrieval/__bench__/corpus";
+import { checkFetchedDatasheet } from "./fetchcheck";
 import { extractPartRecord } from "../datasheet";
 import { makeExtractionModel, runExtraction } from "../extraction";
 import { resolveForExport, type Extracted, type PartRecord } from "../types";
@@ -343,6 +344,13 @@ async function fetchToCache(part: BenchPart): Promise<boolean> {
       part.manufacturer ? { manufacturer: part.manufacturer } : undefined
     );
     if (!ref) return false;
+    // A document for the WRONG DEVICE reads perfectly and scores as a win. See
+    // `fetchcheck.ts`; three of these sat in the caches undetected for months.
+    const verdict = await checkFetchedDatasheet(ref.bytes as ArrayBuffer, part.partNumber);
+    if (!verdict.ok) {
+      console.log(`\n  REFUSED ${part.partNumber}: ${verdict.why}`);
+      return false;
+    }
     writeFileSync(cachePath(part.partNumber), Buffer.from(ref.bytes));
     return true;
   } catch {

@@ -999,7 +999,7 @@ export function buildFootprintGeometry(
   const printed = printedLand(part, densityLevel, discards, formedLeadSpanMm, formedLeadContactMm);
 
   if (printed && layout) {
-    return assemble(part, densityLevel, printed, layout);
+    return assemble(part, densityLevel, printed, layout, undefined, discards);
   }
 
   // DERIVED FROM THIS PART'S OWN PACKAGE DRAWING.
@@ -1023,10 +1023,17 @@ export function buildFootprintGeometry(
             `page ${part.vendorLandPattern?.page} disagrees with it`
         );
       } else {
-        return assemble(part, densityLevel, derived, {
-          ...layout,
-          source: `IPC-7351B density ${densityLevel}, computed from this datasheet's own package drawing`
-        });
+        return assemble(
+          part,
+          densityLevel,
+          derived,
+          {
+            ...layout,
+            source: `IPC-7351B density ${densityLevel}, computed from this datasheet's own package drawing`
+          },
+          undefined,
+          discards
+        );
       }
     } catch (error) {
       if (!(error instanceof LandPatternError)) throw error;
@@ -1759,7 +1766,9 @@ function assemble(
   land: LandPattern,
   definition: PadLayout,
   /** Present for a through-hole part: the finished hole every pad carries. */
-  hole?: { drillMm: number }
+  hole?: { drillMm: number },
+  /** Readings rejected on the way here. Recorded even when the build succeeds. */
+  discards: Discards = []
 ): FootprintGeometry {
   // The two rules that decide whether the pads can be PLACED at all. They were
   // below the table lookup and are now above both paths, because they are facts
@@ -1876,8 +1885,29 @@ function assemble(
       // No mask-defined land is emitted instead of approximating one: expressing
       // it needs a mask aperture smaller than the copper, which neither emitter
       // writes today, and a note says so rather than silently dropping it.
+      //
+      // AN UNREAD VARIANT IS NOT AN NSMD VARIANT. The 2026-08-16 fix suppressed
+      // the figure when the variant was known to be mask-defined and left `null`
+      // falling through to the expansion branch, so a number whose meaning we had
+      // failed to read was written as though we had read it.
+      //
+      // Hand-read from LM139AQML-SP page 31 (NAC0014A, 2026-08-21): TI prints the
+      // two variants side by side and BOTH CARRY THE SAME FIGURE - ".003 MAX ALL
+      // AROUND [0.07]" for non-solder-mask-defined and ".003 MIN ALL AROUND
+      // [0.07]" for solder-mask-defined. The number cannot tell you which one it
+      // came from, and the two mean opposite things: one opens the mask wider
+      // than the copper, the other holds it back inside the copper. Guessing is a
+      // coin flip on a value the fabricator builds to.
+      //
+      // Measured on the replay corpus: 37 parts read the pair together and keep
+      // their margin, 4 read only the number and now omit it. Omitting is the
+      // conventional library behaviour anyway - the board's own mask rule applies,
+      // which is what every footprint without a per-pad override already does.
+      // It also removes a run-to-run difference in the emitted file: TPS54360
+      // read the pair on some runs and only the number on others, which changed
+      // the output for a part whose datasheet had not changed.
       ...(part.dimensions.solderMaskExpansionMm === null ||
-      part.dimensions.solderMaskDefined === "solder-mask-defined"
+      part.dimensions.solderMaskDefined !== "non-solder-mask-defined"
         ? {}
         : { solderMaskMarginMm: part.dimensions.solderMaskExpansionMm }),
       // A PLATED HOLE, which overrides the three above rather than adding to
@@ -2271,7 +2301,10 @@ function assemble(
       ...(land.padCentreCrossMm !== undefined
         ? { centreToCentreCrossMm: Number((land.padCentreCrossMm * 2).toFixed(3)) }
         : {}),
-      pitchMm: definition.pitchMm
+      pitchMm: definition.pitchMm,
+      // See `FootprintProvenance.discards`. Threaded from the caller rather than
+      // rebuilt, because the discards happen before `assemble` is reached.
+      discards
     }
   };
 }

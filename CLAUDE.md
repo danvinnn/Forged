@@ -32,8 +32,10 @@ items are recorded here only so nobody mistakes the README for current.
 
 ## The two things that are non-negotiable
 
-- **Nothing in `holdout.ts` is ever tuned against, opened to diagnose a failure,
-  or run as a subset.** A hold-out part that must be examined gets promoted into
-  the tuned corpus and replaced.
+- **Nothing in the hold-out corpus is ever tuned against, opened to diagnose a
+  failure, or run as a subset.** A hold-out part that must be examined gets
+  promoted into the tuned corpus and replaced. The list lives in
+  `src/lib/__bench__/holdout-corpus.ts`; `holdout.ts` is the runner and starts a
+  measurement the moment it is imported.
 - **Do not commit without explicit permission, each time.** Straight to main when
   asked, no feature branches, no push unless asked.

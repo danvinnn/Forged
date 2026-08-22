@@ -26,161 +26,28 @@
  * Air-gap safe: reads local files, makes no request.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { createExportZip, FootprintUnavailableError } from "../exporters";
+import { buildFootprintGeometry, createExportZip, FootprintUnavailableError } from "../exporters";
+import { replayRecords } from "./replay";
+import { HOLDOUT_CORPUS } from "./holdout-corpus";
+import { densityOf } from "../settings";
 import { BENCH_CORPUS } from "../retrieval/__bench__/corpus";
-import { type LeadWidth, type PinRecord, type ResolvedPart } from "../types";
-
-const CACHE_DIR = join(process.cwd(), ".model-cache");
 
 const key = (partNumber: string) => partNumber.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 const TUNED = new Set(BENCH_CORPUS.map((part) => key(part.partNumber)));
 
 /**
- * The hold-out part numbers, READ OUT OF `holdout.ts` rather than imported.
+ * The hold-out part numbers, used ONLY to exclude those parts from the evidence.
+ * No hold-out document is opened and no failure of one is diagnosed.
  *
- * Importing it runs it: the module calls its own `main` on load, so the first
- * version of this bench executed a hold-out measurement as a side effect of
- * asking which parts were in it. Nothing was spent, because that run is cached
- * by default, but a bench that silently starts another bench is exactly the kind
- * of accident this corpus must be insulated from.
- *
- * These names are used ONLY to exclude those parts from the evidence. No
- * hold-out document is opened and no failure of one is diagnosed.
+ * Imported from `holdout-corpus.ts`, which is data and runs nothing. It used to
+ * be scraped out of `holdout.ts` with a regex, because importing THAT file
+ * starts a hold-out measurement as a side effect. The list then moved into its
+ * own module on 2026-08-21 and the regex silently matched nothing, so every
+ * hold-out part was reclassified as "neither corpus" and counted in a section
+ * that says it is not evidence. A bench that reads another bench's source is one
+ * refactor away from lying; the data module exists so it does not have to.
  */
-const HOLDOUT = new Set(
-  [
-    ...readFileSync(join(process.cwd(), "src/lib/__bench__/holdout.ts"), "utf8").matchAll(
-      /partNumber:\s*"([^"]+)"/g
-    )
-  ].map((match) => key(match[1]))
-);
-
-interface CachedValue {
-  value: unknown;
-  page: number | null;
-}
-
-/** Every cached answer, merged across passes, keyed by the part it was read for. */
-function cachedAnswers(): Map<string, Record<string, CachedValue>> {
-  const byPart = new Map<string, Record<string, CachedValue>>();
-  for (const name of readdirSync(CACHE_DIR)) {
-    if (!name.endsWith(".json") || name.startsWith("_")) continue;
-    let entry: { label?: string; result?: { values?: Record<string, CachedValue> } };
-    try {
-      entry = JSON.parse(readFileSync(join(CACHE_DIR, name), "utf8"));
-    } catch {
-      continue;
-    }
-    const label = entry.label;
-    const values = entry.result?.values;
-    if (!label || !values) continue;
-    const existing = byPart.get(label) ?? {};
-    for (const [field, value] of Object.entries(values)) {
-      if (value && value.value !== null && value.value !== undefined) existing[field] = value;
-    }
-    byPart.set(label, existing);
-  }
-  return byPart;
-}
-
-const asNumber = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
-
-const asRange = (value: unknown): LeadWidth | null => {
-  if (typeof value !== "object" || value === null) return null;
-  const range = value as { minMm?: unknown; maxMm?: unknown };
-  return typeof range.minMm === "number" && typeof range.maxMm === "number"
-    ? { minMm: range.minMm, maxMm: range.maxMm }
-    : null;
-};
-
-function pinsFrom(value: unknown): { pins: PinRecord[]; exposedPad: boolean } {
-  if (!Array.isArray(value)) return { pins: [], exposedPad: false };
-  const pins: PinRecord[] = [];
-  let exposedPad = false;
-  for (const row of value) {
-    if (typeof row !== "object" || row === null) continue;
-    const record = row as { number?: unknown; name?: unknown };
-    const number = String(record.number ?? "").trim();
-    const name = String(record.name ?? "").trim();
-    if (!number || !name) continue;
-    if (!/^\d+$/.test(number)) {
-      exposedPad = true;
-      continue;
-    }
-    pins.push({ number, name, electricalType: "unspecified" });
-  }
-  return { pins, exposedPad };
-}
-
-function partFrom(label: string, values: Record<string, CachedValue>): ResolvedPart | null {
-  const at = (field: string) => values[field]?.value;
-  const { pins, exposedPad } = pinsFrom(at("pins"));
-  const pinCount = asNumber(at("pinCount")) ?? (pins.length > 0 ? pins.length : null);
-  if (pinCount === null || pins.length === 0) return null;
-
-  const leadForm = at("dimensions.leadForm");
-  const sides = asNumber(at("dimensions.leadSides"));
-  const mounting = at("dimensions.mounting");
-
-  return {
-    id: label,
-    partNumber: String(at("partNumber") ?? label),
-    manufacturer: String(at("manufacturer") ?? "Unknown"),
-    packageType: String(at("packageType") ?? "Unknown package"),
-    packageOutlineCode: null,
-    jedecOutline: null,
-    vendorLandPattern: null,
-    pinCount,
-    pins,
-    exposedPad,
-    dimensions: {
-      bodyLengthMm: asNumber(at("dimensions.bodyLengthMm")),
-      bodyWidthMm: asNumber(at("dimensions.bodyWidthMm")),
-      bodyHeightMm: asNumber(at("dimensions.bodyHeightMm")),
-      pitchMm: asNumber(at("dimensions.pitchMm")),
-      leadLengthMm: asNumber(at("dimensions.leadLengthMm")),
-      leadCount: asNumber(at("dimensions.leadCount")),
-      leadWidthMm: asRange(at("dimensions.leadWidthMm")),
-      leadSpanMm: asRange(at("dimensions.leadSpanMm")),
-      leadSpanCrossMm: asRange(at("dimensions.leadSpanCrossMm")),
-      leadContactMm: asRange(at("dimensions.leadContactMm")),
-      thermalPadLengthMm: asNumber(at("dimensions.thermalPadLengthMm")),
-      thermalPadWidthMm: asNumber(at("dimensions.thermalPadWidthMm")),
-      landPadLengthMm: asNumber(at("dimensions.landPadLengthMm")),
-      landPadWidthMm: asNumber(at("dimensions.landPadWidthMm")),
-      landSpanMm: asNumber(at("dimensions.landSpanMm")),
-      // THE CROSS FIELD, not the main one. This read `dimensions.landSpanMm`
-      // into the cross span until 2026-08-18, so every part this bench built was
-      // a SQUARE quad by construction whatever its document said, and a
-      // rectangular package could not be measured here at all.
-      landSpanCrossMm: asNumber(at("dimensions.landSpanCrossMm")),
-      // 1 is a real answer, and dropping it made every single-row package
-      // (TO-220, TO-92, SIP) unbuildable in this bench alone.
-      leadSides: sides === 1 || sides === 2 || sides === 4 ? (sides as 1 | 2 | 4) : null,
-      leadForm:
-        leadForm === "gullwing" || leadForm === "nolead" || leadForm === "straight" ? leadForm : null,
-      mounting: mounting === "through-hole" ? "through-hole" : mounting === "smd" ? "smd" : null,
-      leadDiameterMm: asNumber(at("dimensions.leadDiameterMm")),
-      vacantLeadSlot: asNumber(at("dimensions.vacantLeadSlot")),
-      leadsPerSide:
-        typeof at("dimensions.leadsPerSide") === "string" ? (at("dimensions.leadsPerSide") as string) : null,
-      solderMaskExpansionMm: asNumber(at("dimensions.solderMaskExpansionMm")),
-      solderMaskDefined:
-        at("dimensions.solderMaskDefined") === "solder-mask-defined" ||
-        at("dimensions.solderMaskDefined") === "non-solder-mask-defined"
-          ? (at("dimensions.solderMaskDefined") as "solder-mask-defined" | "non-solder-mask-defined")
-          : null,
-      thermalViaDiameterMm: asNumber(at("dimensions.thermalViaDiameterMm")),
-      thermalViaPitchMm: asNumber(at("dimensions.thermalViaPitchMm"))
-    },
-    radiation: { tid: null, see: null, sel: null, qmlClass: null },
-    sourceFileName: `${label}.pdf`,
-    notes: []
-  };
-}
+const HOLDOUT = new Set(HOLDOUT_CORPUS.map((part) => key(part.partNumber)));
 
 /**
  * Which guard a refusal names, collapsed to a stable id.
@@ -213,9 +80,16 @@ interface Row {
 async function main() {
   const rows: Row[] = [];
 
-  for (const [label, values] of [...cachedAnswers()].sort()) {
-    const part = partFrom(label, values);
-    if (!part) continue;
+  // RECORDS FROM `replayRecords`, not from a second reader of the same cache.
+  //
+  // This file carried its own copy of `cachedAnswers` and `partFrom`, and the two
+  // had drifted: the copy dropped `jedecOutline` and the whole radiation block,
+  // so this bench judged guards against a record the generator never sees, and it
+  // missed the readdir-order fix that made the other reader reproducible. Two
+  // readers of one cache drift, and the one that drifts is the one making the
+  // correctness claim. `replay.ts` says exactly this about why it was split out.
+  for (const part of replayRecords()) {
+    const label = part.id;
     const k = key(label);
     const set: Row["set"] = TUNED.has(k) ? "tuned" : HOLDOUT.has(k) ? "holdout" : "other";
     const hadPrintedPattern =
@@ -223,12 +97,36 @@ async function main() {
       part.dimensions.landPadWidthMm !== null &&
       part.dimensions.landSpanMm !== null;
 
+    // WHAT WAS THROWN AWAY, asked FIRST and independently of what happens next.
+    //
+    // Until 2026-08-21 this bench read guards out of the REFUSAL MESSAGE alone,
+    // so it could only see a guard whose firing ended the build. Two whole
+    // outcomes were invisible:
+    //
+    //   ships  DRV8825's printed footprint is rejected on every run, IPC-7351B
+    //          computes a pattern instead, and the export succeeds. Reported as
+    //          "never fires".
+    //   asks   the export can refuse for an unrelated missing field, and that
+    //          refusal's message says nothing about the discard that preceded it.
+    //
+    // `provenance.discards` now carries them out of the successful path, and
+    // asking here rather than inside either branch covers both.
+    let discarded = "";
+    try {
+      discarded = buildFootprintGeometry(part, densityOf({})).provenance.discards.join("; ");
+    } catch (error) {
+      discarded = error instanceof Error ? error.message : String(error);
+    }
+    const fromDiscards = GUARDS.filter((guard) => guard.test.test(discarded)).map((guard) => guard.id);
+
     try {
       await createExportZip(part, "kicad");
-      rows.push({ part: label, set, outcome: "ships", guards: [], hadPrintedPattern, raw: "" });
+      rows.push({ part: label, set, outcome: "ships", guards: fromDiscards, hadPrintedPattern, raw: discarded });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const guards = GUARDS.filter((guard) => guard.test.test(message)).map((guard) => guard.id);
+      const guards = [
+        ...new Set([...fromDiscards, ...GUARDS.filter((guard) => guard.test.test(message)).map((guard) => guard.id)])
+      ];
       const outcome: Row["outcome"] =
         error instanceof FootprintUnavailableError && error.needs.length > 0 ? "asks" : "refused";
       rows.push({ part: label, set, outcome, guards, hadPrintedPattern, raw: message });
