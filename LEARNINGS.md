@@ -1776,3 +1776,200 @@ OUTER extent and an INNER one and leave the centre span implied.
 Each figure also prints a third number (12.3, 17.85) that is the pad ROW and not
 a span: N lands at 0.5 pitch plus one land width. Reading it as a span would put
 copper in the wrong place.
+
+## Oracle coverage, continued 2026-08-21: VERIFIED reached 9/9, and found another defect
+
+20 drawings to 23, 228 values to 244. Added TSV321's SOT23-5, RHF1201's ceramic
+SO48, and before them both ST LQFPs.
+
+### Two entries are keyed on a name this file invents, and that is new
+
+TSV321 SHIPS and could not be covered, because its drawing prints NO vendor code:
+Figure 19 is headed "SOT23-5 package outline" and nothing else. Keying only on
+codes would leave every such drawing permanently unverifiable, which is a gap in
+this file rather than a fact about the part. `outlineFor` already falls back to
+the `parts` list, so a descriptive key plus an honest `parts` entry works.
+
+Prefixed (`ST-SOT23-5-DS4381`) so nobody hunts the page for it.
+
+### The VERIFIED metric undercounted TWICE, both times by looking up wrong
+
+It went 7/9, then 8/9, then 9/9 without the product changing at all:
+
+    NCP1200   reads "CASE 751-07"   oracle keyed "751-07"    - needed sameOutlineCode
+    TSV321    reads NO code         covered via `parts`      - needed the part list
+
+`bench:dimensions` matched both correctly the whole time. **Two instruments
+disagreeing about one part is how you learn one of them is lying**, and the
+lesson is that a new metric must resolve coverage the same way the existing one
+does rather than inventing its own lookup.
+
+**VERIFIED is now 9/9: every shipping part in the tuned corpus has its drawing
+read by a person.** First time that has been true.
+
+### RHF1201's lead form is wrong on the record, and it sets the whole land pattern
+
+    RHF1201  leadForm  record "gullwing"   drawing: straight
+
+`leadForm` decides whether a land is computed from the drawing (gullwing) or the
+assembler's forming die is asked for (straight). Getting it wrong does not shift
+a pad, it builds the wrong KIND of footprint.
+
+The drawing settles it, by the same evidence this file already uses to separate
+HBH0014A from NAC0014A: **a gullwing drawing prints its seated foot and this one
+prints none.** Table 14's `L` is the overall span, 12.28 to 12.88, not a foot -
+which is the trap, because `L` is a foot length on most vendors' tables. The side
+view shows the lead leaving the body flat, and P and Q dimension where it sits
+rather than a bend.
+
+Checked whether the 2026-08-20 prompt change caused it: two fresh live runs
+AGREE with each other on `leadForm`, so it is not live instability. Cached
+answers show pass 1 reading `gullwing` off the FRONT PAGE (p1) as far back as
+2026-08-17, which is the failure `LEARNINGS` already recorded. Unattributed
+beyond that, and not worth more money to attribute.
+
+### Body height is the most error-prone field in the corpus
+
+Three separate instances now, all the same shape - a page states the height more
+than once and the wrong one is taken:
+
+    ISL71001M   1.00 from Detail A          drawing says 1.20 Max
+    RHF1201     2.47 (A typ) vs 2.72 (A max), flipping between live runs
+    NAC0016A    1.778 from the side view    title block says 2.33mm max height
+
+`statedMaxHeightMm` catches the third and the ISL71001M case, because those pages
+state the envelope in words. RHF1201's does not, so nothing catches it.
+
+**If one more deterministic rule is ever worth building, it is this field.** It
+is also the field with the least consequence - it drives the STEP solid, not the
+copper - which is exactly why it survived so long unnoticed.
+
+## The dimension bench was scoring a record nobody could produce
+
+`bench:dimensions` reported `RHF1201 leadForm gullwing` against a drawing that
+says straight. Investigating it found the bench, not the product.
+
+Its record-building was four lines: walk every cache file for a part, in
+`readdirSync` order, keep the first non-null for each field. That is a
+REIMPLEMENTED MERGE, and it disagreed with the real one three ways at once.
+
+- **It mixed PROMPTS.** Answers stored days apart under different prompts were
+  merged into one record. `forge-validate-the-instrument` had already recorded
+  "filter cache measurements to the current prompt" and this file never did.
+- **It mixed PASSES.** Pass 1 reads the text layer, pass 2 reads the rendered
+  drawing, and where they disagree the drawing wins - which is the entire reason
+  there are two passes. Filesystem order threw that precedence away. RHF1201's
+  `gullwing` came from pass 1 reading the FRONT PAGE.
+- **It skipped everything the merge does besides picking a value**: citations,
+  `statedMaxHeightMm`, the per-package join.
+
+The fix was to DELETE the reimplementation, not correct it: the bench now builds
+records with `runExtraction` - the same call the routes make - against the cache
+in `offline` mode, which throws on a miss and cannot reach the network. A part
+whose answers are not cached under the CURRENT prompt is simply not scored,
+which is the honest outcome the old code hid by falling back to stale entries.
+
+**Any bench that re-implements product logic will drift from it.** This file had
+already been caught once ("It was the bench that was wrong", in its own comment)
+and the lesson had not been generalised.
+
+Cost of honesty: CORRECT fell from 244 to 163 and 95 parts now show as
+uncovered, because the old figure was counting fields assembled from runs that
+never happened together. The smaller number is the real one.
+
+### What the rebuild then exposed, and how each was resolved
+
+Three WRONGs appeared that the old bench had masked. They are not the same kind
+of thing, and treating them the same would have been the mistake:
+
+- **TSV321 bodyHeight 1.175 against my expected 1.45.** MY ERROR. The drawing
+  prints A as 0.90 MIN to 1.45 MAX, so the field is `bodyHeightMm` (a range) and
+  not `bodyHeightMaxMm`; 1.175 is the midpoint and a correct reading. Fixed the
+  entry.
+- **TPS7A4501-SP 2.62 against expected 2.63.** A FALSE ACCUSATION. That drawing
+  prints BOTH - "CFP - 2.63mm max height" in the title block and "2.62 MAX" on
+  the side view - for the same envelope. Asserting one endpoint of a
+  disagreement the DOCUMENT contains sends someone to fix working code. Recorded
+  as the range it is. Narrow on purpose: this relaxes an expectation only where
+  the document states two values, never where it states one.
+- **DRV8825 leadSpan {6.6, 6.6} against {6.2, 6.6}.** A REAL wrong reading, and
+  it is left RED. A degenerate range moves the toe 0.4 mm on a SHIPPING part.
+
+### The DRV8825 one is intermittent, and it stays red
+
+Suspecting my own 2026-08-20 prompt change, I checked two ways.
+
+The diff is confined to `packagesInThisDocument` and touches no flat-dimension
+or range guidance. Then two fresh live runs under that exact prompt both read
+`{6.2, 6.6}`, correctly, for about nine cents.
+
+**So the prompt change is cleared and the cached answer is a one-off bad read.**
+It is NOT refreshed away. An intermittent wrong value is still a wrong value, and
+making the bench green by re-rolling the dice is exactly the "make the number go
+up" failure this project keeps writing down. It stands as the one open defect and
+as a captured instance of the reading instability already tracked in
+`bench:repeat`.
+
+# A real datasheet for the WRONG PART, 2026-08-21
+
+Hand-reading a package drawing for the oracle turned up something bigger than a
+wrong number. `TPS7A4700`'s cached PDF is 48 pages of genuine, correctly
+formatted TI datasheet - **for the TPS7A20**.
+
+An audit of all 123 cached datasheets found three:
+
+    .bench-cache/TPS7A4700    ->  TPS7A20
+    .holdout-cache/TPS7A4700  ->  TPS7A84   (a DIFFERENT wrong one)
+    .holdout-cache/TPS7A4901  ->  TPS7A20
+
+## Why this is the worst output this product can make
+
+Every one of them READS PERFECTLY. Pinout, package drawing, land pattern, a
+complete bundle - all correct, for a chip nobody asked for. `looksLikeWrongDocument`
+cannot help: these are not thin distributor pages, they are full datasheets.
+Nothing downstream looks wrong, no guard fires, and reading accuracy is
+irrelevant because the reading is accurate.
+
+**Two of the three are in the HOLD-OUT.** Our READ and SHIPS figures have been
+counting them as successes, so the published numbers are very slightly optimistic
+and, worse, two of the parts we have been calling correct describe other devices.
+
+## The rule, and why "does the part number appear" is the wrong one
+
+An exact-match test would refuse legitimate FAMILY datasheets, which are common
+and correct: L7805's document is headed "L78 Datasheet" and never writes L7805 in
+its front matter; Hirose's DF13-4P-1.25DSA is documented by "DF13 Series".
+Refusing those trades three broken parts for dozens.
+
+So a family stem is accepted, but only where the document uses it as a
+**standalone token**. That distinction is the entire rule:
+
+    "L78 Datasheet"   L78 stands alone, and L7805 extends it        ACCEPT
+    "DF13 Series"     DF13 stands alone                             ACCEPT
+    "TPS7A20"         TPS7A is a shared PREFIX, not a token         REJECT
+
+Measured over all 123 cached datasheets before shipping it: **120 accepted, 3
+rejected, and the three rejected are exactly the three wrong documents.** No
+false positives. Front matter only, because a datasheet mentions other part
+numbers constantly further in.
+
+`namesThePart` lives in `pdftext.ts` beside `looksLikeWrongDocument`, and
+`/api/lookup` answers 422 `WRONG_PART_DATASHEET`. Not retryable: the resolver
+finds the same document again, and the user supplying the right PDF is the fix.
+Never applied to an uploaded PDF, which is whatever the user meant to give us.
+
+## How it was found, which is the point
+
+Not by a bench. Not by a guard. **By rendering a page and looking at it**,
+because the drawing was a 4-pin X2SON on a part that is a 20-pin VQFN.
+
+Every automated check in this repo agreed the part was fine. Three corpora, seven
+guards, 719 tests, an oracle with 163 verified values - and the document was for
+a different chip the whole time. That is the argument for hand-reading drawings,
+stated better than any number could.
+
+## Corpus contamination is now a thing to check for
+
+The three bad PDFs are still in the corpora, deliberately, until they are
+replaced: deleting them quietly would move the numbers with no record of why.
+Whoever replaces them should re-run and expect READ and SHIPS to move slightly.

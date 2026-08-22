@@ -707,9 +707,22 @@ async function main() {
     // hand-read drawing UNCHECKED and undercounted this figure the first time it
     // ran. `bench:dimensions` was already matching it correctly, so the two
     // instruments disagreed about the same part.
-    const oracleCovers = (code: string | null): boolean =>
-      code !== null && Object.keys(DIMENSION_ORACLE).some((key) => sameOutlineCode(key, code));
-    const verified = shipping.filter((row) => oracleCovers(row.outlineCode ?? null));
+    // BY CODE OR BY PART, exactly as `outlineFor` in `dimensions.ts` resolves it.
+    //
+    // Checking the code alone undercounted this twice. NCP1200 reads
+    // "CASE 751-07" against an oracle keyed "751-07", which `sameOutlineCode`
+    // settles. TSV321 reads NO code at all - its drawing prints none - and is
+    // covered by an entry keyed on a descriptive name with `parts: ["TSV321"]`.
+    // Both were hand-read and both were reported UNCHECKED.
+    //
+    // The rule: this metric must agree with `bench:dimensions` about what is
+    // covered, because two instruments disagreeing about one part is how you
+    // learn one of them is lying.
+    const oraclePart = new Set(Object.values(DIMENSION_ORACLE).flatMap((entry) => entry.parts));
+    const oracleCovers = (code: string | null, partNumber: string): boolean =>
+      oraclePart.has(partNumber) ||
+      (code !== null && Object.keys(DIMENSION_ORACLE).some((key) => sameOutlineCode(key, code)));
+    const verified = shipping.filter((row) => oracleCovers(row.outlineCode ?? null, row.part.partNumber));
     const pct = shipping.length > 0 ? Math.round((verified.length / shipping.length) * 100) : 0;
     console.log(
       `VERIFIED:         ${verified.length}/${shipping.length} shipping parts (${pct}%) have their drawing ` +
@@ -718,7 +731,7 @@ async function main() {
     console.log("  shipping parts, and the outline drawing each was measured from:");
     for (const row of shipping) {
       const code = row.outlineCode ?? "(no outline code read)";
-      const covered = oracleCovers(row.outlineCode ?? null) ? "checked" : "UNCHECKED";
+      const covered = oracleCovers(row.outlineCode ?? null, row.part.partNumber) ? "checked" : "UNCHECKED";
       console.log(`    ${row.part.partNumber.padEnd(18)} ${code.padEnd(16)} ${covered}`);
     }
     console.log("");

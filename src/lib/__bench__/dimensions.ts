@@ -19,9 +19,16 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { extractPartRecord } from "../datasheet";
+import { makeExtractionModel, runExtraction } from "../extraction";
+import type { ExtractionModel } from "../extraction/contracts";
+import { getDeploymentMode } from "../retrieval/deployment";
+import { cachingModel } from "./modelcache";
+import { loadBenchEnv } from "./env";
 import { statedMaxHeightMm } from "../extraction/merge";
 import type { DatasheetText } from "../pdftext";
 import { DIMENSION_ORACLE, type DimensionOracleEntry, type OracleRange } from "./dimension-oracle";
+
+loadBenchEnv();
 
 const CACHE = join(process.cwd(), ".model-cache");
 
@@ -33,8 +40,6 @@ const CACHE = join(process.cwd(), ".model-cache");
  * tolerance on the PART, which is what the min/max pair already carries.
  */
 const EPSILON_MM = 0.005;
-
-type Cached = { result?: { values?: Record<string, { value?: unknown; page?: number | null }> } };
 
 function near(a: number, b: number): boolean {
   return Math.abs(a - b) <= EPSILON_MM;
@@ -111,7 +116,12 @@ async function documentFor(part: string): Promise<DatasheetText | null> {
   return parsed;
 }
 
-function compare(part: string, outline: string, entry: DimensionOracleEntry, values: Record<string, { value?: unknown }>): Row[] {
+function compare(
+  part: string,
+  outline: string,
+  entry: DimensionOracleEntry,
+  values: Record<string, { value?: unknown; page?: number | null }>
+): Row[] {
   const rows: Row[] = [];
   const add = (field: string, verdict: boolean | null, read: unknown, expected: unknown) => {
     rows.push({
@@ -196,21 +206,94 @@ function compare(part: string, outline: string, entry: DimensionOracleEntry, val
   return rows;
 }
 
-async function main(): Promise<void> {
-  const byPart = new Map<string, Record<string, { value?: unknown }>>();
-  for (const file of readdirSync(CACHE).filter((n) => n.endsWith(".json") && n !== "_billed.json")) {
-    let entry: Cached;
+/**
+ * The values the PRODUCT would hold for this part, built the way it builds them.
+ *
+ * ## What this replaces, and why it had to go
+ *
+ * This function used to be four lines that walked every cache file for a part,
+ * in `readdirSync` order, and kept the first non-null it met for each field.
+ * That is a hand-rolled merge, and it disagreed with the real one in three ways
+ * at once:
+ *
+ *   - It mixed PROMPTS. Answers stored months apart under different prompts were
+ *     merged into one record, so the bench scored a part nobody could produce.
+ *     `forge-validate-the-instrument` had already recorded "filter cache
+ *     measurements to the current prompt" and this file never did.
+ *   - It mixed PASSES. Pass 1 reads the text layer and pass 2 reads the rendered
+ *     drawing, and where they disagree the drawing is right - which is the whole
+ *     reason there are two. Taking whichever the filesystem listed first threw
+ *     that precedence away.
+ *   - It ignored everything the merge does BEYOND picking a value: citation
+ *     checks, `statedMaxHeightMm`, the per-package join.
+ *
+ * It reported RHF1201's `leadForm` as `gullwing` on 2026-08-21. The drawing says
+ * straight, pass 2 read straight, and the bench took pass 1's text-layer answer
+ * off the front page. **A reimplemented merge drifts from the real one; the fix
+ * is to delete the reimplementation, not to correct it.**
+ *
+ * So the record is now built by `runExtraction` - the same call the routes and
+ * `bench:extraction` make - against the cache in `offline` mode, which throws on
+ * a miss and can never reach the network. A part whose answers are not cached
+ * under the CURRENT prompt is simply not scored, which is the honest outcome and
+ * the one the old code hid by falling back to stale entries.
+ */
+async function recordValuesFor(
+  part: string,
+  model: ExtractionModel,
+  setLabel: (label: string) => void
+): Promise<Record<string, { value?: unknown; page?: number | null }> | null> {
+  for (const dir of [".bench-cache", ".holdout-cache"]) {
+    const path = join(process.cwd(), dir, `${part}.pdf`);
+    if (!existsSync(path)) continue;
     try {
-      entry = JSON.parse(readFileSync(join(CACHE, file), "utf8")) as Cached;
+      const bytes = readFileSync(path);
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const { doc, part: deterministic } = await extractPartRecord(`${part}.pdf`, buffer);
+      setLabel(part);
+      const outcome = await runExtraction(deterministic, doc, buffer, model, `${part}.pdf`, part);
+      const record = outcome?.part ?? deterministic;
+      // The citation PAGE comes too, because `outlineFor` disambiguates two
+      // drawings in one datasheet by what each states as its own max height and
+      // needs to know which page the reading came from.
+      const values: Record<string, { value?: unknown; page?: number | null }> = {};
+      for (const [field, held] of Object.entries(record.dimensions)) {
+        const value = held as { value: unknown; citation?: { page?: number } | null };
+        values[`dimensions.${field}`] = { value: value.value, page: value.citation?.page ?? null };
+      }
+      values.packageOutlineCode = { value: record.packageOutlineCode.value };
+      return values;
     } catch {
-      continue;
+      // A cache miss under the current prompt, or a document that will not
+      // parse. Either way there is nothing to score, and inventing something to
+      // score is how this function got into trouble in the first place.
+      return null;
     }
-    const part = file.replace(/-[0-9a-f]{16}\.json$/, "");
-    const merged = byPart.get(part) ?? {};
-    for (const [key, value] of Object.entries(entry.result?.values ?? {})) {
-      if (!(key in merged) && value?.value !== null && value?.value !== undefined) merged[key] = value;
-    }
-    byPart.set(part, merged);
+  }
+  return null;
+}
+
+async function main(): Promise<void> {
+  const inner = await makeExtractionModel(getDeploymentMode());
+  if (!inner) {
+    console.log("No model configured, so no records can be rebuilt.");
+    return;
+  }
+  let currentLabel = "";
+  // OFFLINE. A miss throws rather than reaching the network, so this bench
+  // cannot spend, which is the property that lets it run on every change.
+  const model = cachingModel(inner, "offline", () => currentLabel);
+
+  const parts = new Set<string>();
+  for (const file of readdirSync(CACHE).filter((n) => n.endsWith(".json") && n !== "_billed.json")) {
+    parts.add(file.replace(/-[0-9a-f]{16}\.json$/, ""));
+  }
+  const byPart = new Map<string, Record<string, { value?: unknown; page?: number | null }>>();
+  for (const part of parts) {
+    const values = await recordValuesFor(part, model, (label) => {
+      currentLabel = label;
+    });
+    if (values) byPart.set(part, values);
   }
 
   const rows: Row[] = [];
@@ -276,17 +359,20 @@ async function main(): Promise<void> {
     // the raw answer scores a field the product does not ship, which is the
     // "one step away from the thing it is about" mistake this file has made
     // before. See `statedMaxHeightMm`.
-    /** What the cited drawing calls its own max height, for `outlineFor`. */
+    // READ, NOT APPLIED. `mergeModelValues` already replaces an overall height
+    // with the one the drawing states in its own title block, so the record
+    // arriving here has been corrected. This used to do the correction a SECOND
+    // time, which was harmless while it agreed and is exactly the reimplemented
+    // logic that made this bench disagree with the product elsewhere.
+    //
+    // The value is still needed for `outlineFor`, which tells two drawings in one
+    // datasheet apart by what each states as its own max height.
     let statedHeight: number | null = null;
     const height = values["dimensions.bodyHeightMm"];
     if (height && typeof height.value === "number") {
       const doc = await documentFor(part);
-      const page = (height as { page?: unknown }).page;
-      const stated = doc ? statedMaxHeightMm(doc, typeof page === "number" ? page : null) : null;
-      if (stated !== null) {
-        values["dimensions.bodyHeightMm"] = { ...height, value: stated };
-        statedHeight = stated;
-      }
+      const page = height.page;
+      statedHeight = doc ? statedMaxHeightMm(doc, typeof page === "number" ? page : null) : null;
     }
     const claimed = values["packageOutlineCode"]?.value;
     const code =

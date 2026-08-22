@@ -12,7 +12,7 @@ import {
   type RetrievalSuccess
 } from "../../../lib/retrieval";
 import { extractPartRecord } from "../../../lib/datasheet";
-import { looksLikeWrongDocument, PdfExtractionError, type DatasheetText } from "../../../lib/pdftext";
+import { looksLikeWrongDocument, namesThePart, PdfExtractionError, type DatasheetText } from "../../../lib/pdftext";
 import { makeExtractionModel, runExtraction } from "../../../lib/extraction";
 import { SecondPassFailedError } from "../../../lib/extraction/contracts";
 import {
@@ -28,6 +28,25 @@ import { type PackageChoice } from "../../../lib/exporters";
 import { type ConfidenceCheck } from "../../../lib/confidence";
 import { type ReviewItem } from "../../../lib/review";
 import { type PartRecord } from "../../../lib/types";
+
+/**
+ * Retrieval found a datasheet, correctly formatted and complete, for a DIFFERENT
+ * part than the one requested.
+ *
+ * Separate from `WrongDocumentError` because the two mislead differently. That
+ * one is obviously not a datasheet; this one is indistinguishable from success
+ * everywhere downstream. Three of the 123 cached corpus datasheets were this,
+ * and every one of them produced a clean footprint for the wrong chip.
+ */
+class WrongPartError extends Error {
+  constructor(readonly requested: string) {
+    super(
+      `The datasheet found does not appear to be for ${requested} - its front matter names a different ` +
+        `part. Upload the datasheet for ${requested} directly, or check the part number.`
+    );
+    this.name = "WrongPartError";
+  }
+}
 
 /**
  * Retrieval found something that is not a datasheet.
@@ -130,6 +149,19 @@ async function extractPart(
   // guessed here.
   if (looksLikeWrongDocument(doc)) {
     throw new WrongDocumentError(ref.pdfUrl ?? ref.fileName);
+  }
+
+  // A REAL DATASHEET FOR THE WRONG PART, which is worse than no datasheet.
+  //
+  // See `namesThePart`. Such a document reads perfectly and produces a complete,
+  // correct library for a chip nobody asked for - the most dangerous output this
+  // product can make, because nothing downstream looks wrong.
+  //
+  // Only checked when a part number was actually requested. An uploaded PDF has
+  // no part number to disagree with, and a lookup where the user typed nothing
+  // has nothing to check against.
+  if (partNumberHint && partNumberHint.trim().length >= 3 && !namesThePart(doc, partNumberHint)) {
+    throw new WrongPartError(partNumberHint);
   }
 
   const model = await makeExtractionModel(mode);
@@ -305,6 +337,14 @@ export async function POST(request: Request) {
     if (error instanceof WrongDocumentError) {
       return NextResponse.json<RetrievalError>(
         { error: error.message, code: "NOT_A_DATASHEET", mode },
+        { status: 422 }
+      );
+    }
+    // Not retryable for the same reason: the resolver will find the same
+    // document again. The user supplying the right PDF is what fixes it.
+    if (error instanceof WrongPartError) {
+      return NextResponse.json<RetrievalError>(
+        { error: error.message, code: "WRONG_PART_DATASHEET", mode },
         { status: 422 }
       );
     }

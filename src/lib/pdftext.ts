@@ -425,6 +425,71 @@ export function looksLikeWrongDocument(doc: DatasheetText): boolean {
   return chars < 4000;
 }
 
+/**
+ * Does this document name the part it was fetched FOR?
+ *
+ * ## The failure this catches, which nothing else could
+ *
+ * `looksLikeWrongDocument` catches retrieval landing on a distributor page or a
+ * breakout-board writeup - something obviously not a datasheet. It cannot catch
+ * the worse case: a complete, plausible, correctly-formatted datasheet FOR A
+ * DIFFERENT PART.
+ *
+ * Found on 2026-08-21 by hand-reading a package drawing that did not match the
+ * part it was filed under. Three of the 123 cached datasheets were the wrong
+ * device, and all three are the same family, where the part numbers look alike:
+ *
+ *     TPS7A4700  ->  TPS7A20   (bench corpus)
+ *     TPS7A4700  ->  TPS7A84   (hold-out corpus, a different wrong one)
+ *     TPS7A4901  ->  TPS7A20   (hold-out corpus)
+ *
+ * Every one of those READS PERFECTLY. It produces a pinout, a package drawing
+ * and a footprint, all correct - for a chip the user did not ask for. It is the
+ * most dangerous output this product can make, because nothing downstream looks
+ * wrong and no amount of reading accuracy helps.
+ *
+ * ## Why the test is not "does the part number appear"
+ *
+ * That would refuse legitimate FAMILY datasheets, which are common and correct:
+ * L7805's datasheet is headed "L78 Datasheet" and never writes L7805 in its
+ * front matter; the Hirose DF13-4P-1.25DSA is documented by "DF13 Series".
+ * Refusing those would break working parts to fix broken ones.
+ *
+ * So a family STEM is accepted, but only where the document uses it as a
+ * STANDALONE TOKEN. That distinction is the whole rule:
+ *
+ *     "L78 Datasheet"   L78 stands alone, and L7805 extends it        ACCEPT
+ *     "DF13 Series"     DF13 stands alone                             ACCEPT
+ *     "TPS7A20"         TPS7A is only a shared PREFIX, not a token    REJECT
+ *
+ * Measured over all 123 cached datasheets: 120 accepted, 3 rejected, and the
+ * three rejected are exactly the three wrong documents. No false positives.
+ *
+ * Front matter only, because a datasheet mentions other part numbers constantly
+ * further in - comparison tables, application notes, ordering information.
+ */
+export function namesThePart(doc: DatasheetText, partNumber: string, pages = 2): boolean {
+  const trimmed = partNumber.trim();
+  if (trimmed.length < 3) return true;
+  const text = doc.pages
+    .slice(0, pages)
+    .map((page) => page.text)
+    .join(" ")
+    .toUpperCase();
+  const key = trimmed.toUpperCase();
+  const alnum = (value: string) => value.replace(/[^A-Z0-9]/g, "");
+  if (alnum(text).includes(alnum(key))) return true;
+
+  for (let length = key.length - 1; length >= 3; length -= 1) {
+    const stem = alnum(key.slice(0, length));
+    if (stem.length < 3) break;
+    // Bounded on the right so a longer part number cannot satisfy a shorter
+    // request by accident, which is exactly how TPS7A20 passed for TPS7A4700.
+    if (new RegExp(`(?:^|[^A-Z0-9])${stem}(?![A-Z0-9])`).test(text)) return true;
+  }
+  return false;
+}
+
 export function datasheetTextFromPages(pageTexts: string[]): DatasheetText {
   const pages: PageText[] = [];
   let combined = "";

@@ -43,6 +43,11 @@ export type RetrievalErrorCode =
   // failure because the ACTION is distinct - re-running finds the same page, and
   // the user uploading the datasheet is what fixes it. See `looksLikeWrongDocument`.
   | "NOT_A_DATASHEET"
+  // Retrieval found a real, complete datasheet for a DIFFERENT part. Separate
+  // from NOT_A_DATASHEET because this one is indistinguishable from success
+  // downstream: it reads perfectly and builds a correct library for the wrong
+  // chip. See `namesThePart`.
+  | "WRONG_PART_DATASHEET"
   // The pass that reads the package DRAWINGS could not be run, after a retry.
   // Distinct from every other code here because it is the one the user should
   // simply try again: the document is fine and the reader was briefly not.

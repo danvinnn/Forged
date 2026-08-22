@@ -243,11 +243,23 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     leadWidthMm: { minMm: 0.38, maxMm: 0.48 },
     // 8X 1.27, eight gaps across ten leads, five a side.
     pitchMm: 1.27,
-    // The title block reads "CFP - 2.63mm max height". The side view dimensions
-    // the same envelope as "2.62 MAX"; both are transcribed as printed and the
-    // title block is the one taken, because that is the figure the field asks
-    // for and the one the reader is pointed at.
-    bodyHeightMaxMm: 2.63,
+    // BOTH figures this drawing prints for the envelope, as a range.
+    //
+    // The title block reads "CFP - 2.63mm max height" and the side view
+    // dimensions the same envelope as "2.62 MAX". This entry asserted 2.63
+    // alone, and on 2026-08-21 the record read 2.62 and was marked WRONG for it.
+    //
+    // That is a false accusation, and this file's worst failure mode: 2.62 is
+    // printed on the drawing, describes the same envelope, and differs by a
+    // hundredth of a millimetre. A reader taking either has read the page
+    // correctly. `bodyHeightMm` is the field for exactly this - "any value
+    // inside is a correct reading" - and asserting one endpoint of a
+    // disagreement the DRAWING contains sends someone to fix working code.
+    //
+    // Narrow on purpose: this relaxes an expectation where the document itself
+    // states two values. It does not relax anything where the document states
+    // one and the reader produced another.
+    bodyHeightMm: { minMm: 2.62, maxMm: 2.63 },
     leadSides: 2
   },
   U0010A: {
@@ -856,5 +868,89 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
       padWidthMm: 0.35,
       spanMm: 21.25
     }
+  },
+
+  // ST's SOT23-5, and the first entry here keyed by a name this file INVENTS
+  // rather than by a vendor code.
+  //
+  // TSV321 SHIPS a bundle and was the one part the VERIFIED count could not
+  // cover, because its drawing prints no code at all: Figure 19 is headed
+  // "SOT23-5 package outline" and nothing else. Keying on the code alone would
+  // leave every such drawing permanently unverifiable, which is a gap in this
+  // file rather than a fact about the part. `outlineFor` already falls back to
+  // the `parts` list, so a descriptive key plus an honest `parts` entry works.
+  //
+  // The key is prefixed to make clear it is not a code anyone will find on the
+  // page. If ST ever prints one, this entry should be re-keyed to it.
+  "ST-SOT23-5-DS4381": {
+    packageType: "SOT23-5",
+    parts: ["TSV321"],
+    source: "TSV321 datasheet, page 10, Figure 19 and Table 5, SOT23-5 package mechanical data",
+    leadForm: "gullwing",
+    // E, 2.60 to 3.00, lead tip to lead tip across the top view.
+    leadSpanMm: { minMm: 2.6, maxMm: 3.0 },
+    // b, 0.35 to 0.50.
+    leadWidthMm: { minMm: 0.35, maxMm: 0.5 },
+    // L, 0.35 to 0.55.
+    leadContactMm: { minMm: 0.35, maxMm: 0.55 },
+    // e, 0.95 typ. e1 (1.9) is the span across two pitches on the three-lead
+    // side and is NOT the pitch; taking it would double every pad spacing.
+    pitchMm: 0.95,
+    // D, 2.80 to 3.00, along the axis the lead rows run.
+    bodyLengthMm: { minMm: 2.8, maxMm: 3.0 },
+    // E1, 1.50 to 1.75. NOT E, which is the lead span, and the two differ by
+    // more than a millimetre on this package.
+    bodyWidthMm: { minMm: 1.5, maxMm: 1.75 },
+    // A, 0.90 MIN to 1.45 MAX, so a RANGE and not `bodyHeightMaxMm`.
+    //
+    // Recorded as a max on the first attempt, which marked the record's 1.175
+    // WRONG. 1.175 is the midpoint of 0.90 and 1.45 and is a correct reading of
+    // a drawing that prints both ends; `bodyHeightMaxMm` is for the drawings
+    // that print ONLY a maximum. Getting this wrong produces a false accusation
+    // against working code, which is the one thing this file must never do.
+    //
+    // A2 (0.90 to 1.30) is the moulded body without the standoff A1 and is not
+    // the seated envelope.
+    bodyHeightMm: { minMm: 0.9, maxMm: 1.45 },
+    // Three leads on one side and two on the other, so the short row leaves its
+    // MIDDLE position empty. That asymmetry is `vacantLeadSlot` on the record;
+    // this file has no key for it, so it is described rather than asserted.
+    leadSides: 2
+  },
+
+  // ST's ceramic SO48, a 48-lead rad-hard flat pack. The largest lead count in
+  // this file and squarely in this product's market.
+  //
+  // Two things on this drawing are easy to get wrong and the reader got both:
+  //
+  // The span is L (12.28 to 12.88), not E1 (10.90 typ). The side view stacks
+  // four horizontal dimensions - E over the lid, E1, E2 and E3 in the middle,
+  // and L across the bottom - and only L reaches lead tip to lead tip. E1 sits
+  // between the body and the tips and taking it would pull both pad rows more
+  // than 1.6 mm too far in. That E2 + 2(E3) = 6.35 + 3.30 = 9.65 = E is the
+  // arithmetic that identifies E as the BODY and leaves L as the span.
+  //
+  // `leadContactMm` is ABSENT, and that is an assertion. These leads leave the
+  // body straight and the drawing prints no seated foot, because the assembler
+  // forms them - the same convention as HBH0014A and HKJ. The table's L is the
+  // overall span here, NOT a foot length, which is the trap on this page.
+  "ST-CERAMIC-SO48-DocID012585": {
+    packageType: "Ceramic SO48",
+    parts: ["RHF1201"],
+    source: "RHF1201 datasheet, page 33, Figure 26 and Table 14, Ceramic SO48 mechanical data",
+    leadForm: "straight",
+    // L, 12.28 / 12.58 / 12.88.
+    leadSpanMm: { minMm: 12.28, maxMm: 12.88 },
+    // b, 0.20 / 0.254 / 0.30.
+    leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
+    // e, 0.635 typ. Twenty-four leads a side across a 15.75 mm body.
+    pitchMm: 0.635,
+    // D, 15.57 / 15.75 / 15.92, along the axis the two lead rows run.
+    bodyLengthMm: { minMm: 15.57, maxMm: 15.92 },
+    // E, 9.52 / 9.65 / 9.78, across that axis.
+    bodyWidthMm: { minMm: 9.52, maxMm: 9.78 },
+    // A, 2.18 / 2.47 / 2.72, lid included.
+    bodyHeightMaxMm: 2.72,
+    leadSides: 2
   }
 };
