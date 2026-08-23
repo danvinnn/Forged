@@ -27,6 +27,8 @@ import { loadBenchEnv } from "./env";
 import { statedMaxHeightMm } from "../extraction/merge";
 import type { DatasheetText } from "../pdftext";
 import { DIMENSION_ORACLE, type DimensionOracleEntry, type OracleRange } from "./dimension-oracle";
+import { pinTableFor } from "../packagevariants";
+import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
 
 loadBenchEnv();
 
@@ -180,15 +182,36 @@ function compare(
   if (entry.thermalPadWidthMm) add("thermalPadWidthMm", withinRange(at("dimensions.thermalPadWidthMm"), entry.thermalPadWidthMm), at("dimensions.thermalPadWidthMm"), entry.thermalPadWidthMm);
 
   if (entry.land) {
-    add("landPadLengthMm", scalarMatches(at("dimensions.landPadLengthMm"), entry.land.padLengthMm), at("dimensions.landPadLengthMm"), entry.land.padLengthMm);
-    add("landPadWidthMm", scalarMatches(at("dimensions.landPadWidthMm"), entry.land.padWidthMm), at("dimensions.landPadWidthMm"), entry.land.padWidthMm);
-    add("landSpanMm", scalarMatches(at("dimensions.landSpanMm"), entry.land.spanMm), at("dimensions.landSpanMm"), entry.land.spanMm);
-    if (entry.land.spanCrossMm !== undefined) {
+    // WHICH of the drawing's patterns this reading is being judged against.
+    //
+    // A drawing can print more than one complete footprint for one package -
+    // DW0016B prints an IPC nominal and an HV isolation option side by side -
+    // and both are the document's own. So the reading is compared against the
+    // one it MATCHES rather than against whichever this file happens to list
+    // first, and a reading matching none is judged against `land`, which is
+    // where the difference is most legible.
+    //
+    // Matched WHOLE. A pattern assembled from one drawing's pad and another's
+    // span appears nowhere on the page, and is exactly the defect this has to
+    // be able to see, so a candidate counts only if all of its numbers agree.
+    const candidates = [entry.land, ...(entry.landAlternatives ?? [])];
+    const matchesWhole = (pattern: (typeof candidates)[number]) =>
+      scalarMatches(at("dimensions.landPadLengthMm"), pattern.padLengthMm) === true &&
+      scalarMatches(at("dimensions.landPadWidthMm"), pattern.padWidthMm) === true &&
+      scalarMatches(at("dimensions.landSpanMm"), pattern.spanMm) === true &&
+      (pattern.spanCrossMm === undefined ||
+        scalarMatches(at("dimensions.landSpanCrossMm"), pattern.spanCrossMm) === true);
+    const against = candidates.find(matchesWhole) ?? entry.land;
+
+    add("landPadLengthMm", scalarMatches(at("dimensions.landPadLengthMm"), against.padLengthMm), at("dimensions.landPadLengthMm"), against.padLengthMm);
+    add("landPadWidthMm", scalarMatches(at("dimensions.landPadWidthMm"), against.padWidthMm), at("dimensions.landPadWidthMm"), against.padWidthMm);
+    add("landSpanMm", scalarMatches(at("dimensions.landSpanMm"), against.spanMm), at("dimensions.landSpanMm"), against.spanMm);
+    if (against.spanCrossMm !== undefined) {
       add(
         "landSpanCrossMm",
-        scalarMatches(at("dimensions.landSpanCrossMm"), entry.land.spanCrossMm),
+        scalarMatches(at("dimensions.landSpanCrossMm"), against.spanCrossMm),
         at("dimensions.landSpanCrossMm"),
-        entry.land.spanCrossMm
+        against.spanCrossMm
       );
     }
   }
@@ -262,6 +285,40 @@ async function recordValuesFor(
         values[`dimensions.${field}`] = { value: value.value, page: value.citation?.page ?? null };
       }
       values.packageOutlineCode = { value: record.packageOutlineCode.value };
+
+      // THE PACKAGE THE PART ACTUALLY SHIPS AS, which is often not the one the
+      // flat block describes.
+      //
+      // A family datasheet leaves `record.dimensions` entirely null - correctly,
+      // because a part sold in seven packages has no one body size - and states
+      // each package's own measurements in `packagesInThisDocument`. The product
+      // builds the copper from THOSE, through `asPackage`. This bench read the
+      // flat block, so for every such part it compared a hand-read drawing
+      // against a row of nulls and reported "not read".
+      //
+      // Measured 2026-08-22 on the first three drawings added for the shipping
+      // list: AD8628, ADR4525 and AD590 all ship, all build from an R-8 the
+      // oracle now records, and all 27 comparisons came back `read null`. The
+      // instrument could not see the numbers it exists to check, so reading
+      // twenty more drawings would have bought nothing.
+      //
+      // Substituted the way `asPackage` substitutes - BLANK, then overlay - and
+      // not merged over the flat block. That is the product's own rule and its
+      // reason holds here: a field the document did not state for THIS package
+      // is unknown, and inheriting the sibling's number would score a value the
+      // product never emits.
+      const shipped = (await shipOutcome(record, BENCH_SETTINGS)).shippedAs;
+      if (shipped && shipped.designator !== record.packageType.value) {
+        const entry = pinTableFor(record.packagesInThisDocument, shipped.designator);
+        if (entry?.dimensions) {
+          for (const field of Object.keys(record.dimensions)) values[`dimensions.${field}`] = { value: null, page: null };
+          for (const [field, held] of Object.entries(entry.dimensions)) {
+            const value = held as { value: unknown; citation?: { page?: number } | null };
+            values[`dimensions.${field}`] = { value: value.value, page: value.citation?.page ?? null };
+          }
+        }
+        values.packageOutlineCode = { value: shipped.outlineCode };
+      }
       return values;
     } catch {
       // A cache miss under the current prompt, or a document that will not
@@ -375,12 +432,39 @@ async function main(): Promise<void> {
       statedHeight = doc ? statedMaxHeightMm(doc, typeof page === "number" ? page : null) : null;
     }
     const claimed = values["packageOutlineCode"]?.value;
+    // A CODE THE RECORD REPORTS BEATS THE PART LIST, INCLUDING WHEN IT MATCHES
+    // NOTHING.
+    //
+    // The part list says "this part reads this drawing". Since 2026-08-22 the
+    // code arriving here is the one the part actually SHIPPED as, and where the
+    // two disagree the code is right by construction: it came from the package
+    // the copper was built from.
+    //
+    // Falling through to the list when the code is merely UNKNOWN scored a
+    // reading against a drawing it did not come from. Measured the day the
+    // shipped-package code was wired in: AD8628 ships as UJ-5, a 5-lead TSOT,
+    // and was scored against the R-8 SOIC in the same datasheet - seven WRONG
+    // values, none of them a misread. NCP1200 ships as CASE 626-05, a DIP, and
+    // was scored against the 751-07 SOIC for another five.
+    //
+    // The height veto in `outlineFor` was supposed to catch exactly this and
+    // cannot: it only fires on an entry with `bodyHeightMaxMm`, and an entry
+    // recording a max/nom/min range has none.
+    //
+    // So an unmatched code is UNCHECKED, which is true, rather than checked
+    // against a sibling, which is a lie about the product.
     const code =
-      typeof claimed === "string" && DIMENSION_ORACLE[claimed]
-        ? claimed
+      typeof claimed === "string" && claimed.trim()
+        ? (DIMENSION_ORACLE[claimed] ? claimed : null)
         : outlineFor(byPartName.get(part) ?? [], statedHeight);
     if (!code) {
-      unmatched.push(part);
+      // NAME THE CODE THE RECORD DID REPORT, not just the part.
+      //
+      // "94 parts have no oracle entry" is a number nobody can act on: it does
+      // not say which DRAWING to go and read. The record usually knows - it
+      // reports an outline code that simply has no entry yet - and printing it
+      // turns the list into a work queue.
+      unmatched.push(typeof claimed === "string" && claimed.trim() ? `${part} [${claimed.trim()}]` : part);
       continue;
     }
     rows.push(...compare(part, code, DIMENSION_ORACLE[code], values));

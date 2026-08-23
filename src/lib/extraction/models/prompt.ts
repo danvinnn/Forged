@@ -8,12 +8,37 @@ import type { PinRecord } from "../../types";
  * it makes no network call itself.
  */
 
-const FIELD_GUIDE: Record<ExtractionField, string> = {
+/**
+ * Exported so a test can assert the wording that has to agree with the
+ * generator. Two fields here name an AXIS the generator also has a convention
+ * for, and while only one of them said so the two disagreed silently and a
+ * footprint shipped with its rows swapped. See `rectangular-quad.test.ts`.
+ */
+export const FIELD_GUIDE: Record<ExtractionField, string> = {
   partNumber: "the manufacturer's ordering part number for this device",
   manufacturer: "the company that publishes this datasheet",
   packageType: "the package designator, e.g. 'CFP (14)' or '10-lead flatpack'",
   pinCount: "the number of electrical terminals on the package, as an integer",
-  pins: "the full pin table as an array of {number, name, electricalType, description}",
+  // THE NAME EXACTLY AS PRINTED, and the two ways it was not.
+  //
+  // This was one line - "the full pin table" - and the name it asks for is what
+  // an engineer wires up. Measured against the hand-read pin oracle on
+  // 2026-08-22, two of eighteen checked parts came back wrong and they failed in
+  // OPPOSITE directions, which is what says the question was under-specified
+  // rather than the reading hard:
+  //
+  //   LTC6563  pins 1 and 3 are both printed GND, and came back GND1 and GND3.
+  //            The pad row, also GND, came back GND25. A suffix invented to make
+  //            the names unique - but duplicate pin names are normal and correct
+  //            on a real symbol, and every ground pin on that part is called GND.
+  //   RHF1201  the Name column prints D11(MSB) and D0(LSB), and the parenthetical
+  //            was dropped. It is inside the name cell, not a separate note.
+  //
+  // Both are RULES.md rule 1: one invents, one discards. Stated as the rule
+  // rather than as the two cases, so it covers any document that repeats a name
+  // or parenthesises part of one.
+  pins:
+    "the full pin table as an array of {number, name, electricalType, description}. Give each name EXACTLY as the document prints it in the pin table's name cell or beside the pin on the pinout figure, character for character. Do NOT invent a suffix or a number to tell two pins apart: a package routinely has several pins with the SAME name (four pins all called GND, three all called IN) and repeating the name is the correct answer. Do NOT drop any part of a printed name, including a parenthesised one: if the cell reads 'D11(MSB)' the name is 'D11(MSB)', not 'D11'. Where the pin table and the pinout figure print different names for the same pin, prefer the pin table's name column.",
   "dimensions.bodyLengthMm": "package body length in millimetres, as a number",
   "dimensions.bodyWidthMm": "package body width in millimetres, as a number",
   // THE SEATED ENVELOPE, not the ceramic. Corrected 2026-08-18 after the
@@ -41,13 +66,13 @@ const FIELD_GUIDE: Record<ExtractionField, string> = {
   "dimensions.leadContactMm":
     "lead contact length in millimetres, drawing dimension L, the length of the foot that sits on the pad (NOT the whole lead), as {\"minMm\": <number>, \"maxMm\": <number>}",
   "dimensions.leadSpanMm":
-    "lead span in millimetres, tip to tip across the package including the leads (NOT the body), as printed on the package drawing, as {\"minMm\": <number>, \"maxMm\": <number>}. On a package with leads on all four sides the drawing prints TWO of these, one per axis: report this one here and the other in leadSpanCrossMm.",
+    "lead span in millimetres, tip to tip across the package including the leads (NOT the body), as printed on the package drawing, as {\"minMm\": <number>, \"maxMm\": <number>}. On a package with leads on all four sides the drawing prints TWO of these, one per axis: report the one measured ALONG THE SAME AXIS AS dimensions.bodyWidthMm here, and the one along the bodyLength axis in leadSpanCrossMm.",
   // The second span off the package OUTLINE, the drawing counterpart of
   // landSpanCrossMm. Asked for from 2026-08-18: a rectangular quad's outline
   // prints both, the record carried one, and the computed land pattern placed
   // all four sides at the same centre distance as a result.
   "dimensions.leadSpanCrossMm":
-    "ONLY for a package with leads or pads on all four sides: the lead span across the OTHER axis, i.e. the direction perpendicular to leadSpanMm, tip to tip including the leads, as printed on the same package outline drawing, as {\"minMm\": <number>, \"maxMm\": <number>}. Most four-sided packages are rectangular and the two differ; where they are equal report the same pair in both rather than null. Null for a package with leads on two sides or one, which has only one span.",
+    "ONLY for a package with leads or pads on all four sides: the lead span across the OTHER axis, measured ALONG THE SAME AXIS AS dimensions.bodyLengthMm and perpendicular to leadSpanMm, tip to tip including the leads, as printed on the same package outline drawing, as {\"minMm\": <number>, \"maxMm\": <number>}. Most four-sided packages are rectangular and the two differ; where they are equal report the same pair in both rather than null. Null for a package with leads on two sides or one, which has only one span.",
   // The AXIS is stated, on both, and it is not a pedantic detail. These two were
   // asked for as "D2 or E2" and as a bare "width", which names no axis at all,
   // so nothing downstream could know which way round the answers came and the
@@ -71,15 +96,40 @@ const FIELD_GUIDE: Record<ExtractionField, string> = {
     "from the datasheet's OWN RECOMMENDED FOOTPRINT / LAND PATTERN drawing (a separate page from the package outline, captioned e.g. 'LAND PATTERN EXAMPLE', 'RECOMMENDED FOOTPRINT', 'EXAMPLE BOARD LAYOUT' or 'Footprint example'): the length of ONE land, in millimetres, measured OUTWARD from the centre of the package, i.e. along the row's short axis and perpendicular to the pitch. This is the direction a lead points on a gull-wing package, and the direction a terminal extends from the body edge on a no-lead one. Report ONE land, never the row or the whole pattern. Null if the datasheet prints no such drawing.",
   "dimensions.landPadWidthMm":
     "from the same RECOMMENDED FOOTPRINT drawing: the width of ONE land, in millimetres, measured ACROSS the row, i.e. the direction in which neighbouring lands are separated by the pitch. It is always smaller than the pitch, because neighbouring lands do not touch. On a gull-wing package (SOIC, TSSOP, QFP) it is the smaller of the two land dimensions; on a no-lead package (QFN, DFN, SON) the two can be close to equal, so use the direction rather than the size to tell them apart. Null if the datasheet prints no such drawing.",
+  // THE AXIS, on this and on landSpanCrossMm, for the same reason it is stated
+  // on the thermal pad above and with the same evidence behind it.
+  //
+  // "measured across the SAME axis as landPadLengthMm" names no axis on a
+  // four-sided package, because EVERY land's length runs outward. So nothing
+  // downstream could know which of the two numbers was which, and the generator
+  // has a definite convention: it puts `bodyLengthMm` on Y and `bodyWidthMm` on
+  // X, and places the `landSpanMm` rows at +/- half the span in X.
+  //
+  // Measured 2026-08-22 on the two rectangular quads in the tuned corpus, and
+  // BOTH came back the other way round:
+  //
+  //   LTC6563  3 x 5 mm QFN. Read 4.80 as landSpanMm, which puts the
+  //            eight-terminal rows 4.80 apart across a 3 mm body; the lead lands
+  //            then sit on the thermal pad and the output invariant refuses the
+  //            part outright.
+  //   TXB0104  2.5 x 3.0 mm WQFN. Read 2.80 and 2.30 the wrong way round, and
+  //            SHIPS: the short-side lands land 1.15 mm out on a body 1.5 mm
+  //            half-height, entirely under the package and clear of the
+  //            terminals they are meant to solder. Nothing overlaps, so no
+  //            invariant fires.
+  //
+  // Tied to `bodyWidthMm` rather than to a drawing letter, because that is the
+  // comparison that has to hold: these lands are under the rows that run
+  // parallel to the body's length.
   "dimensions.landSpanMm":
-    "from the same RECOMMENDED FOOTPRINT drawing: the CENTRE-TO-CENTRE distance between two OPPOSING rows of lands, in millimetres, measured across the SAME axis as landPadLengthMm. A package with two rows has one such distance. A package with lands on all four sides has two, one per axis: report this one here and the other in landSpanCrossMm, and where the footprint is square report the same number in both. Vendors dimension this three ways: some print the centre-to-centre distance directly, some print the INNER GAP between the two rows and the OUTER extent across them, in which case it is the average of those two, and some print only the outer extent, in which case it is the outer extent minus one land length. Null if the datasheet prints no such drawing.",
+    "from the same RECOMMENDED FOOTPRINT drawing: the CENTRE-TO-CENTRE distance between two OPPOSING rows of lands, in millimetres, measured ALONG THE SAME AXIS AS dimensions.bodyWidthMm - that is, the two rows this distance separates are the ones that RUN PARALLEL to the body's length. A package with two rows has one such distance. A package with lands on all four sides has two, one per axis: report the one across the bodyWidth axis here and the other in landSpanCrossMm, and where the footprint is square report the same number in both. Vendors dimension this three ways: some print the centre-to-centre distance directly, some print the INNER GAP between the two rows and the OUTER extent across them, in which case it is the average of those two, and some print only the outer extent, in which case it is the outer extent minus one land length. CHECK WHICH ONE YOU ARE LOOKING AT before answering: reporting the inner gap unchanged is the most common error on this field, and it is always exactly one land length smaller than the right answer. A dimension line that ends on the INNER EDGES of the two rows is a gap, one that ends on their OUTER edges is an extent, and one that ends on their centrelines is the answer. Null if the datasheet prints no such drawing.",
   // The second span, and it used to be thrown away. The guide above told the
   // model that a four-sided package has two and to report only one of them, so a
   // rectangular quad arrived describing a square. ADXL345 is a 3 x 5 mm LGA-14:
   // both axes were placed at the short axis's span, and the corner lands
   // collided. The document states both numbers.
   "dimensions.landSpanCrossMm":
-    "from the same RECOMMENDED FOOTPRINT drawing, and ONLY for a package with lands on all four sides: the centre-to-centre distance between the OTHER pair of opposing rows, i.e. the axis perpendicular to landSpanMm, in millimetres. Most four-sided footprints are rectangular rather than square and the two differ; where they are equal, report the same number in both rather than null. Null for any package with lands on two sides or one, which has only one such distance, and null if the datasheet prints no recommended footprint.",
+    "from the same RECOMMENDED FOOTPRINT drawing, and ONLY for a package with lands on all four sides: the centre-to-centre distance between the OTHER pair of opposing rows, measured ALONG THE SAME AXIS AS dimensions.bodyLengthMm, i.e. perpendicular to landSpanMm, in millimetres. The same gap-versus-extent-versus-centre check applies here. Most four-sided footprints are rectangular rather than square and the two differ; where they are equal, report the same number in both rather than null. Null for any package with lands on two sides or one, which has only one such distance, and null if the datasheet prints no recommended footprint.",
   "dimensions.leadSides":
     "how many SIDES of the package carry leads or pads: 1 for a single line of leads along one edge (TO-220, TO-92, SIP, most voltage regulators and transistors), 2 for two opposing rows (SOIC, TSSOP, SOT-23, DFN, SON), 4 for leads or pads on all four sides (QFP, QFN, LFCSP). Return the number 1, 2 or 4. THREE separate drawings answer this and any one of them is enough, so check all three before answering null: the package outline, the recommended footprint, and the PINOUT or pin-configuration figure, which shows directly whether the pins run along one edge, down two sides, or around all four. A package with leads on exactly three sides is none of these; return null for that rather than rounding.",
   "dimensions.leadForm":

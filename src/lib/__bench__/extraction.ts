@@ -36,10 +36,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { join } from "node:path";
 import { BENCH_CORPUS, type BenchCategory, type BenchPart } from "../retrieval/__bench__/corpus";
 import { checkFetchedDatasheet } from "./fetchcheck";
+import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
 import { extractPartRecord } from "../datasheet";
 import { makeExtractionModel, runExtraction } from "../extraction";
 import { resolveForExport, type Extracted, type PartRecord } from "../types";
-import { createExportZip, packageOptions, FootprintUnavailableError } from "../exporters";
+import { packageOptions } from "../exporters";
 import {
   PINOUT_ORACLE,
   PACKAGE_ORACLE,
@@ -248,36 +249,20 @@ interface Row {
 }
 
 /**
- * Does a real bundle come out?
+ * Does this part ship, by the SAME definition `bench:holdout` uses.
  *
- * This calls the actual generator rather than asking whether the fields are
- * non-null, and the difference is the whole point. `resolveForExport` checks
- * that pinCount, pins and packageType are present; it never computes a land
- * pattern, so it counted nine parts as ready that the generator refuses. The
- * measured gap on 2026-07-27 was 16 fields-complete against 7 bundles produced.
+ * This used to be a local `shipCheck` that made one bare `createExportZip` call
+ * on the record: no customer settings, no package chooser, no answers. The
+ * hold-out applied all three. Both printed their result as "the product" and the
+ * two numbers were quoted side by side - 98% and 18% - as though comparable.
  *
- * kicad is used because it is the format with no external oracle to build, so
- * this stays runnable anywhere. A part that ships in one format ships in all of
- * them: the generators read one shared geometry and none is derived from another.
+ * They were measuring different products, and the stricter one carried the
+ * label. Moved to `shipcheck.ts` so there is one answer to the question.
+ *
+ * EXPECT THIS NUMBER TO RISE, and do not read the rise as progress: nothing in
+ * the generator changed on the day it moved. A figure that was answering a
+ * harder question than it claimed started answering the one it claimed.
  */
-async function shipCheck(
-  resolved: ReturnType<typeof resolveForExport>
-): Promise<{ ships: boolean; refusedBy: string }> {
-  if (!resolved.ok) return { ships: false, refusedBy: "" };
-  try {
-    await createExportZip(resolved.part, "kicad");
-    return { ships: true, refusedBy: "" };
-  } catch (error) {
-    if (error instanceof FootprintUnavailableError) {
-      // Two different refusals: one the user can answer, one that is our gap.
-      return {
-        ships: false,
-        refusedBy: error.needs.length > 0 ? `needs ${error.needs.map((need) => need.field).join(",")}` : "no land pattern"
-      };
-    }
-    return { ships: false, refusedBy: error instanceof Error ? error.message.slice(0, 40) : "unknown" };
-  }
-}
 
 /**
  * Which of the datasheet's own packages would produce a bundle if named.
@@ -474,13 +459,24 @@ async function scoreRow(part: BenchPart): Promise<Row> {
     }
 
     const resolved = resolveForExport(record);
-    const shipped = await shipCheck(resolved);
+    const outcome = await shipOutcome(record, BENCH_SETTINGS);
+    // `ships` is the zero-friction figure and `shipsAnswered` is what a customer
+    // experiences. The headline follows the hold-out and reports the second.
+    const shipped = { ships: outcome.shipsAnswered, refusedBy: outcome.why };
     return {
       part,
       status: "ok",
       detail: "",
-      packageType: record.packageType.value ?? "",
-      outlineCode: record.packageOutlineCode.value,
+      packageType: outcome.shippedAs?.designator ?? record.packageType.value ?? "",
+      // THE DRAWING THE COPPER CAME FROM, not the one the record resolved to.
+      //
+      // A part that ships through the package chooser ships as a different
+      // package, and `asPackage` nulls the outline code because the record's
+      // belongs to another drawing. Printing the record's field beside such a
+      // row named the wrong drawing, and named none at all for a package whose
+      // code the document prints in its own table - which is most of the
+      // "(no outline code read)" rows that made the VERIFIED list unworkable.
+      outlineCode: outcome.shippedAs ? outcome.shippedAs.outlineCode : record.packageOutlineCode.value,
       filled,
       cited,
       scored,
@@ -738,9 +734,11 @@ async function main() {
     );
     console.log("  shipping parts, and the outline drawing each was measured from:");
     for (const row of shipping) {
-      const code = row.outlineCode ?? "(no outline code read)";
+      // The DESIGNATOR when the drawing printed no code, because a person has to
+      // open the right drawing and "(no outline code read)" does not say which.
+      const code = row.outlineCode ?? (row.packageType ? `as ${row.packageType}` : "(no package named)");
       const covered = oracleCovers(row.outlineCode ?? null, row.part.partNumber) ? "checked" : "UNCHECKED";
-      console.log(`    ${row.part.partNumber.padEnd(18)} ${code.padEnd(16)} ${covered}`);
+      console.log(`    ${row.part.partNumber.padEnd(18)} ${code.padEnd(34)} ${covered}`);
     }
     console.log("");
   }

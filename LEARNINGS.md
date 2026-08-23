@@ -2178,3 +2178,195 @@ Two gull-wing cases are contained: `printed-outside-ipc-band` fires on DRV8825
 and TPS54360 and IPC-7351B takes over, 0.08 mm and 0.67 mm from the vendor
 pattern. TPS7A4700 is no-lead, where the band check cannot run by design, and it
 ships 0.75 mm narrow. ONE live wrong footprint.
+
+## Omission is a claim, so never use it to mean "I could not read it"
+
+LIS3DH's LGA-16 drawing is printed in pale grey. The default render was
+illegible, 300 DPI made its OUTER DIMENSIONS table readable but not its bottom
+view, and I wrote a deliberately thin oracle entry: three body numbers, and
+`leadContactMm` left out because I could not tell which of two labels was which.
+
+`DIMENSION_ORACLE` treats an absent key as a STATEMENT - a person looked and the
+drawing prints none. `bench:dimensions` said so within seconds:
+
+    WRONG  LIS3DH  leadContactMm  read 0.31-0.39  expected the drawing prints none
+
+**The reader was right and the oracle was wrong**, and the oracle was wrong
+because I used silence to mean uncertainty.
+
+The fix was to actually read it. `sips -c <h> <w> --cropOffset <y> <x>` on the
+300 DPI render, then `sips -Z 1600` to scale the crop up, and the bottom view
+resolves completely: a left-column pad measures 0.35 across the page and 0.25
+down it, so "0.35 +/- 0.04 (16X)" is the terminal LENGTH and "0.25 +/- 0.04
+(16X)" is its width. Eight fields now check instead of three, all correct.
+
+**Crop and zoom before giving up on a drawing.** And if it still will not read,
+leave the WHOLE ENTRY out - a partial entry silently asserts that everything
+missing from it is missing from the document.
+
+## Two benches, one word, two meanings, both labelled "the product"
+
+`bench:holdout` printed **SHIPS 58/59 (98%)**. `bench:extraction` printed
+**SHIPS 10/57 (18%)**. Both lines carried the annotation "the product". They were
+answering different questions:
+
+    holdout    resolveForExport -> settings -> package chooser -> answer the
+               questions -> did a bundle come out
+    extraction one bare createExportZip(record) call
+
+The tuned bench had no customer settings, no chooser and no answers. It also
+broke a standing instruction on this project - *always account for user answers
+and user settings when calculating a ships percentage* - which the hold-out had
+honoured since the day it was written.
+
+Fixed by moving the definition into `shipcheck.ts` and importing it in both.
+Same failure shape as the two drifted cache readers earlier the same week: **a
+second implementation of a rule is a second answer to the same question, and a
+bench is the place that can least afford one.**
+
+### The number that went UP is not the interesting one
+
+    tuned SHIPS      18% -> 81%
+    tuned VERIFIED  100% -> 37%
+
+Nothing in the generator changed. SHIPS rose because the question got easier and
+correct; **VERIFIED fell because the denominator got honest.** When only 10 parts
+counted as shipping, all 10 happened to have hand-read drawings, so the metric
+read 100%. With 46 shipping, 29 have no drawing read by anyone - and those
+footprints were being produced the whole time.
+
+**A ratio can be flattered by a wrong denominator in either direction.** The
+hold-out number was fine; the tuned pair was reporting a strict SHIPS and a
+flattering VERIFIED, and the two errors concealed each other.
+
+### And it corrected me twice in one hour
+
+I had told Anthony that hand-reading drawings "stopped paying" - measured on the
+broken denominator, where every shipping part was already covered. It is in fact
+the largest correctness gap in the project.
+
+Verify the denominator before declaring a line of work finished.
+
+### A refactor lesson, cheaply learned
+
+Moving the block, a `str.replace` for the insertion silently matched nothing
+while the corresponding delete succeeded, and `answerFor` vanished. It was
+recoverable from the last commit. **Assert that an edit changed the file**
+(`assert s != before`, `assert marker in result`) - a no-op replace is the one
+failure mode that looks exactly like success.
+
+---
+
+# 2026-08-22
+
+## An unlabelled axis is an unanswerable question, and it had three faces
+
+`thermalPadLengthMm` was given an axis on 2026-08-16 after a pad shipped turned
+ninety degrees. The same defect was sitting in `landSpanMm` the whole time and
+nothing found it, because it only becomes visible on a RECTANGULAR QUAD - the
+one shape where both axes carry rows and the two numbers can be swapped without
+anything looking wrong.
+
+The generator has always had a convention: `bodyLengthMm` on Y, `bodyWidthMm` on
+X, and the `landSpanMm` rows at +/- half the span in X. Three other places that
+should have said so said nothing:
+
+  - the PROMPT said "measured across the SAME axis as landPadLengthMm", which
+    names no axis on a package whose lands all point outward
+  - the RECORD type said "centre to centre between opposing rows"
+  - the ORACLE said the same, and its LTC6563 entry recorded the drawing's two
+    numbers in PRINTED order, so it AGREED with a reading that cannot be built
+
+Both rectangular quads in the tuned corpus came back the wrong way round, and
+they failed differently, which is why one of them alone was not enough to see it:
+
+    LTC6563   4.80 into landSpanMm puts the eight-terminal rows 4.80 apart
+              across a 3 mm body. The lead lands land on the thermal pad and
+              `validateGeometry` refuses the part. The user sees a dead end.
+    TXB0104   2.80 and 2.30 swapped, and it SHIPS. The short-side lands sit at
+              1.15 mm on a body 1.50 mm half-high: entirely under the package,
+              clear of the terminals they solder to. Nothing overlaps, so no
+              invariant fires and the file looks ordinary in CAD.
+
+**The lesson is not "state the axis".** It is that a field whose meaning depends
+on a convention held in ONE module is a defect waiting for the shape that
+exposes it, and the shape can be rare. Every place that names the field has to
+name the convention: prompt, type, oracle, and a test that fails when they drift
+apart (`rectangular-quad.test.ts`).
+
+## The thing you fix is the thing you look at, so look at the copper
+
+The via grid had `nx = fit(padL)` and `ny = fit(padW)` two hundred lines below
+`emitThermalPad`, whose own comment explains at length why the pad puts LENGTH on
+Y. The grid put length on X. On a square pad the two agree and nothing shows; on
+DRV8825's 4.83 x 2.75 PowerPAD at 1.2 mm pitch it produced four columns spanning
+4.0 mm of a 2.75 mm width, two of them off the pad and through bare soldermask
+beside the joint. Four shipping parts print a rectangular pad and a via grid.
+
+A comment explaining a convention does not enforce it twenty lines away, let
+alone two hundred. `exporters-geometry.test.ts` now asserts every via lies inside
+the pad it heats, measured off the emitted file.
+
+## An answer key may not settle a document's own disagreement by preference
+
+Two entries in the oracles were recording one of two things the document prints
+and failing a reader for choosing the other:
+
+    TPS7A4501-SP  the pinout FIGURES label pin 9 SENSE/ADJ; the Pin Functions
+                  table's NAME column says ADJ. The entry took the figure and
+                  noted the conflict in a comment.
+    DW0016B       the land page prints TWO complete footprints, an IPC-7351
+                  nominal at 7.3 mm creepage and an HV option at 8.1 mm, and does
+                  not say which to use.
+
+The first was corrected to the NAME column, with the reasoning recorded rather
+than the change made silently: page 3 says the device is adjustable-only, so
+SENSE is a fixed-output sibling's name carried over on a shared figure. The
+second got `landAlternatives`, which accepts EITHER complete pattern and neither
+half of one and half of the other.
+
+Both directions are traps. An oracle that bends to the reader is worthless; an
+oracle that asserts more than the document does reports defects that are not
+there. The test is whether the document settles it, not whether we have a view.
+
+## The instrument was reading a different record from the product, again
+
+`bench:dimensions` read `record.dimensions`. A family datasheet leaves that
+entirely null - correctly - and states each package's measurements in
+`packagesInThisDocument`, which is what `asPackage` builds the copper from.
+
+So for every part that ships through the package chooser, the bench compared a
+hand-read drawing against a row of nulls and printed "not read". It showed up
+immediately: the first three drawings added for the shipping list produced 27
+comparisons and all 27 read null. Reading the other eighteen would have bought
+nothing.
+
+Fixed by taking the package `shipOutcome` says the part shipped AS and reading
+THAT entry's dimensions, blanked-then-overlaid exactly as `asPackage` does.
+Comparisons went 252 -> 496 and four wrong values appeared that no instrument in
+this repo could previously see.
+
+**Third time this shape has cost a day.** The check: before trusting a bench,
+ask which record it reads and whether the product builds from that one.
+
+## The land-span class is not drawing-dependent, and it was settleable for free
+
+Once the bench could see per-package dimensions, the count went from 3 misreads
+to 7, all the same error - the inner GAP returned where the centre DISTANCE was
+asked, always exactly one land length short. And the census kills the "the figure
+draws thermal vias" hypothesis outright:
+
+    D0008A      6 correct at 5.4,  1 wrong at 3.85  (OPA333)
+    DBV0005A    4 correct at 2.6,  1 wrong at 1.5   (TLV9061)
+    DGK0008A    4 correct at 4.4,  1 wrong at 3.0   (INA333)
+
+The SAME drawing, in different datasheets, read right six times and wrong once.
+The drawing cannot be the variable. The plan said this class could not be settled
+without the blind set; it could, from data already on disk, as soon as the
+instrument stopped being blind.
+
+Where it lands in copper, measured part by part: four of the seven are caught by
+the IPC band check and fall back to a computed pattern, one refuses for an
+unrelated reason, one refuses outright, and TPS7A4700 - no-lead, where the band
+check cannot run - ships 0.75 mm narrow. **Count where the error ENDS UP, not
+how often it happens.**

@@ -33,6 +33,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createExportZip, FootprintUnavailableError } from "../exporters";
+import { lastRowIsNumberedThermalPad } from "../extraction/merge";
 import { type LeadWidth, type PinRecord, type ResolvedPart } from "../types";
 
 const CACHE_DIR = join(process.cwd(), ".model-cache");
@@ -173,9 +174,39 @@ function pinsFrom(value: unknown): { pins: PinRecord[]; exposedPad: boolean } {
 /** A ResolvedPart built from what the model said, and from nothing else. */
 function partFrom(label: string, values: Record<string, CachedValue>): ResolvedPart | null {
   const at = (field: string) => values[field]?.value;
-  const { pins, exposedPad } = pinsFrom(at("pins"));
-  const pinCount = asNumber(at("pinCount")) ?? (pins.length > 0 ? pins.length : null);
+  const read = pinsFrom(at("pins"));
+  let pins = read.pins;
+  let exposedPad = read.exposedPad;
+  let pinCount = asNumber(at("pinCount")) ?? (pins.length > 0 ? pins.length : null);
   if (pinCount === null || pins.length === 0) return null;
+
+  // AND THE OTHER HALF OF THE SAME RULE, which this file used to be missing.
+  //
+  // `pinsFrom` recognises a pad by a non-numeric designator, and says in its own
+  // comment that it repeats what merge does. It repeated half. A vendor that
+  // NUMBERS the pad row - TI's PowerPAD parts do - left the row in the table as
+  // an ordinary lead, and this bench built a record the product cannot be in: 25
+  // rows against a count of 24 with no exposed pad. The output invariant then
+  // refused it, correctly, and this bench reported LTC6563 and TPS54360 REFUSED
+  // while the product ships TPS54360 and refuses LTC6563 for something else
+  // entirely. Two hours went into a defect that was the instrument's.
+  //
+  // Called rather than re-derived, so there is one definition of the rule.
+  const declaredLeads = asNumber(at("dimensions.leadCount"));
+  if (
+    lastRowIsNumberedThermalPad({
+      pins,
+      exposedPad,
+      declaredLeads,
+      thermalPadLengthMm: asNumber(at("dimensions.thermalPadLengthMm")),
+      thermalPadWidthMm: asNumber(at("dimensions.thermalPadWidthMm"))
+    }) &&
+    declaredLeads !== null
+  ) {
+    exposedPad = true;
+    if (pinCount === pins.length) pinCount = declaredLeads;
+    pins = pins.slice(0, -1);
+  }
 
   const leadForm = at("dimensions.leadForm");
   const sides = asNumber(at("dimensions.leadSides"));

@@ -2157,8 +2157,23 @@ function assemble(
     const viaPad = viaDrill * 2;
     // How many fit, leaving a full annulus inside the pad edge on every side.
     const fit = (extent: number) => Math.max(1, Math.floor((extent - viaPad) / viaPitch) + 1);
-    const nx = fit(padL);
-    const ny = fit(padW);
+    // THE SAME AXES THE PAD ITSELF USES.
+    //
+    // `emitThermalPad` puts `thermalPadLengthMm` on Y and says why: D2 is
+    // measured parallel to D on a package outline drawing, `bodyLengthMm` is D,
+    // and the courtyard and silkscreen follow the same convention. This counted
+    // `nx` from the LENGTH, so the grid was laid out ninety degrees from the pad
+    // it sits on - the identical transposition that comment describes fixing for
+    // the pad, missed on the vias beside it.
+    //
+    // Square pads hide it. Rectangular ones do not: DRV8825's PowerPAD is
+    // 4.83 mm along the body and 2.75 mm across, and at the 1.2 mm pitch its
+    // drawing prints this produced four columns spanning 4.0 mm of a 2.75 mm
+    // width, putting two of them off the pad and through bare soldermask beside
+    // the joint. Four shipping parts in the tuned corpus print a rectangular pad
+    // and a via grid, so it was live on all four.
+    const nx = fit(padW);
+    const ny = fit(padL);
     for (let ix = 0; ix < nx; ix += 1) {
       for (let iy = 0; iy < ny; iy += 1) {
         thermalVias.push({

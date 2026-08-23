@@ -227,6 +227,64 @@ function normalizeModelPins(
 }
 
 /**
+ * IS THE LAST ROW OF THIS PIN TABLE THE EXPOSED THERMAL PAD, NUMBERED AS A PIN?
+ *
+ * `normalizeModelPins` recognises an exposed pad by its designator being
+ * non-numeric (`EP`, `PAD`, `TAB`). Texas Instruments numbers it instead: a
+ * PowerPAD SOIC-8 has a NINTH row called `9`. That row is numeric, so it was
+ * kept as an ordinary signal pin on an eight-lead package, no land was ever
+ * placed for it, and the output invariant refused the whole part with "the pin
+ * table lists pin 9 and no land was placed for it".
+ *
+ * Found 2026-08-17 on TPS54360, promoted out of the hold-out for exactly this.
+ * The thermal pad's SIZE had been read correctly (3.1 x 2.41 mm) and sat unused
+ * on the record while the part refused, which is the same discard this file
+ * already has three comments about.
+ *
+ * Four conditions, all required, because reclassifying a real signal pin as
+ * copper under the body would be far worse than the refusal it replaces:
+ *
+ *   1. the pad has not already been recognised by its designator, in which case
+ *      the row is gone and the last numbered pin really is a lead
+ *   2. the pin table has EXACTLY one row more than the declared lead count, so
+ *      the extra row is unambiguous rather than one of several
+ *   3. that extra row is the LAST by number, where a vendor puts the pad
+ *   4. the thermal pad's dimensions are on the record, which is the document
+ *      stating that this package HAS an exposed pad
+ *
+ * Condition 4 is the load-bearing one. Without it this would fire on any part
+ * whose lead count was misread by one.
+ *
+ * ## Why it is exported
+ *
+ * It was a block inside `mergeModelValues`, which is the only place the PRODUCT
+ * reads a pin table. `bench:replay` reads the same cached answers into a record
+ * deliberately without running merge, and its own `pinsFrom` reimplements the
+ * non-numeric half of this rule with a comment saying so - and not this half. So
+ * replay built a record the product cannot be in (25 rows, a count of 24, no
+ * exposed pad), the output invariant refused it, and the bench reported two
+ * parts REFUSED that the product ships. A bench arguing with the product about
+ * a rule the product owns is how a day gets spent on a defect that is not there.
+ *
+ * One definition, two readers. Same reasoning as `shipOutcome`.
+ */
+export function lastRowIsNumberedThermalPad(record: {
+  pins: readonly PinRecord[] | null;
+  exposedPad: boolean;
+  declaredLeads: number | null;
+  thermalPadLengthMm: number | null;
+  thermalPadWidthMm: number | null;
+}): boolean {
+  const { pins, exposedPad, declaredLeads, thermalPadLengthMm, thermalPadWidthMm } = record;
+  if (exposedPad) return false;
+  if (pins === null || declaredLeads === null) return false;
+  if (thermalPadLengthMm === null || thermalPadWidthMm === null) return false;
+  if (pins.length !== declaredLeads + 1) return false;
+  const last = pins[pins.length - 1];
+  return last !== undefined && Number(last.number) === pins.length;
+}
+
+/**
  * The same proof the deterministic readers have to pass: exactly 1..N, no gaps,
  * no repeats.
  *
@@ -955,7 +1013,8 @@ export function mergeModelValues(
       )
     ];
   }
-  // A THERMAL PAD THE VENDOR NUMBERED AS A PIN.
+  // A thermal pad the vendor numbered as a pin. See
+  // `lastRowIsNumberedThermalPad` for the conditions and the evidence.
   //
   // `normalizeModelPins` recognises an exposed pad by its designator being
   // non-numeric (`EP`, `PAD`, `TAB`). Texas Instruments numbers it instead: a
@@ -982,18 +1041,20 @@ export function mergeModelValues(
   // whose lead count was misread by one.
   const padPins = merged.pins.value;
   const declaredLeads = merged.dimensions.leadCount.value;
-  const padLength = merged.dimensions.thermalPadLengthMm.value;
-  const padWidth = merged.dimensions.thermalPadWidthMm.value;
   if (
-    !merged.exposedPad &&
-    padPins !== null &&
-    declaredLeads !== null &&
-    padLength !== null &&
-    padWidth !== null &&
-    padPins.length === declaredLeads + 1
+    lastRowIsNumberedThermalPad({
+      pins: padPins,
+      exposedPad: merged.exposedPad,
+      declaredLeads,
+      thermalPadLengthMm: merged.dimensions.thermalPadLengthMm.value,
+      thermalPadWidthMm: merged.dimensions.thermalPadWidthMm.value
+    })
   ) {
-    const last = padPins[padPins.length - 1];
-    if (last !== undefined && Number(last.number) === padPins.length) {
+    // Narrowing only; `lastRowIsNumberedThermalPad` has already proved all four.
+    const last = padPins?.[padPins.length - 1];
+    const padLength = merged.dimensions.thermalPadLengthMm.value;
+    const padWidth = merged.dimensions.thermalPadWidthMm.value;
+    if (padPins !== null && declaredLeads !== null && last !== undefined) {
       merged.exposedPad = true;
       merged.pins = { ...merged.pins, value: padPins.slice(0, -1) };
       // AND THE COUNT, which was left behind until 2026-08-18.

@@ -25,169 +25,154 @@
 
 ---
 
-## What is left, 2026-08-22
+## Finishing parsing and generation, 2026-08-22
 
-Items 1 to 4 of the 2026-08-21 list are DONE. What each turned out to be, and
-what remains, is below. Everything remaining is free except where marked.
+> **Status, end of 2026-08-22.** Items 1a, 2 and 3 are done. Item 1b is PARTLY
+> done: nine drawings read, covering eight of the twenty-one shipping parts that
+> had none, and it found what the rate predicted. Item 4 turned out to be
+> settleable for free and is now answered. Two of the four items changed shape
+> once measured, and both changes are recorded below rather than quietly applied.
+>
+> **Two live wrong footprints were found and fixed**, plus a third defect nobody
+> was looking for. Details in `LEARNINGS.md`, 2026-08-22.
 
-### Done: the corpus was contaminated, and the cause was retrieval
+### What the work actually found
 
-`bench:corpus` is new, free, and checks every cached PDF against the part it is
-filed under using the product's own `namesThePart`. It found three complete,
-well-formed datasheets for the WRONG DEVICE, and one correction to this plan:
+| | |
+|---|---|
+| **Thermal via grid transposed from its own pad** | `nx` counted from the pad's LENGTH while `emitThermalPad` puts length on Y. On DRV8825's 4.83 x 2.75 PowerPAD that put two of four via columns off the pad, through bare soldermask beside the joint. Four shipping parts print a rectangular pad and a via grid. Fixed; `exporters-geometry.test.ts` asserts every via lies inside its pad. |
+| **`landSpanMm` named no axis** | The generator has always had a convention; the prompt, the record type and the oracle all described the field without naming one. Both rectangular quads in the corpus were swapped. LTC6563 put its lead lands on the thermal pad and was refused; **TXB0104 SHIPPED**, with its short-side lands entirely under the body clear of their terminals, and nothing overlapped so no invariant fired. Fixed in all four places, with a test that goes red when any two disagree. |
+| **`bench:dimensions` read the wrong record** | It compared `record.dimensions` while the product builds from `packagesInThisDocument`. Every part shipping through the chooser scored "not read". Comparisons went 252 -> 496 once fixed. |
+| **The bench overrode a known outline code with a part-list guess** | AD8628 ships as a UJ-5 TSOT and was scored against the R-8 SOIC in the same datasheet; NCP1200 ships as a DIP and was scored against a SOIC. Twelve spurious WRONG values. An unmatched code is now UNCHECKED, which is true. |
 
-    .bench-cache/TPS7A4700     was TPS7A20    tuned corpus
-    .holdout-cache/TPS7A4901   was TPS7A20    hold-out
-    .holdout-cache/TPS7A4700   was TPS7A84    ORPHAN - in no corpus, scored by nothing
+---
 
-Only ONE was in the scored hold-out. TPS7A4700 was removed from it on
-2026-08-17, so the claim in the previous version of this plan that two hold-out
-numbers were inflated was wrong.
+### 1. Verify the copper we already ship  (partly done)
 
-**The cause was not a stale file.** TI retired the literature names `tps7a4700`
-and `tps7a4901`; both now redirect to a product-category page, so the constructed
-URL missed and the chain fell through to search, which returned a sibling's
-datasheet. It scored well - same vendor, same family prefix, a real PDF.
+**1a. Name the package each part shipped AS.** DONE, and it moved the number by
+itself: VERIFIED went 17/46 to 25/46 the moment the bench stopped printing the
+record's outline code beside parts that ship as something else. Now **36/48
+(75%)**.
 
-Fixed where it happened rather than by swapping files:
+**1b. Read those drawings.** NINE READ, covering eight parts: `R-8` (AD8628,
+ADR4525, AD590 - cross-checked across all three datasheets), `RU-16`,
+`DRM0008A`, `NS0016A`, `DW0016B`, `BQA0014A`. One live wrong footprint found, at
+roughly the predicted rate.
 
-  - `retrieval/identity.ts` asks whether a downloaded PDF names the part it was
-    fetched for, using the same rule `/api/lookup` already applied. Called at the
-    point each resolver decides a candidate is a hit, so a wrong document is a
-    MISS and the remaining candidates still run.
-  - `buildPartVariants` offers the two-digit stem TI actually files these
-    families under (TPS7A4700 -> TPS7A47, whose first line reads
-    "TPS7A4700, TPS7A4701"). Tried last, and safe because of the check above.
-  - Both bench fetch paths refuse a document that fails the same gate.
+**Still unread, and the list is a work queue:** RHF310A, RHFL4913, RHFL4913A,
+ADC128S102QML-SP, UT54LVDS217, LT1013, TS922, TSZ121, ADS1115, TSV911, LTC3105,
+LD1117, L7805.
 
-Both parts now resolve correctly through the real product chain. Nine stale
-orphans were cleared, and two parts that had been TUNED AGAINST while sitting in
-no corpus at all - LTC6563 and RHFL4913A, both cited in reader rules and in
-`PINOUT_ORACLE` - were adopted into `BENCH_CORPUS`.
+Two of them need something this record cannot express, and that is worth knowing
+before starting:
 
-Hold-out re-measured, $0.05: **READ 58/59 (98%), SHIPS 58/59 (98%)**, 46 of them
-asking nothing. Honest this time.
+  - **RUG0010A (ADS1115)** prints TWO LAND SIZES in one footprint - 0.55 x 0.25
+    on the eight side lands and 0.30 x 0.60 on the two end lands. The record
+    holds one `landPadLengthMm`. There is no right single answer.
+  - **DW0016B (ISO7741)** prints two COMPLETE footprints, an IPC nominal at
+    7.3 mm creepage and an HV option at 8.1 mm, and does not say which. On an
+    isolator that is a safety-relevant choice belonging to the engineer.
+    `landAlternatives` now records both so the oracle stops asserting one; the
+    PRODUCT still picks whichever the model returned, which is a real gap.
 
-`VA41630` and `AD8495` still report as "not a datasheet". Both are correct:
-VORAGO and the AD8495 source publish no public datasheet our resolver can reach,
-and both scoring benches already name that case and set it aside. `bench:corpus`
-reports them and does NOT fail on them, because a check that is permanently red
-for a reason nobody can fix stops being read.
+---
 
-### Done: the two open defects, and neither was what the plan said
+### 2. Two parts refused for a pad we are already holding  (done, and the premise was wrong)
 
-**DRV8825** is a model misread, not a code defect, and the fix that suggests
-itself is a trap. The drawing prints "6.6 / 6.2 TYP" stacked and the model reads
-the top line. Refusing a degenerate range would fix it and BREAK FOUR PARTS:
-across every current-prompt cached answer, 7 spans come back with min === max and
-6 of them are correct, because ST prints the LQFP span as a single basic value.
-`DIMENSION_ORACLE` itself records `{16.0, 16.0}` and `{22.0, 22.0}`, both
-hand-read. Recorded as a measured negative beside the entry.
+**TPS54360 was never refused by the product.** `merge.ts` has reclassified a
+numbered thermal-pad row since 2026-08-17. Only `bench:replay` saw the refusal,
+because it builds records straight from cached answers and its own `pinsFrom`
+reimplemented HALF the rule - the non-numeric half - with a comment saying it was
+copying merge.
 
-**TPS54360** was a real bug, and a different one. When `solderMaskDefined` was
-not read, the figure was written as a mask EXPANSION anyway. Hand-read from
-LM139AQML-SP page 31: TI prints both variants side by side and BOTH CARRY THE
-SAME NUMBER, meaning opposite things - one opens the mask wider than the copper,
-the other holds it back inside. Measured over the 57 tuned datasheets: 24 of the
-25 that carry a mask detail label both variants, so an unread variant is a missed
-reading, not an unlabelled drawing. Now omitted unless the variant is known,
-which also removes the run-to-run difference in the emitted file. The test
-asserting the old behaviour had its premise backwards and now says so.
+**LTC6563 was refused, for something else entirely.** Not "pin 25 has no land":
+`lands 9 and 25 overlap, which shorts them together`, because its land spans were
+transposed. That is item 4's defect wearing item 2's clothes, and reading the
+truncated 60-character bench message instead of the whole one is what hid it.
 
-### Done: five drawings read, and three instruments that could not see
+Fixed by exporting the rule from `merge.ts` and calling it from both. `bench:replay`
+REFUSED is now **0**, down from 2, and LTC6563 ships.
 
-`D0008A` (TI's SOIC-8, printed by SEVEN corpus datasheets) was re-read
-independently and matched the existing entry exactly, across three documents at
-the same revision. `D0014A`, `DGK0008A`, `DBV0005A`, `RGW0020A` and a land block
-for `PWP0028C` are new. `bench:dimensions` CORRECT went **163 -> 204**, and two
-shipping parts turned out to be building copper from a misread span.
+---
 
-Reading them exposed three benches measuring the wrong thing:
+### 3. Pin names  (done for the oracle half; the prompt half is a measured wash)
 
-  - **`bench:copper`** looked its oracle entry up by outline code alone, so its
-    only hand-read check was skipped for every record without one - most of them.
-    Matching by part name too surfaced DRV8825's and TPS7A4700's land span
-    misreads. It ALSO produced a FALSE one on ADXL345, by comparing a record
-    stitched from two prompt versions; it now skips stitched records.
-  - **`bench:replay`** merged cached answers in `readdirSync` order, so which
-    answer won a field depended on directory order and no run was reproducible.
-    Now sorted by `storedAt`.
-  - **`bench:guards`** read guards out of REFUSAL MESSAGES, so a guard that fires
-    and then ships was invisible. It reported every guard as "never fires" while
-    `printed-outside-ipc-band` was firing on DRV8825 and TPS54360 on every run.
-    `provenance.discards` now carries discards out of the successful path.
-    The same file also held a drifted copy of the cache reader (missing
-    `jedecOutline` and the radiation block) and scraped the hold-out list out of
-    `holdout.ts` with a regex, which silently matched nothing once the list moved
-    into its own module. Both now use the shared modules.
+`TPS7A4501-SP` was the ORACLE's error, not the reader's. Page 3 prints pin 9
+twice: `SENSE/ADJ` on the package figures and `ADJ` in the Pin Functions table's
+NAME column. The entry took the figure and recorded the table's answer as wrong
+in a comment. Corrected to the NAME column - the device is adjustable-only, so
+SENSE is a fixed-output sibling's name on a shared figure - with the reasoning
+written down rather than the change made silently.
 
-### 1. Three parts misread a land span. The class is NOT what I first guessed.  (free to keep testing)
+The prompt half **did not improve the score and should not be claimed as a win.**
+It fixed what it was aimed at and broke two others:
 
-Of the **15** land spans now checked against a hand-read drawing, **3 are wrong
-and 12 are right**:
+    before   LTC6563 invents GND1/GND3   RHF1201 drops (MSB)          16/18
+    after    both fixed                  RHF310A returns NC(1)         16/18
+                                         STM32F407VG returns PA14 (JTCK/SWCLK)
 
-    DRV8825     read 4.30   drawing prints 5.80    5.80 - 1.50 pad = 4.30
-    TPS54360    read 3.85   drawing prints 5.40    5.40 - 1.55 pad = 3.85
-    TPS7A4700   read 3.90   drawing prints 4.65    4.65 - 0.75 pad = 3.90
+"Do not invent a suffix" is clean and has no downside. "Do not drop a
+parenthesised part of the name" cannot tell `(MSB)` from a footnote marker or an
+alternate-function annotation. It is left in place rather than iterated on,
+because a second prompt change costs another $3 run and the run-to-run variance
+is larger than the effect being chased - AD8628 and NCP1200 changed PACKAGE
+between two runs with nothing in the prompt touching them.
 
-Each is the printed centre distance minus one pad length, which is exactly the
-inner gap between opposing lands. The reader returns G where C was asked for.
+---
 
-**Hypothesis 1, "the exposed thermal pad crowds the figure": FALSIFIED.**
-Read 2026-08-22 to test it. LTC6563 is an exposed-pad QFN whose figure is harder
-than any of the three - it prints an OUTER extent and an INNER gap and never
-states the centre distance at all, so the answer must be derived
-((5.50 + 4.10) / 2 = 4.80). The reader gets it right, and so does its cross axis.
-ISL71001M, ADS8688 and MSP430F5529 all carry thermal pads and all read correctly.
+### 4. The land-span question  (settled, for free, and it did not need the blind set)
 
-**Hypothesis 2, "the figure draws THERMAL VIAS": clean separation so far.**
+The plan said this could not be settled without the blind set. It could, as soon
+as `bench:dimensions` stopped being blind to per-package dimensions. The count
+went from 3 misreads to 7, all the same error - the inner GAP where the centre
+DISTANCE was asked, always exactly one land length short - and the census kills
+the "the figure draws thermal vias" hypothesis outright:
 
-    3 of 3   wrong spans come from a land figure that draws vias
-    12 of 12 correct spans come from a figure that does not
+    D0008A      6 correct at 5.4,  1 wrong at 3.85
+    DBV0005A    4 correct at 2.6,  1 wrong at 1.5
+    DGK0008A    4 correct at 4.4,  1 wrong at 3.0
 
-A via-carrying figure has extra dimension lines through the middle of the pattern
-(via pitch, mask opening, metal-under-mask), which is a plausible mechanism for
-picking up the wrong one. **It is still only 3 positive cases.** A perfect split
-on 15 is worth acting on only after something tries to break it.
+The SAME drawing, in different datasheets, read right six times and wrong once.
+The drawing is not the variable; it is model variance on a field that admits both
+readings.
 
-**How to break it, and it is free.** 19 tuned land-pattern pages draw vias; 4 are
-in the oracle and **15 are unread**:
+**Where it ends up in copper**, which is the number that matters and was never
+counted: four of the seven are caught by the IPC band check and fall back to a
+computed pattern, one refuses for `vacantLeadSlot`, one refuses for no land
+pattern, and **TPS7A4700 - no-lead, where the band check cannot run - ships
+0.75 mm narrow.** One wrong footprint, not seven.
 
-    PWP0028V  RGC0064B  DRM0008A  DRB0008B  RGT0016C  RGY0020A  DPW0005A
-    DPW0005B  DSG0008A  RTE0016C  RGY0014A  BQA0014A  DSD0008D  DGN0008H
+The prompt now names the gap-versus-extent-versus-centre distinction explicitly.
+Whether that helps is for the blind run to say.
 
-Read them. A via-drawing figure whose span reads CORRECTLY kills hypothesis 2 the
-way LTC6563 killed hypothesis 1, and that is worth more than another confirmation.
+---
 
-**Only after something survives that should the prompt be touched**, and then
-once, scored against the hold-out, accepting whatever number comes back.
+## Not doing, and why
 
-Meanwhile the two gull-wing cases are contained: `printed-outside-ipc-band` fires
-on DRV8825 and TPS54360 and IPC-7351B takes over, landing 0.08 mm and 0.67 mm
-from the vendor pattern. TPS7A4700 is no-lead, where the band check cannot run,
-and ships 0.75 mm narrow. **One live wrong footprint.**
+Unchanged from the morning except where measurement moved something.
 
-### 2. Keep hand-reading drawings  (free, the long pole)
+| | why not |
+|---|---|
+| **A no-lead land rule to catch TPS7A4700** | `computeLandPattern` refuses no-lead ON PURPOSE; that rule was retired 2026-08-13 for being reverse-engineered from four TI drawings. Re-adding it restores exactly what was deleted. |
+| **"A land must reach the body edge"** | Catches TPS7A4700, misses ADXL345, false-positives on PULL-BACK QFNs. Nothing in the record says which a part is. |
+| **Refusing a degenerate min==max range** | 7 spans come back min==max and 6 are CORRECT: ST prints the LQFP span as a single basic value. |
+| **More plausibility guards** | Still measured: only the band check fires, and it is already right. It is also now shown to be load-bearing - it contains four of the seven land-span misreads. |
+| **A second prompt iteration on pin names** | The run-to-run variance is larger than the effect. Two parts changed package between runs with nothing in the prompt touching them. Chasing it costs $3 a try and cannot be attributed. |
+| **Re-parse reproducibility** | The half we control is DONE. The rest is the provider not being a function at temperature 0, and this run made the size of that plain. |
+| **Retrieval coverage** | Descoped. `namesThePart` turns a wrong document into an honest refusal. |
+| **README** | Anthony's decision, 2026-08-17. |
 
-Five drawings were read on 2026-08-21: `D0008A` (re-read independently and
-cross-checked across three datasheets), `D0014A`, `DGK0008A`, `DBV0005A`,
-`RGW0020A`, plus a land block for `PWP0028C`. `bench:dimensions` CORRECT went
-163 -> 204 and two shipping parts turned out to be wrong.
+---
 
-About 33 drawings the tuned corpus prints still have no entry, and 5 more have an
-entry with no land block. Highest leverage first, by how many datasheets print
-them: `DCK0005A` and `PW0014A` (3 each), `DDF0008A`, `DGS0010A`, `DPW0005A`,
-`DW0016A`, `RUG0010A` (2 each), then the long tail of singles.
+## What is left
 
-The rule that matters: **do not add an entry you cannot make truthfully in
-full.** An absent key means a person looked and the drawing is silent, which is a
-claim in itself.
+1. **Thirteen more drawings**, listed under 1b. Free, and it is the only work here
+   that finds defects nobody knows about.
+2. **The two-pattern gap**: `DW0016B` proves a datasheet can print two footprints
+   for one package. The product picks whichever came back. It should ask.
+3. **The blind set**, when it arrives. Run it once, report what happens.
 
-### 3. The blind batch  (a gate, not a task)
-
-Unchanged, and still the only item I cannot do. It needs 20 part numbers chosen
-by someone who did not build the corpus. Everything measured here comes from
-datasheets we chose; treat today's numbers as an upper bound until this happens.
+---
 
 ## What "finished" means, stated so it can fail
 
@@ -211,7 +196,7 @@ instrument was fixed rather than because the product changed.
 
 | Guarantee | Measured | Gap |
 |---|---|---|
-| Correct | 221 values, 27 drawings, **4 wrong** on 3 parts | **94 cached parts have no oracle entry**; 3 of 14 checked land spans are wrong, see item 1 |
+| Correct | 243 values, 31 drawings, **4 wrong** on 3 parts | **29 of the 46 SHIPPING tuned parts have no hand-read drawing at all**, see item 2 |
 | Complete | hold-out READ 58/59, SHIPS 58/59, 46 asking nothing | 1 part: retrieval fetched the wrong document. Honest now - a wrong-part datasheet used to be counted here |
 | Reproducible | 2 of 6 parts bit-identical across runs | **the generator itself is nondeterministic**; drift on 4 parts, 1 uncharacterised |
 | Honest | citations enforced; the band guard fires on 2 tuned parts and 3 hold-out parts | it used to read "no guard fires anywhere", which was the BENCH not looking at guards that fire and still ship |

@@ -1157,6 +1157,65 @@ test("thermal vias the datasheet dimensions are emitted, and carry no pin number
   assert.ok(vias.every((line) => /\(drill 0\.350\)/.test(line)));
 });
 
+/**
+ * EVERY VIA INSIDE THE PAD IT HEATS, on a pad that is not square.
+ *
+ * `emitThermalPad` puts `thermalPadLengthMm` on Y, deliberately and with its own
+ * comment: D2 is measured parallel to D on a package outline drawing and
+ * `bodyLengthMm` is D, which the courtyard and the silkscreen also follow. The
+ * via grid counted `nx` from the LENGTH and `ny` from the WIDTH, i.e. length on
+ * X, so the grid came out turned ninety degrees from the pad it sits on.
+ *
+ * On a square pad the two agree and nothing shows. On a rectangular one the grid
+ * is laid out along the pad's short axis: DRV8825's PowerPAD is 4.83 mm along
+ * the body and 2.75 mm across, and at the 1.2 mm pitch its own drawing prints
+ * that produced FOUR columns spanning 4.0 mm of a 2.75 mm width. Two of them sit
+ * off the pad entirely - a plated hole through bare soldermask beside the
+ * joint, which wicks solder off it.
+ *
+ * Four shipping parts in the tuned corpus print a rectangular pad and a via
+ * grid, so this was live. The numbers here are DRV8825's, read off PWP0028C.
+ */
+test("a rectangular thermal pad's vias are laid out along the pad, not across it", async () => {
+  const padded = soicPart({
+    exposedPad: true,
+    dimensions: {
+      ...soicPart().dimensions,
+      thermalPadLengthMm: 4.83,
+      thermalPadWidthMm: 2.75,
+      thermalViaDiameterMm: 0.2,
+      thermalViaPitchMm: 1.2
+    }
+  });
+  const files = await filesFrom(padded);
+  const name = [...files.keys()].find((f) => f.endsWith(".kicad_mod"))!;
+  const text = files.get(name)!;
+
+  // The pad itself, so the bound comes from the emitted file rather than from
+  // this test restating the convention.
+  const pad = /\(pad "9" smd roundrect \(at (-?[\d.]+) (-?[\d.]+)\) \(size ([\d.]+) ([\d.]+)\)/.exec(text);
+  assert.ok(pad, "the exposed pad is emitted as the pin after the last lead");
+  const halfXMm = Number(pad[3]) / 2;
+  const halfYMm = Number(pad[4]) / 2;
+  assert.ok(halfYMm > halfXMm, "length on Y, which is what emitThermalPad does");
+
+  const vias = [...text.matchAll(/\(pad "" thru_hole circle \(at (-?[\d.]+) (-?[\d.]+)\) \(size ([\d.]+) /g)];
+  assert.ok(vias.length > 0, "the datasheet stated a via grid");
+  for (const via of vias) {
+    const x = Number(via[1]);
+    const y = Number(via[2]);
+    const halfViaMm = Number(via[3]) / 2;
+    assert.ok(
+      Math.abs(x) + halfViaMm <= halfXMm + 1e-6,
+      `via at x=${x} reaches ${(Math.abs(x) + halfViaMm).toFixed(3)} mm, past the pad's ${halfXMm} mm half-width`
+    );
+    assert.ok(
+      Math.abs(y) + halfViaMm <= halfYMm + 1e-6,
+      `via at y=${y} reaches ${(Math.abs(y) + halfViaMm).toFixed(3)} mm, past the pad's ${halfYMm} mm half-height`
+    );
+  }
+});
+
 test("no via data means no vias, rather than a guessed grid", async () => {
   const padded = soicPart({
     exposedPad: true,

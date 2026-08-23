@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { computeLandPattern } from "../ipc7351";
+import { buildFootprintGeometry } from "../exporters";
+import { FIELD_GUIDE } from "../extraction/models/prompt";
+import type { ResolvedPart } from "../types";
 import { neutralizeUntrustedText } from "../extraction/models/prompt";
 import { buildPrompt } from "../extraction/models/prompt";
 import { extractionFields } from "../extraction/contracts";
@@ -30,6 +33,121 @@ test("a rectangular four-sided package places its two axes at different distance
   );
   // The courtyard has to clear the WIDER axis, or it does not contain its lands.
   assert.ok(land.courtyardHalfMm > land.padCentreCrossMm!, "the courtyard clears the wider axis");
+});
+
+/**
+ * WHICH AXIS `landSpanMm` IS MEASURED ALONG, asserted rather than assumed.
+ *
+ * The generator has always had a definite answer - `bodyLengthMm` goes on Y,
+ * `bodyWidthMm` on X, and the `landSpanMm` rows sit at +/- half the span in X -
+ * and until 2026-08-22 nothing else in the pipeline stated it. The record type
+ * said "centre to centre between opposing rows", the oracle said the same, and
+ * the prompt said "the same axis as landPadLengthMm", which names no axis at all
+ * on a package whose lands all point outward.
+ *
+ * Both rectangular quads in the tuned corpus were read the wrong way round, and
+ * the two failed differently, which is why one number was not enough to notice:
+ * LTC6563 put its lead lands onto the thermal pad and was refused by the output
+ * invariant, and TXB0104 SHIPPED, with its short-side lands sitting entirely
+ * under the body clear of the terminals they solder to. Nothing overlapped, so
+ * nothing fired.
+ *
+ * The numbers here are TXB0104's WQFN, hand-read off BQA0014A pages 43 and 44.
+ */
+test("landSpanMm separates the rows across the body's WIDTH, not its length", () => {
+  const quad: ResolvedPart = {
+    id: "test",
+    partNumber: "ACME0104",
+    manufacturer: "ACME",
+    packageType: "WQFN-14",
+    packageOutlineCode: null,
+    jedecOutline: null,
+    vendorLandPattern: null,
+    exposedPad: false,
+    pinCount: 14,
+    pins: Array.from({ length: 14 }, (_, i) => ({
+      number: String(i + 1),
+      name: `P${i + 1}`,
+      electricalType: "unspecified" as const
+    })),
+    dimensions: {
+      // 2.5 wide, 3.0 long: the five-terminal rows run along the LONG axis.
+      bodyLengthMm: 3.0,
+      bodyWidthMm: 2.5,
+      bodyHeightMm: 0.8,
+      pitchMm: 0.5,
+      leadLengthMm: null,
+      leadCount: 14,
+      leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
+      leadSpanMm: null,
+      leadSpanCrossMm: null,
+      leadContactMm: { minMm: 0.3, maxMm: 0.5 },
+      thermalPadLengthMm: null,
+      thermalPadWidthMm: null,
+      landPadLengthMm: 0.6,
+      landPadWidthMm: 0.25,
+      // 2.3 across the 2.5 mm width, 2.8 across the 3.0 mm length.
+      landSpanMm: 2.3,
+      landSpanCrossMm: 2.8,
+      leadSides: 4,
+      leadForm: "nolead",
+      mounting: "smd",
+      leadDiameterMm: null,
+      vacantLeadSlot: null,
+      leadsPerSide: "5,2,5,2",
+      solderMaskExpansionMm: null,
+      solderMaskDefined: null,
+      thermalViaDiameterMm: null,
+      thermalViaPitchMm: null
+    },
+    radiation: { tid: null, see: null, sel: null, qmlClass: null },
+    sourceFileName: "acme.pdf",
+    notes: []
+  };
+
+  const pads = buildFootprintGeometry(quad, "B").pads;
+  const xs = pads.map((pad) => Math.abs(pad.centre.xMm));
+  const ys = pads.map((pad) => Math.abs(pad.centre.yMm));
+
+  // The rows `landSpanMm` separates are the five-terminal ones, and they are
+  // separated in X. Read off the emitted copper rather than restated.
+  assert.equal(Math.max(...xs), 2.3 / 2, "landSpanMm places the rows in X, the bodyWidth axis");
+  assert.equal(Math.max(...ys), 2.8 / 2, "landSpanCrossMm places the other pair in Y");
+
+  // AND THE LANDS REACH THEIR TERMINALS. This is what went wrong on TXB0104 and
+  // what no existing invariant could see: swapped, the short-side lands reach
+  // 1.45 mm on a body 1.50 mm half-high, so they stop short of the body edge
+  // with no terminal anywhere near them.
+  const halfLengthMm = 3.0 / 2;
+  const reachMm = Math.max(...ys) + 0.6 / 2;
+  assert.ok(reachMm >= halfLengthMm, `the short-side lands reach the body edge (${reachMm} vs ${halfLengthMm})`);
+});
+
+/**
+ * The prompt and the generator must name the SAME axis.
+ *
+ * They disagreed silently for as long as one of them said nothing, which is the
+ * whole of the defect above. A wording change that drops the tie is a change to
+ * what the model is asked, so it belongs in a test rather than in a comment.
+ */
+test("the prompt ties each span field to the body axis the generator uses", () => {
+  assert.match(FIELD_GUIDE["dimensions.landSpanMm"], /bodyWidthMm/);
+  assert.match(FIELD_GUIDE["dimensions.landSpanCrossMm"], /bodyLengthMm/);
+  assert.match(FIELD_GUIDE["dimensions.leadSpanMm"], /bodyWidthMm/);
+  assert.match(FIELD_GUIDE["dimensions.leadSpanCrossMm"], /bodyLengthMm/);
+});
+
+/**
+ * Rule 1 stated to the model, in both directions.
+ *
+ * LTC6563 invented `GND1`/`GND3` to make duplicate names unique and RHF1201
+ * dropped the `(MSB)` printed inside its name cell. One question, two opposite
+ * failures, so both halves are asserted.
+ */
+test("the prompt asks for pin names exactly as printed", () => {
+  assert.match(FIELD_GUIDE.pins, /EXACTLY as the document prints it/);
+  assert.match(FIELD_GUIDE.pins, /SAME name/);
+  assert.match(FIELD_GUIDE.pins, /D11\(MSB\)/);
 });
 
 test("a square four-sided package still states one distance", () => {

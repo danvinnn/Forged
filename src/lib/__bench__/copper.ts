@@ -136,7 +136,25 @@ function checkPart(
   const findings: Finding[] = [];
   const record = (check: string, detail: string) => findings.push({ part: part.partNumber, check, detail });
 
-  const lands = pads.filter((pad) => pad.number !== "EP" && pad.mounting === "smd");
+  // THE LEAD LANDS ONLY. The exposed thermal pad is copper too, but it is not a
+  // land: `landPadLengthMm` and `landPadWidthMm` describe one LEAD land, and the
+  // pad is built from `thermalPadLengthMm`/`thermalPadWidthMm` by a different
+  // path. Comparing the two produced this bench's only finding for a day -
+  // "LTC6563 land 25 is 1.65 x 3.65, record says 0.7 x 0.25" - which is a
+  // correctly built 3.65 x 1.65 thermal pad measured against the lead land's
+  // size. One false finding in a report of one makes the report useless.
+  //
+  // Excluded by NUMBER rather than by size or position: `emitThermalPad` numbers
+  // the pad `pinCount + 1` and `geometryViolations` requires exactly that, so it
+  // is the one identification that cannot drift. `EP` is kept for records that
+  // carry a vendor label.
+  const thermalPadNumber = String(part.pinCount + 1);
+  const lands = pads.filter(
+    (pad) =>
+      pad.number !== "EP" &&
+      pad.mounting === "smd" &&
+      !(part.exposedPad && pad.number === thermalPadNumber)
+  );
   if (lands.length === 0) return findings;
 
   // WHICH AXIS THE ROWS RUN ALONG, decided from the copper rather than assumed.

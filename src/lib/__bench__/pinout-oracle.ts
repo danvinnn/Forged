@@ -306,12 +306,32 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
   },
   "TPS7A4501-SP": {
     packageType: "10-Pin CFP",
-    // Read off the U package figure. Pin 9 is `SENSE/ADJ` on both figures and
-    // plain `ADJ` in the table below them; the figure is what this reads.
-    source: "page 3, U Package 10-Pin CFP figure (rendered)",
+    // PIN 9 IS `ADJ`, AND THIS ENTRY USED TO SAY `SENSE/ADJ`.
+    //
+    // Page 3 prints the pin twice and names it differently each time: the U and
+    // HKU package figures label it `SENSE/ADJ`, and the Pin Functions table
+    // below them - the column literally headed NAME - says `ADJ`, described as
+    // "Adjust. This is the input to the error amplifier."
+    //
+    // The old entry took the figure and recorded the table's answer as wrong in
+    // a comment. That was the oracle deciding something the document does not
+    // settle, and then failing a reader for making the other defensible choice.
+    // An answer key may not resolve a document's own disagreement by preference.
+    //
+    // Corrected to the NAME column, on two grounds beyond the heading. Page 3's
+    // own description says "The device is available as an ADJUSTABLE device with
+    // a 1.21-V reference voltage": SENSE is the fixed-output siblings' name for
+    // that terminal and has no meaning on this part number, so `SENSE/ADJ` is a
+    // family figure carried over. And rule 6 - an engineer wiring this device
+    // wants the name of the function it actually has.
+    //
+    // Recorded rather than silently changed, because "the reader disagreed with
+    // the oracle so the oracle moved" is exactly the move that makes an answer
+    // key worthless. The figure's wording is above; anyone may re-decide it.
+    source: "page 3, Pin Functions table NAME column (rendered); the U and HKU figures on the same page label pin 9 SENSE/ADJ",
     pins: {
       "1": "SHDN", "2": "IN", "3": "IN", "4": "IN", "5": "NC",
-      "6": "OUT", "7": "OUT", "8": "OUT", "9": "SENSE/ADJ", "10": "GND"
+      "6": "OUT", "7": "OUT", "8": "OUT", "9": "ADJ", "10": "GND"
     }
   },
   "ADC128S102QML-SP": {
