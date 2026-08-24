@@ -27,7 +27,7 @@ import { loadBenchEnv } from "./env";
 import { statedMaxHeightMm } from "../extraction/merge";
 import type { DatasheetText } from "../pdftext";
 import { DIMENSION_ORACLE, type DimensionOracleEntry, type OracleRange } from "./dimension-oracle";
-import { pinTableFor } from "../packagevariants";
+import { pinTableFor, sameOutlineCode } from "../packagevariants";
 import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
 
 loadBenchEnv();
@@ -235,7 +235,11 @@ function compare(
   // A dimension the drawing does NOT print. Reading one anyway is an invention,
   // and it is the failure the oracle's partial entries exist to catch: absence
   // here means a person looked and the drawing is silent.
-  if (!entry.leadContactMm && entry.leadContactMaxMm === undefined) {
+  if (
+    !entry.leadContactMm &&
+    entry.leadContactMaxMm === undefined &&
+    !(entry.notRecordable ?? []).includes("leadContactMm")
+  ) {
     const read = at("dimensions.leadContactMm");
     if (read !== null && read !== undefined) {
       add("leadContactMm", false, read, "the drawing prints none");
@@ -469,9 +473,16 @@ async function main(): Promise<void> {
     //
     // So an unmatched code is UNCHECKED, which is true, rather than checked
     // against a sibling, which is a lie about the product.
+    // An ALIAS counts as the code. One title block can print two - ISL71001M's
+    // page 36 is headed both `Q64.10x10J` and `PT0064AA` - and without this the
+    // run that reports the second one calls a hand-read drawing UNCHECKED.
+    const aliasOf = (want: string) =>
+      Object.keys(DIMENSION_ORACLE).find((key) =>
+        (DIMENSION_ORACLE[key].alsoKnownAs ?? []).some((alias) => sameOutlineCode(alias, want))
+      ) ?? null;
     const code =
       typeof claimed === "string" && claimed.trim()
-        ? (DIMENSION_ORACLE[claimed] ? claimed : null)
+        ? (DIMENSION_ORACLE[claimed] ? claimed : aliasOf(claimed))
         : outlineFor(byPartName.get(part) ?? [], statedHeight);
     if (!code) {
       // NAME THE CODE THE RECORD DID REPORT, not just the part.

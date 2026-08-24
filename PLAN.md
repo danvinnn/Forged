@@ -54,11 +54,12 @@ itself: VERIFIED went 17/46 to 25/46 the moment the bench stopped printing the
 record's outline code beside parts that ship as something else. Now **36/48
 (75%)**.
 
-**1b. Read those drawings.** SEVENTEEN READ: `R-8` (AD8628, ADR4525, AD590 -
+**1b. Read those drawings.** DONE - the queue is empty. Twenty-four drawings: `R-8` (AD8628, ADR4525, AD590 -
 cross-checked across all three datasheets), `RU-16`, `DRM0008A`, `NS0016A`,
 `DW0016B`, `BQA0014A`, `0016023_Rev_G`, `0015988_21_Type A`, `05-08-1668 Rev A`,
 `CASE 626-05`, `UJ-5`, `DFN8 2 x 2 (ST)`, `Ceramic Flat-8 (ST)`,
-`DFN8 2 x 2 (ST, DS9216)`, plus TS922 cross-checked onto the ST SO-8.
+`DFN8 2 x 2 (ST, DS9216)`, `RUG0010A`, `48-Lead Flatpack (CAES)`, plus TS922
+cross-checked onto the ST SO-8.
 **Four live wrong footprints found**, at the predicted rate of about one per four:
 
   - **TXB0104** shipped its land spans transposed. FIXED.
@@ -73,9 +74,8 @@ cross-checked across all three datasheets), `RU-16`, `DRM0008A`, `NS0016A`,
   - **DRV8825 and three others** return the inner gap as the centre span; all but
     TPS7A4700 are contained by the band guard.
 
-**Still unread, and the list is a work queue:** RHFL4913, RHFL4913A,
-UT54LVDS217, ISL71001M (`PT0064AA`), LT1013 (`05-08-1610`),
-STM32G071RB (`5V_LQFP32_ME_V1`), ADS1115.
+**Nothing is unread.** Every part that ships in the tuned corpus now has the
+drawing its copper came from read by a person, and VERIFIED reports the residue.
 
 Three of those appeared only after the VERIFIED metric stopped preferring the
 part list over the code a part actually shipped as - AD8628 ships as a TSOT and

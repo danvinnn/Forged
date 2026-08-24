@@ -70,6 +70,20 @@ export interface DimensionOracleEntry {
   /** Which document and page a person read this from. */
   source: string;
   /**
+   * OTHER codes the same drawing prints for itself.
+   *
+   * One title block can carry two. ISL71001M's page 36 is headed both
+   * `Q64.10x10J` and `PT0064AA` - Renesas keeping Intersil's code beside its own
+   * after the acquisition - and which one a run reports has moved between runs.
+   * Filing the entry under one and letting the other read UNCHECKED would report
+   * a hand-read drawing as unread; copying the entry under both would put one
+   * hand read in two places to drift apart.
+   *
+   * Aliases only. A code here must appear on the SAME drawing, never on a
+   * sibling that merely looks similar.
+   */
+  alsoKnownAs?: string[];
+  /**
    * How the leads leave the body, as DRAWN.
    *
    * `straight` exists here because it exists on the drawings: a ceramic flat
@@ -164,6 +178,29 @@ export interface DimensionOracleEntry {
   leadSides?: 1 | 2 | 4;
   /** The JEDEC registration the drawing cites, exactly as printed. */
   jedecOutline?: string;
+  /**
+   * Fields this drawing DOES state and this schema cannot hold, so their absence
+   * is not the usual claim.
+   *
+   * An absent key in this file means a person looked and the drawing prints
+   * nothing, and `leadContactMm` is checked that way on purpose - a reading where
+   * the drawing is silent is an invention. That rule needs an escape for the
+   * drawings that state a field SEVERAL times with different values.
+   *
+   * RUG0010A is the worked example. Its ten terminals come in three geometries:
+   * eight side terminals 0.3-0.4 long, four of them 0.2-0.3 wide and four
+   * 0.15-0.25, and two end terminals 0.35-0.45 long and 0.25-0.35 wide. Its
+   * recommended footprint likewise draws 0.55 x 0.25 side lands and 0.30 x 0.60
+   * end lands. There is one `leadContactMm` on the record and one
+   * `landPadLengthMm`, so no single value is the answer and any one of them
+   * recorded here would fail a reader that picked another real printed number.
+   *
+   * Listing the field here disables its check and says why, which is the honest
+   * middle between asserting something false and pretending the drawing is
+   * silent. Keep it rare: it is a statement about THIS SCHEMA, not about the
+   * document, and a field that lands here repeatedly is a schema gap to fix.
+   */
+  notRecordable?: string[];
   /** The datasheet's OWN printed footprint, where it prints one. */
   land?: {
     source: string;
@@ -929,6 +966,228 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
       // 2.80 outer minus one 0.75 land. Both printed exactly, so one answer.
       spanMm: 2.05
     }
+  },
+
+  // TI's X2QFN-10, 1.5 x 2.0 mm. Read 2026-08-22 off ADS1115 pages 48 and 49.
+  //
+  // THE DRAWING SAYS MORE THAN THE RECORD CAN HOLD, in two places, which is why
+  // this entry is mostly `notRecordable`:
+  //
+  //   ten terminals in THREE geometries - eight side terminals 0.3-0.4 long,
+  //   four of those 0.2-0.3 wide and four 0.15-0.25, and two end terminals
+  //   0.35-0.45 long and 0.25-0.35 wide
+  //
+  //   a footprint with TWO land sizes - 0.55 x 0.25 on the eight side lands and
+  //   0.30 x 0.60 on the two end lands
+  //
+  // The record carries one `leadWidthMm`, one `leadContactMm`, one
+  // `landPadLengthMm` and one `landPadWidthMm`. No single value is the answer to
+  // any of the four, and recording one would fail a reader that picked another
+  // number the drawing actually prints.
+  //
+  // The body, the pitch, the height and the side count are single-valued and
+  // checked as usual.
+  RUG0010A: {
+    packageType: "X2QFN (RUG), 10 terminal, 0.4 mm max height",
+    parts: ["ADS1115"],
+    source: "ADS1115 page 48 PACKAGE OUTLINE (rendered); land pattern on page 49 read and found equally multi-valued",
+    leadForm: "nolead",
+    // 6X 0.5: four terminals down each side give three spaces a side, six total.
+    pitchMm: 0.5,
+    // 2.05 / 1.95 is the axis the four-terminal rows run along.
+    bodyLengthMm: { minMm: 1.95, maxMm: 2.05 },
+    bodyWidthMm: { minMm: 1.45, maxMm: 1.55 },
+    bodyHeightMm: { minMm: 0.34, maxMm: 0.4 },
+    leadSides: 4,
+    // See the type comment. These are stated by the drawing several times over
+    // with different values, not absent from it.
+    notRecordable: ["leadWidthMm", "leadContactMm", "landPadLengthMm", "landPadWidthMm", "landSpanMm"]
+  },
+
+  // CAES's 48-lead ceramic flatpack. Read 2026-08-22 off UT54LVDS217 page 11,
+  // Figure 15.
+  //
+  // DIMENSIONED ENTIRELY IN INCHES, with no millimetre column anywhere - the
+  // only drawing in this file that is. Every value below is the printed inch
+  // figure times 25.4, shown alongside so the arithmetic is checkable. That is a
+  // conversion, not an assumption.
+  //
+  // PARTIAL ON PURPOSE. The figure prints D, E, E1, E2, E3 and L across three
+  // views, and which of them is the tip-to-tip extent is not decidable from the
+  // page: the leads run left and right while D is dimensioned vertically, and L
+  // (0.310) appears on the bottom view beside one lead. Recording a span from
+  // this drawing would be a guess, and this file's rule is to leave the field
+  // unchecked rather than guess. The values below are the ones the drawing
+  // labels unambiguously.
+  "48-Lead Flatpack (CAES)": {
+    packageType: "48-Lead Flatpack",
+    parts: ["UT54LVDS217"],
+    source: "UT54LVDS217 page 11, Figure 15, 48-Lead Flatpack (rendered). All dimensions printed in inches",
+    // A ceramic flat pack leaves the factory with its leads in line with the
+    // body; the assembler forms them.
+    leadForm: "straight",
+    // b, 0.008 +/- 0.002 in. NOT c (0.005 +0.002/-0.001), the lead thickness.
+    // 0.006 in = 0.1524 mm, 0.010 in = 0.254 mm.
+    leadWidthMm: { minMm: 0.1524, maxMm: 0.254 },
+    // e, 0.025 TYP over 46 places. 0.025 in = 0.635 mm.
+    pitchMm: 0.635,
+    // 0.335 SQ, printed once and marked square, so both axes. 0.335 in = 8.509 mm
+    // exactly, and the drawing gives it no tolerance.
+    bodyLengthMm: { minMm: 8.509, maxMm: 8.509 },
+    bodyWidthMm: { minMm: 8.509, maxMm: 8.509 },
+    // A, 0.104 +/- 0.011 in. 0.093 in = 2.3622 mm, 0.115 in = 2.921 mm.
+    bodyHeightMm: { minMm: 2.3622, maxMm: 2.921 },
+    leadSides: 2
+    // NO `leadContactMm`, and that absence is the usual CLAIM: an unformed
+    // flat-pack lead has no seated foot. Same as the other ceramic flat packs.
+    //
+    // NO `leadSpanMm`. See above - the page prints six candidates and settles
+    // none of them.
+    //
+    // NO `land`. This datasheet prints no recommended footprint.
+  },
+
+  // Linear's S8, the narrow .150 inch plastic SO. Read 2026-08-22 off LT1013
+  // page 24, LTC DWG 05-08-1610 Rev G.
+  //
+  // This datasheet prints SIXTEEN package sections and the part settles on this
+  // one. The drawing gives inches with millimetres in parentheses; the printed
+  // millimetres are recorded, so nothing here is converted.
+  //
+  // NO `land` BLOCK, for the same reason as 05-08-1668 Rev A above and with a
+  // wider gap between the candidates. The RECOMMENDED SOLDER PAD LAYOUT prints a
+  // .045 land, a .160 dimension between the rows and .245 MIN across them, and
+  // never a centre distance. Reading .160 as the inner gap gives a centre of
+  // .205 in (5.207 mm); taking .245 as the outer extent gives .200 in (5.08 mm).
+  // Those differ by 0.13 mm, which is copper, and the page does not settle which
+  // is meant. The pad SIZE is unambiguous but this schema cannot record a land
+  // without a span.
+  "05-08-1610": {
+    packageType: "S8 Package, 8-Lead Plastic Small Outline (Narrow .150 Inch)",
+    parts: ["LT1013"],
+    source: "LT1013 page 24, PACKAGE DESCRIPTION, LTC DWG 05-08-1610 Rev G (rendered)",
+    leadForm: "gullwing",
+    // .228 - .244 in, printed as (5.791 - 6.197).
+    leadSpanMm: { minMm: 5.791, maxMm: 6.197 },
+    // .014 - .019 TYP, printed as (0.355 - 0.483). NOT .008 - .010
+    // (0.203 - 0.254), the lead thickness on the side view.
+    leadWidthMm: { minMm: 0.355, maxMm: 0.483 },
+    // .016 - .050, printed as (0.406 - 1.270), the seated foot.
+    leadContactMm: { minMm: 0.406, maxMm: 1.27 },
+    pitchMm: 1.27,
+    // .189 - .197 (4.801 - 5.004) runs along the rows; .150 - .157
+    // (3.810 - 3.988) is across them, which is what "Narrow .150 Inch" names.
+    bodyLengthMm: { minMm: 4.801, maxMm: 5.004 },
+    bodyWidthMm: { minMm: 3.81, maxMm: 3.988 },
+    // .053 - .069 (1.346 - 1.752), the overall height on the side view.
+    bodyHeightMm: { minMm: 1.346, maxMm: 1.752 },
+    leadSides: 2
+  },
+
+  // ST's TO-257. Read 2026-08-22 off RHFL4913 page 13, Figure 8 and Table 7.
+  //
+  // A three-lead through-hole package, and the second single-row drawing here.
+  // The top view puts the mounting tab on the left and the three leads out to the
+  // right, stepping VERTICALLY at K = 2.54, so B is the axis the row runs along
+  // and C is across it. Under the convention on `bodyLengthMm`, B is what the
+  // generator reads as `bodyWidthMm`.
+  //
+  // THIN ON PURPOSE. The table gives fifteen letters and most of them - the tab,
+  // the hole, the shoulder, the standoff - have no field on this record. What is
+  // recorded is what places geometry.
+  "TO-257 (ST)": {
+    packageType: "TO-257",
+    parts: ["RHFL4913"],
+    source: "RHFL4913 page 13, Table 7 TO-257 package mechanical data, with Figure 8 (rendered)",
+    // K, printed Typ only, between adjacent leads.
+    pitchMm: 2.54,
+    // C, across the row. Typ only, so one value.
+    bodyLengthMm: { minMm: 16.64, maxMm: 16.64 },
+    // B, along the row. Three leads at 2.54 span 5.08 and sit inside it; H
+    // (5.26) is this same dimension's half, measured from the centre line.
+    bodyWidthMm: { minMm: 10.54, maxMm: 10.54 },
+    leadSides: 1
+    // NO `leadWidthMm`. The table prints N as a 0.71 MAXIMUM and I as 0.76 TYP,
+    // and the figure dimensions N horizontally where the leads leave the body
+    // while I is a vertical on the side view. Which of them is the width of the
+    // pin a hole is sized from is not decidable from this page, and this field
+    // takes a range rather than a max in any case.
+    //
+    // NO `leadContactMm`, and THAT absence is the usual CLAIM: a through-hole
+    // lead has no seated foot. L (15.2 - 16.5) is the lead's whole length.
+    //
+    // NO `bodyHeightMm`. The drawing states no seated height; D (4.7 - 5.33) is
+    // the package's thickness on the side view.
+    //
+    // NO `land`. A through-hole package has no recommended footprint here.
+  },
+
+  // ST's Flat-16P, an AlN ceramic flat pack. Read 2026-08-22 off RHFL4913A page
+  // 24, Figure 57 and Table 9.
+  //
+  // SAME TRAP AS THE CERAMIC FLAT-8 above, and worth stating twice because it is
+  // the shape that catches readers on this package family: `L` (6.35 - 7.36) is
+  // dimensioned TWICE on the figure, once above the top row and once below the
+  // bottom one. It is ONE LEAD'S LENGTH, not a tip-to-tip span. The extent is
+  // 2L + E, roughly 19.4 to 21.8 mm, and the drawing never prints it - so there
+  // is no `leadSpanMm` here either.
+  //
+  // The bottom face is METALLIZED for brazing to the board, and note 1 says the
+  // lid and that metallization are FLOATING. It is not a terminal and not an
+  // exposed thermal pad in this record's sense, so no `thermalPad` fields: the
+  // package has no pad that a numbered land belongs to.
+  "Flat-16P (ST)": {
+    packageType: "Flat-16P",
+    parts: ["RHFL4913A"],
+    source: "RHFL4913A page 24, Table 9 Flat-16P package mechanical data, with Figure 57 (rendered)",
+    // The leads leave the body flat and unformed; the assembler forms them.
+    leadForm: "straight",
+    // b. NOT c (0.10 - 0.18), the lead thickness on the side view.
+    leadWidthMm: { minMm: 0.38, maxMm: 0.48 },
+    pitchMm: 1.27,
+    // D runs along the rows - pins 1-8 across the bottom, 9-16 across the top -
+    // and E is across them.
+    bodyLengthMm: { minMm: 9.71, maxMm: 10.11 },
+    bodyWidthMm: { minMm: 6.71, maxMm: 7.11 },
+    // A, on the side view. E2 (3.30 / 3.45 / 3.60) is the ceramic section
+    // between the lead planes and is not the envelope.
+    bodyHeightMm: { minMm: 2.42, maxMm: 2.88 },
+    leadSides: 2
+    // NO `leadContactMm`, and that absence is the usual CLAIM: an unformed
+    // flat-pack lead has no seated foot.
+    //
+    // NO `land`. This datasheet prints no recommended footprint.
+  },
+
+  // ST's LQFP32, 7 x 7 mm. Read 2026-08-22 off STM32G071RB pages 117 and 118.
+  //
+  // TWO PAGES, and page 117 alone is useless in the way that keeps recurring:
+  // Figure 39 carries only the symbols and Table 79 on page 118 carries the
+  // millimetres. The figure's own note says it is NOT TO SCALE, so nothing can
+  // be inferred from its proportions either.
+  //
+  // A SQUARE quad, so one span and one body figure serve both axes and there is
+  // no cross span to get the wrong way round.
+  "5V_LQFP32_ME_V1": {
+    packageType: "LQFP32, 7 x 7 mm low-profile quad flat package",
+    parts: ["STM32G071RB"],
+    source: "STM32G071RB page 118, Table 79 LQFP32 mechanical data, with Figure 39 on page 117 (rendered)",
+    leadForm: "gullwing",
+    // D and E, both 9.00 BSC, tip to tip. BASIC, so one value.
+    leadSpanMm: { minMm: 9.0, maxMm: 9.0 },
+    // b. NOT b1 (0.30 - 0.40), the base metal under the plating, and not c
+    // (0.09 - 0.20), the lead thickness.
+    leadWidthMm: { minMm: 0.3, maxMm: 0.45 },
+    // L, the seated foot. NOT L1 (1.00 REF), the foot plus the bend.
+    leadContactMm: { minMm: 0.45, maxMm: 0.75 },
+    pitchMm: 0.8,
+    // D1 and E1, both 7.00 BSC.
+    bodyLengthMm: { minMm: 7.0, maxMm: 7.0 },
+    bodyWidthMm: { minMm: 7.0, maxMm: 7.0 },
+    // A is printed with a Max and nothing else. A2 (1.35 / 1.40 / 1.45) is the
+    // moulded body alone and is not the seated envelope.
+    bodyHeightMaxMm: 1.6,
+    leadSides: 4
   },
 
   "05-08-1795": {
@@ -1862,6 +2121,9 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   "Q64.10x10J": {
     packageType: "64-QFP",
     parts: ["ISL71001M"],
+    // The page's title block prints both, one under the other. Re-read
+    // 2026-08-22 and every value below reconfirmed against it.
+    alsoKnownAs: ["PT0064AA"],
     source: "ISL71001M datasheet, page 36, Package Outline Drawing Q64.10x10J / PT0064AA, Rev01 Apr 1 2025",
     leadForm: "gullwing",
     // 12.00 +/- 0.10, both axes: this quad is square, so there is no cross span.

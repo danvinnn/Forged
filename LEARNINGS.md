@@ -2502,3 +2502,55 @@ The opposite case is in the same file and resolved the opposite way: TS922's SO8
 table matches LD1117's on all fourteen references exactly, so TS922 is listed
 under that entry rather than given its own. The test is whether the documents
 actually agree, checked value by value, not whether the packages share a name.
+
+## Drawings 18 and 19: two more things the schema could not hold, and one it could
+
+**RUG0010A states more than the record has fields for, twice over.** ADS1115's
+X2QFN-10 has ten terminals in THREE geometries - eight side terminals 0.3-0.4
+long, four of those 0.2-0.3 wide and four 0.15-0.25, and two end terminals
+0.35-0.45 long and 0.25-0.35 wide - and its footprint draws two land sizes,
+0.55 x 0.25 and 0.30 x 0.60. The record carries one `leadWidthMm`, one
+`leadContactMm`, one `landPadLengthMm` and one `landPadWidthMm`.
+
+That needed a new kind of entry, because absence in this file is a CLAIM that the
+drawing is silent and here the drawing is the opposite of silent. Added
+`notRecordable`, which names the fields a drawing states several times over and
+disables their check with the reason attached. It is the honest middle between
+asserting something false and pretending the page says nothing. Keep it rare: it
+is a statement about the SCHEMA, and a field that lands there repeatedly is a
+schema gap rather than a documentation problem.
+
+**UT54LVDS217's flatpack is dimensioned entirely in inches**, with no millimetre
+column anywhere - the only drawing in the file that is. The reader converted all
+six recordable values correctly. Worth knowing that the conversion is not a
+failure mode, because it looked like an obvious one.
+
+It is also PARTIAL for an honest reason: the page prints D, E, E1, E2, E3 and L
+across three views and none of them is decidably the tip-to-tip extent, so
+`leadSpanMm` is left unchecked. Leaving a field unchecked is cheap; recording a
+guess into an answer key is not.
+
+## 1b is done: twenty-four drawings, five live defects
+
+The rate held to the end - about one real defect per four drawings, and one
+genuinely new failure shape per five. What the last five added:
+
+**A drawing can print TWO codes for itself.** ISL71001M's page 36 is headed both
+`Q64.10x10J` and `PT0064AA`, Renesas keeping Intersil's code beside its own, and
+which one a run reports has moved between runs. Filing under one and letting the
+other read UNCHECKED reports a hand-read drawing as unread; copying the entry
+under both puts one hand read in two places to drift apart. Added `alsoKnownAs`,
+which both `bench:dimensions` and the VERIFIED metric resolve. Aliases only: a
+code listed there must appear on the SAME drawing.
+
+**The `L`-is-one-lead trap is a family, not an instance.** RHFL4913A's Flat-16P
+repeats RHF310A's exactly - `L` dimensioned twice, once per side, sitting right
+where a tip-to-tip span would sit for a body that size. Both readers declined it
+correctly. Worth knowing which traps the reader already handles, so nobody
+"fixes" one that is not broken.
+
+**Two more letters-only figures.** L7805, UT54LVDS217 and STM32G071RB all print a
+figure carrying symbols and a table carrying millimetres, on different pages;
+STM32G071RB's figure adds "not to scale", so nothing can be inferred from its
+proportions either. Reading either page alone cannot say which symbol is which
+axis. This is the normal shape of an ST or CAES drawing, not an exception.

@@ -741,7 +741,13 @@ async function main() {
     const oraclePart = new Set(Object.values(DIMENSION_ORACLE).flatMap((entry) => entry.parts));
     const oracleCovers = (code: string | null, partNumber: string): boolean =>
       code !== null
-        ? Object.keys(DIMENSION_ORACLE).some((key) => sameOutlineCode(key, code))
+        ? Object.keys(DIMENSION_ORACLE).some(
+            (key) =>
+              sameOutlineCode(key, code) ||
+              // An ALIAS counts: one title block can print two codes for one
+              // drawing. See `alsoKnownAs`.
+              (DIMENSION_ORACLE[key].alsoKnownAs ?? []).some((alias) => sameOutlineCode(alias, code))
+          )
         : oraclePart.has(partNumber);
     const verified = shipping.filter((row) => oracleCovers(row.outlineCode ?? null, row.part.partNumber));
     const pct = shipping.length > 0 ? Math.round((verified.length / shipping.length) * 100) : 0;
