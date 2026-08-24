@@ -93,11 +93,41 @@ export interface DimensionOracleEntry {
    * which is the honest state for an unformed lead rather than a gap.
    */
   leadContactMm?: OracleRange;
+  /**
+   * The seated foot where the drawing prints ONLY a maximum, e.g. ST's DFN
+   * tables, which give L a Max column and leave Min and Typ empty.
+   *
+   * Both forms exist because the drawings do, exactly as for `bodyHeightMm` and
+   * `bodyHeightMaxMm`. Recording a max-only L as a degenerate range would assert
+   * a minimum the document does not state; omitting it would assert the drawing
+   * prints no seated foot at all, which is the stronger and more wrong claim,
+   * because that absence is what catches an invented one.
+   */
+  leadContactMaxMm?: number;
   /** Lead pitch. */
   pitchMm?: number;
-  /** Body, along the axis the pin rows run. */
+  /**
+   * Body, along the axis `buildFootprintGeometry` calls Y.
+   *
+   * NOT "along the rows", which is what this said until 2026-08-22 and which is
+   * only true for two- and four-sided packages. The generator is the authority
+   * because it is what places the geometry: `bodyHalfLengthMm` is the Y
+   * half-extent and `bodyHalfWidthMm` the X one, on every arrangement.
+   *
+   *   dual  rows run down the left and right, so the row axis IS Y and the old
+   *         wording agreed with the generator
+   *   quad  both axes carry rows; Y is the axis the LONGER rows run along
+   *   SINGLE  one line of pins stepped along X, so the row axis is X and the old
+   *         wording named the WRONG field. A TO-220's 10.2 mm across-the-row
+   *         dimension belongs in `bodyWidthMm`; recorded as the length it draws
+   *         a 4.5 mm silkscreen body around a 10.4 mm package.
+   *
+   * This is the third place an axis convention held in one module has cost
+   * something, after the thermal pad and the land span. Silkscreen and outline
+   * only - the courtyard is bounded by the lands, so no copper moves.
+   */
   bodyLengthMm?: OracleRange;
-  /** Body, across that axis. */
+  /** Body, along the axis the generator calls X. See `bodyLengthMm`. */
   bodyWidthMm?: OracleRange;
   /**
    * Seated height where the drawing prints ONLY a maximum, which is common on a
@@ -592,6 +622,312 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
       spanCrossMm: 2.8
       // NO `solderMaskExpansionMm`: 0.07 MAX non-solder-mask-defined against
       // 0.07 MIN solder-mask-defined, and the drawing does not say which.
+    }
+  },
+
+  // ST's SO-8. Read 2026-08-22 off LD1117 page 30, Table 18 and Figure 15.
+  //
+  // A LETTERED TABLE rather than a dimensioned figure: Figure 15 carries only
+  // the letters and Table 18 carries the millimetres, so the two have to be read
+  // together to know which letter is which axis. The top view puts pins 1-4 along
+  // the bottom, so D runs ALONG the rows and E1 across them, with E the lead span.
+  //
+  // Nearly the same package as ADI's R-8 above and NOT the same drawing: the
+  // lead width differs (0.28-0.48 against 0.31-0.51), which is why each vendor's
+  // drawing gets its own entry rather than one shared "SOIC-8".
+  "0016023_Rev_G": {
+    packageType: "SO-8 (ST)",
+    // TS922 is here on a CROSS-CHECK, not on a family resemblance. Its page 12
+    // Table 5 prints the same fourteen references and every millimetre matches
+    // this table exactly, but its figure carries NO drawing code, so it can only
+    // reach this entry through the part list. Same treatment, and same reason, as
+    // the three ADI datasheets sharing R-8 above.
+    parts: ["LD1117", "TS922"],
+    source: "LD1117 page 30, Table 18 SO-8 mechanical data with Figure 15 (rendered); identical on TS922 page 12, Table 5",
+    leadForm: "gullwing",
+    // E, 5.80 / 6.00 / 6.20, tip to tip.
+    leadSpanMm: { minMm: 5.8, maxMm: 6.2 },
+    // b. NOT c (0.17-0.23), which is the lead thickness.
+    leadWidthMm: { minMm: 0.28, maxMm: 0.48 },
+    // L, the seated foot. NOT L1 (1.04 typ), which is the foot plus the bend.
+    leadContactMm: { minMm: 0.4, maxMm: 1.27 },
+    pitchMm: 1.27,
+    bodyLengthMm: { minMm: 4.8, maxMm: 5.0 },
+    // E1. E is the span above and the two are one row apart in the table.
+    bodyWidthMm: { minMm: 3.8, maxMm: 4.0 },
+    // A is printed with a Max and NOTHING else - no min, no typ - so the
+    // max-only form. A2 (1.25 min) is the moulded body alone and is not the
+    // seated envelope this field wants.
+    bodyHeightMaxMm: 1.75,
+    leadSides: 2
+    // NO `land`. This datasheet prints no recommended footprint for SO-8.
+  },
+
+  // ST's TO-220, dual gauge. Read 2026-08-22 off L7805 pages 33 and 34.
+  //
+  // TWO PAGES, and the first one alone is useless: Figure 37 on page 33 carries
+  // only the letters and Table 19 on page 34 carries the millimetres. Reading
+  // either without the other cannot say which letter is which axis.
+  //
+  // THE FIRST SINGLE-ROW PACKAGE IN THIS FILE, and it is what showed that the
+  // old `bodyLengthMm` wording ("along the axis the pin rows run") is inverted
+  // for this arrangement. Three pins step along X, so E - the 10.0-10.4 across
+  // the front view, along the row - is what the generator reads as
+  // `bodyWidthMm`. See the type comment above.
+  "0015988_21_Type A": {
+    packageType: "TO-220 (dual gauge)",
+    parts: ["L7805"],
+    source: "L7805 page 34, Table 19 TO-220 (dual gauge) mechanical data, with Figure 37 on page 33 (rendered)",
+    // b, the pin that passes through the board. NOT b1 (1.14-1.70), which is the
+    // wider shoulder above it, and not c (0.48-0.70), the pin's thickness.
+    leadWidthMm: { minMm: 0.61, maxMm: 0.88 },
+    // D, the package's vertical extent in the front view, tab included.
+    bodyLengthMm: { minMm: 15.25, maxMm: 15.75 },
+    // E, across the front view, the axis the three pins step along.
+    bodyWidthMm: { minMm: 10.0, maxMm: 10.4 },
+    leadSides: 1
+    // NO `leadContactMm`, and here that absence is the usual CLAIM: a
+    // through-hole pin has no seated foot. L (13-14) is the whole lead length
+    // below the body and L1 (3.50-3.93) the length to the shoulder; neither is
+    // a foot, and reading either into that field would be an invention.
+    //
+    // NO `pitchMm`. The drawing prints e as a RANGE, 2.40-2.70, with no typical.
+    // This field is a scalar, so there is nothing to record that would not be
+    // either invented (2.54) or arbitrary (a bound). Left unchecked rather than
+    // guessed.
+    //
+    // NO `bodyHeightMm`. The drawing states no seated height: A (4.40-4.60) is
+    // the package THICKNESS, and what stands above the board depends on how far
+    // the assembler inserts the leads.
+    //
+    // NO `land`. A through-hole package has no recommended footprint here.
+  },
+
+  // Linear's 12-lead MSOP. Read 2026-08-22 off LTC3105 page 16.
+  //
+  // NO `land` BLOCK, AND THAT IS THE INTERESTING PART. The page carries a
+  // RECOMMENDED SOLDER PAD LAYOUT, so this is not a datasheet that prints no
+  // footprint - it prints one this file cannot record to its own precision.
+  //
+  // The figure gives a pad 0.889 +/- 0.127 long, an INNER GAP of 3.20 - 3.45 and
+  // an outer extent of 5.10 MIN. It never prints a centre distance, and the two
+  // routes to one disagree past the tolerance this file compares at (0.005 mm):
+  //
+  //     outer minus one pad            5.10  - 0.889 = 4.211
+  //     mid-gap plus one pad          3.325  + 0.889 = 4.214
+  //
+  // Neither is wrong; the drawing is simply not that precise, and 5.10 is a
+  // MINIMUM rather than a dimension. Recording either would manufacture
+  // precision the document does not have, which is the one thing an answer key
+  // must never do. The outline dimensions below are all printed outright.
+  "05-08-1668 Rev A": {
+    packageType: "MS Package, 12-Lead Plastic MSOP",
+    parts: ["LTC3105"],
+    source: "LTC3105 page 16, PACKAGE DESCRIPTION, LTC DWG 05-08-1668 Rev A (rendered)",
+    leadForm: "gullwing",
+    // 4.90 +/- 0.152, the vertical dimension on the top view, tip to tip.
+    leadSpanMm: { minMm: 4.748, maxMm: 5.052 },
+    // 0.406 +/- 0.076. Printed REF, and it is the only lead width on the page.
+    leadWidthMm: { minMm: 0.33, maxMm: 0.482 },
+    // 0.53 +/- 0.152 on DETAIL "A", the seated foot. NOT 0.22 - 0.38, which is
+    // the lead thickness, and not 0.254, the gauge plane offset.
+    leadContactMm: { minMm: 0.378, maxMm: 0.682 },
+    pitchMm: 0.65,
+    // 4.039 +/- 0.102 runs along the rows; NOTE 3 excludes mold flash.
+    bodyLengthMm: { minMm: 3.937, maxMm: 4.141 },
+    // 3.00 +/- 0.102 across them; NOTE 4 excludes interlead flash.
+    bodyWidthMm: { minMm: 2.898, maxMm: 3.102 },
+    // 1.10 MAX, and the page states no other value for the envelope. 0.86 REF
+    // is the moulded body alone.
+    bodyHeightMaxMm: 1.1,
+    leadSides: 2
+  },
+
+  // onsemi's PDIP-8. Read 2026-08-22 off NCP1200 page 15, CASE 626-05 ISSUE N.
+  //
+  // NOT `CASE 751-07`, the SOIC in the same datasheet, which has its own entry.
+  // Which one a run settles on has moved between runs, and that is exactly why
+  // both are keyed by drawing code and neither carries the other's part list.
+  //
+  // The table prints INCHES and MILLIMETERS side by side and declares inches
+  // controlling (note 2). The millimetres are recorded, because that is what the
+  // record holds and what the model is asked for.
+  "CASE 626-05": {
+    packageType: "PDIP-8, P SUFFIX",
+    parts: ["NCP1200"],
+    source: "NCP1200 page 15, PACKAGE DIMENSIONS, CASE 626-05 ISSUE N (rendered)",
+    // E, 7.62 - 8.26, the row-to-row spacing with the leads constrained. A
+    // through-hole drawing dimensions the ROW SPACING rather than a formed lead
+    // span; eB (10.92 max) is the same thing with the leads splayed and is not
+    // what a footprint is built from.
+    leadSpanMm: { minMm: 7.62, maxMm: 8.26 },
+    // b, the pin. NOT b2 (1.52 TYP), the shoulder above it, and not C
+    // (0.20-0.36), the pin's thickness.
+    leadWidthMm: { minMm: 0.35, maxMm: 0.56 },
+    pitchMm: 2.54,
+    // D runs along the rows, E1 across them.
+    bodyLengthMm: { minMm: 9.02, maxMm: 10.16 },
+    bodyWidthMm: { minMm: 6.1, maxMm: 7.11 },
+    // A is printed with a MAX and no minimum. A2 (2.92-4.95) is the moulded body
+    // alone and is not the seated envelope.
+    bodyHeightMaxMm: 5.33,
+    leadSides: 2
+    // NO `leadContactMm`, and that absence is a CLAIM: a through-hole pin has no
+    // seated foot. L (2.92-3.81) is the pin's length below the body.
+    //
+    // NO `land`. A through-hole package has no recommended footprint here.
+  },
+
+  // ADI's 5-lead TSOT. Read 2026-08-22 off AD8628 page 15.
+  //
+  // The part ships as THIS and not as the R-8 SOIC on the same page, which is
+  // what exposed the VERIFIED metric preferring a part list over the code a part
+  // actually shipped as. Both drawings are on one page and they are 2.9 x 1.6 mm
+  // against 5.0 x 4.0 mm, so the mis-attribution was not subtle once looked at.
+  "UJ-5": {
+    packageType: "5-Lead Thin Small Outline Transistor Package [TSOT] (UJ-5)",
+    parts: ["AD8628"],
+    source: "AD8628 page 15, UJ-5 (rendered)",
+    leadForm: "gullwing",
+    // 2.80 BSC, the vertical dimension on the top view, tip to tip. BASIC, so
+    // one value rather than a tolerance band.
+    leadSpanMm: { minMm: 2.8, maxMm: 2.8 },
+    leadWidthMm: { minMm: 0.3, maxMm: 0.5 },
+    // 0.60 / 0.45 / 0.30 on the detail at the right, the seated foot. NOT
+    // 0.20 / 0.08, the lead thickness beside it.
+    leadContactMm: { minMm: 0.3, maxMm: 0.6 },
+    pitchMm: 0.95,
+    // 2.90 BSC runs along the rows; 1.90 BSC beside it is pin 1 to pin 3, two
+    // pitches, and not a body dimension.
+    bodyLengthMm: { minMm: 2.9, maxMm: 2.9 },
+    bodyWidthMm: { minMm: 1.6, maxMm: 1.6 },
+    // 1.00 MAX. The 0.90 / 0.87 / 0.84 stack on the left is the moulded body.
+    bodyHeightMaxMm: 1.0,
+    leadSides: 2,
+    jedecOutline: "MO-193AB"
+    // NO `land`. This datasheet prints no recommended footprint.
+  },
+
+  // ST's DFN8 2 x 2. Read 2026-08-22 off TSV911 pages 16 and 17.
+  //
+  // This datasheet covers six packages and prints a section per package, so the
+  // entry is keyed by ST's own section rather than by a vendor drawing code: the
+  // figure carries none. `parts` is what reaches it, and TSV911 settles on this
+  // package.
+  //
+  // THE RECOMMENDED FOOTPRINT'S THERMAL LAND IS HALF THE PACKAGE PAD. The
+  // package's exposed pad is D2 x E2 = 1.60 x 0.90 and the land drawn for it is
+  // 1.60 x 0.45. That is deliberate on ST's part - the note says the pad is not
+  // internally connected and may be left floating - and there is nowhere in this
+  // schema to record a thermal LAND separately from the package pad, so it is
+  // written down here instead.
+  "DFN8 2 x 2 (ST)": {
+    packageType: "DFN8 2 x 2",
+    parts: ["TSV911"],
+    source: "TSV911 page 16, Figure 21 and Table 7 (rendered); land block from page 17, Figure 22",
+    leadForm: "nolead",
+    // NO `leadSpanMm`: a no-lead terminal is flush with the body and the table
+    // prints no tip-to-tip figure.
+    // b, the terminal across its row.
+    leadWidthMm: { minMm: 0.18, maxMm: 0.3 },
+    // L, printed with a Max and nothing else.
+    leadContactMaxMm: 0.425,
+    pitchMm: 0.5,
+    // Square, D and E both 1.85 / 2.00 / 2.15. Pins 1-4 run across the top and
+    // 5-8 across the bottom, so D is the axis the rows run along.
+    bodyLengthMm: { minMm: 1.85, maxMm: 2.15 },
+    bodyWidthMm: { minMm: 1.85, maxMm: 2.15 },
+    bodyHeightMm: { minMm: 0.51, maxMm: 0.6 },
+    // D2 runs along the rows, matching `bodyLengthMm`; E2 across them.
+    thermalPadLengthMm: { minMm: 1.45, maxMm: 1.7 },
+    thermalPadWidthMm: { minMm: 0.75, maxMm: 1.0 },
+    leadSides: 2,
+    land: {
+      source: "TSV911 page 17, Figure 22, DFN8 2 x 2 recommended footprint",
+      // 0.75, the land's extent outward from the centre.
+      padLengthMm: 0.75,
+      padWidthMm: 0.3,
+      // DERIVED and exact: the figure prints 2.80 across the OUTER edges of the
+      // two rows and no centre distance, so the centre is the outer extent minus
+      // one land length. 2.80 - 0.75 = 2.05. Both inputs are printed outright
+      // with no tolerance and no MIN, so unlike LTC3105 above there is only one
+      // answer.
+      spanMm: 2.05
+      // NO `solderMaskExpansionMm`. The figure prints no mask clearance at all.
+    }
+  },
+
+  // ST's Ceramic Flat-8. Read 2026-08-22 off RHF310A pages 17 and 18.
+  //
+  // TWO PAGES AGAIN, and here the figure is what stops a wrong reading rather
+  // than merely labelling one. Table 6 prints `L` at 6.51 - 7.38, which sits
+  // exactly where a lead span would sit for a 6.48 mm body. Figure 29 shows L
+  // dimensioned TWICE, once per side, from each lead's tip to the body edge: it
+  // is ONE LEAD'S LENGTH. The tip-to-tip extent is 2L + E, about 20 mm, and the
+  // drawing never prints it.
+  //
+  // NO `leadSpanMm` for that reason, and the reader agrees - it returned null
+  // rather than reporting 6.51-7.38, which is the right answer to a question the
+  // drawing does not answer.
+  "Ceramic Flat-8 (ST)": {
+    packageType: "Ceramic Flat-8",
+    parts: ["RHF310A"],
+    source: "RHF310A page 18, Table 6 Ceramic Flat-8 mechanical data, with Figure 29 on page 17 (rendered)",
+    // The leads leave the body flat and unformed; the assembler forms them,
+    // which is what `formedLeadSpanMm` in settings exists for.
+    leadForm: "straight",
+    // b. NOT c (0.10-0.16), the lead thickness.
+    leadWidthMm: { minMm: 0.38, maxMm: 0.48 },
+    pitchMm: 1.27,
+    // D is the vertical extent, along which pins 1-4 and 5-8 run; E is across.
+    // Square here, which is why the figure was needed to tell them apart at all.
+    bodyLengthMm: { minMm: 6.35, maxMm: 6.61 },
+    bodyWidthMm: { minMm: 6.35, maxMm: 6.61 },
+    bodyHeightMm: { minMm: 2.24, maxMm: 2.64 },
+    leadSides: 2
+    // NO `leadContactMm`, and that absence is a CLAIM: an unformed flat-pack
+    // lead has no seated foot until the assembler bends it. Same as the other
+    // ceramic flat packs in this file.
+    //
+    // NO `land`. This datasheet prints no recommended footprint.
+  },
+
+  // ST's DFN8 2 x 2 AGAIN, from a different datasheet, and NOT merged with the
+  // TSV911 entry below.
+  //
+  // Read 2026-08-22 off TSZ121 pages 24 and 25. Every reference matches TSV911's
+  // Table 7 to the millimetre EXCEPT the seated foot: DS9216 prints L as
+  // 0.225 / 0.325 / 0.425 and DS4899 prints only the 0.425 maximum. Same
+  // package, two datasheets, and one of them says more.
+  //
+  // That difference is the reason they stay two entries. Merging them would make
+  // this file assert a minimum on TSV911's drawing that TSV911's drawing does not
+  // print, which is the same overreach the TPS7A4501-SP pin entry was corrected
+  // for. The recommended footprint is identical on both.
+  "DFN8 2 x 2 (ST, DS9216)": {
+    packageType: "DFN8 2 x 2",
+    parts: ["TSZ121"],
+    source: "TSZ121 page 24, Figure 52 and Table 8 (rendered); land block from page 25, Figure 53",
+    leadForm: "nolead",
+    leadWidthMm: { minMm: 0.18, maxMm: 0.3 },
+    // The full range, which is what this datasheet prints and TSV911's does not.
+    leadContactMm: { minMm: 0.225, maxMm: 0.425 },
+    pitchMm: 0.5,
+    bodyLengthMm: { minMm: 1.85, maxMm: 2.15 },
+    bodyWidthMm: { minMm: 1.85, maxMm: 2.15 },
+    bodyHeightMm: { minMm: 0.51, maxMm: 0.6 },
+    thermalPadLengthMm: { minMm: 1.45, maxMm: 1.7 },
+    thermalPadWidthMm: { minMm: 0.75, maxMm: 1.0 },
+    leadSides: 2,
+    land: {
+      source: "TSZ121 page 25, Figure 53, DFN8 2 x 2 recommended footprint",
+      // 0.75 is the LEAD land's length. The 0.45 on the left of the figure is the
+      // THERMAL land's height - a different piece of copper - and taking it here
+      // is what put TSV911's pads 0.30 mm short at the heel.
+      padLengthMm: 0.75,
+      padWidthMm: 0.3,
+      // 2.80 outer minus one 0.75 land. Both printed exactly, so one answer.
+      spanMm: 2.05
     }
   },
 

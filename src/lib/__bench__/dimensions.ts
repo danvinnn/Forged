@@ -148,6 +148,22 @@ function compare(
     );
   if (entry.leadWidthMm) add("leadWidthMm", rangeMatches(at("dimensions.leadWidthMm"), entry.leadWidthMm), at("dimensions.leadWidthMm"), entry.leadWidthMm);
   if (entry.leadContactMm) add("leadContactMm", rangeMatches(at("dimensions.leadContactMm"), entry.leadContactMm), at("dimensions.leadContactMm"), entry.leadContactMm);
+  else if (entry.leadContactMaxMm !== undefined) {
+    // A MAX-ONLY FOOT. The drawing states one bound and no other, so any reading
+    // at or below it is correct and the maximum itself is the expected answer -
+    // the same treatment `bodyHeightMaxMm` gets, and for the same reason.
+    const read = at("dimensions.leadContactMm");
+    const maxMm =
+      read !== null && typeof read === "object" && read !== null
+        ? (read as { maxMm?: unknown }).maxMm
+        : read;
+    add(
+      "leadContactMm",
+      typeof maxMm === "number" ? near(maxMm, entry.leadContactMaxMm) : maxMm === undefined || maxMm === null ? null : false,
+      at("dimensions.leadContactMm"),
+      entry.leadContactMaxMm
+    );
+  }
   if (entry.pitchMm !== undefined) add("pitchMm", scalarMatches(at("dimensions.pitchMm"), entry.pitchMm), at("dimensions.pitchMm"), entry.pitchMm);
   if (entry.leadSides !== undefined) {
     const read = at("dimensions.leadSides");
@@ -219,7 +235,7 @@ function compare(
   // A dimension the drawing does NOT print. Reading one anyway is an invention,
   // and it is the failure the oracle's partial entries exist to catch: absence
   // here means a person looked and the drawing is silent.
-  if (!entry.leadContactMm) {
+  if (!entry.leadContactMm && entry.leadContactMaxMm === undefined) {
     const read = at("dimensions.leadContactMm");
     if (read !== null && read !== undefined) {
       add("leadContactMm", false, read, "the drawing prints none");

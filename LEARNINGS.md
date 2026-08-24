@@ -2370,3 +2370,135 @@ the IPC band check and fall back to a computed pattern, one refuses for an
 unrelated reason, one refuses outright, and TPS7A4700 - no-lead, where the band
 check cannot run - ships 0.75 mm narrow. **Count where the error ENDS UP, not
 how often it happens.**
+
+## 1b, continued: three more drawings, one more live defect
+
+Eleven drawings read now. The rate has not moved: about one real defect per four.
+
+**LTC3105 ships pads computed from the lead THICKNESS.** Its MSOP drawing prints
+`0.406 +/- 0.076 REF` as the lead width on the top view and `0.22 - 0.38 TYP` as
+the lead thickness on the side view. The reader took the thickness. The printed
+solder-pad layout was discarded by the band check, so the pads come from
+IPC-7351B computed off that number, and they are about 0.1 mm narrow.
+
+Same shape as the axis defects: `b` and `c` are adjacent dimensions on every
+gull-wing drawing and the prompt asks for "lead width" without excluding the
+thickness. NOT fixed by another prompt edit - see below.
+
+**A drawing can be less precise than the answer key.** LTC3105's pad layout gives
+a pad `0.889 +/- 0.127` long, an inner gap of `3.20 - 3.45` and an outer extent
+of `5.10 MIN`, and never prints a centre distance. The two routes to one
+disagree by more than the 0.005 mm this file compares at:
+
+    outer minus one pad     5.10  - 0.889 = 4.211
+    mid-gap plus one pad    3.325 + 0.889 = 4.214
+
+So the entry records no `land` block and says why. Recording either number would
+manufacture precision the document does not have, which is the one thing an
+answer key must never do.
+
+**The oracle's body axes were inverted for single-row packages.** `bodyLengthMm`
+was documented as "along the axis the pin rows run", which matches the generator
+for dual and quad and is BACKWARDS for a single row: a TO-220's three pins step
+along X, and the generator reads the X extent from `bodyWidthMm`. Recorded as the
+length it would draw a 4.5 mm silkscreen body around a 10.4 mm package. Third
+instance of an axis convention held in one module; silkscreen only, since the
+courtyard is bounded by the lands.
+
+## Why the next prompt edit is not being made now
+
+Three reading defects are open that a prompt clarification might fix: the lead
+width against the thickness, and the two pin-name failures. All three are left
+for the blind run to confirm, and that is a deliberate call rather than an
+oversight.
+
+The paid re-run on 2026-08-22 cost $2.99 against a $1.28 projection and moved two
+parts to a DIFFERENT PACKAGE with nothing in the prompt touching them - AD8628 to
+a TSOT, NCP1200 to a DIP. The run-to-run variance is larger than any of these
+effects. Iterating costs $3 a turn, strands the whole cache each time, and cannot
+attribute the result.
+
+The axis fix was worth paying for because it had 2 of 2 positives, a mechanism
+that was legible in the code, and a test that fails without it. None of these
+three has that yet.
+
+## 1b, drawings 12 to 14: a fourth live defect, and the worst of them
+
+**TSV911 ships a land that barely touches its terminal.** ST's DFN8 2x2
+recommended footprint prints four numbers around one small figure: the lead
+land's length (0.75), its width (0.30), the pitch (0.50), and the THERMAL land's
+height (0.45) on the far left. The reader took 0.45 as the lead land's length,
+then derived the span from it consistently - 2.80 outer minus 0.45 = 2.35 - so
+the record is internally coherent and every plausibility check passes.
+
+What comes out has the toe in the right place and the heel 0.30 mm short:
+
+    emitted   land 0.45 long at 1.175 centres, spanning 0.95 to 1.40 mm
+    drawing   land 0.75 long at 1.025 centres, spanning 0.65 to 1.40 mm
+    terminal  0.425 long, ending at the 1.00 mm body edge
+
+The terminal and the emitted land overlap by 0.05 mm where they should overlap
+by 0.35. About a seventh of the intended solder contact, on a part that ships.
+
+**The shape to take from it:** one misread dimension propagated into a second
+through a derivation the model performed correctly. Nothing downstream can
+catch that, because the arithmetic is right and the inputs are individually
+plausible. The only instrument that sees it is a person reading the drawing.
+
+Running total for 1b: fourteen drawings, four live defects. The rate has not
+moved from one per four all week.
+
+## Two more things a drawing can do that the record cannot hold
+
+**A terminal length printed as a MAX and nothing else.** ST's DFN tables give L a
+Max column and leave Min and Typ empty. Recording it as a degenerate range
+asserts a minimum the document does not state; omitting it asserts the drawing
+prints no seated foot, which is the stronger and more wrong claim, because that
+absence is what catches an invented one. Added `leadContactMaxMm`, mirroring
+`bodyHeightMaxMm`, which exists for exactly this reason.
+
+**A thermal LAND that is not the package's pad.** TSV911's exposed pad is
+1.60 x 0.90 and the land drawn for it is 1.60 x 0.45 - deliberate, since the note
+says the pad is not internally connected and may float. The schema has no field
+for a thermal land distinct from the package pad, so it is recorded in the
+entry's prose instead of being silently dropped.
+
+## The thermal-land misread is a CLASS, not a one-off: 2 of 2
+
+TSZ121 was read after TSV911 and made the identical error, to the digit:
+
+    TSV911   landPadLengthMm 0.45, landSpanMm 2.35   drawing says 0.75 and 2.05
+    TSZ121   landPadLengthMm 0.45, landSpanMm 2.35   drawing says 0.75 and 2.05
+
+ST's DFN recommended-footprint figure prints four numbers around one small
+drawing, and one of them - the 0.45 on the far left - dimensions the THERMAL
+land's height rather than a lead land's length. Both readers took it, and both
+then derived the span from it correctly (2.80 outer minus 0.45), so both records
+are internally consistent and no downstream check can see anything wrong.
+
+Both parts ship. TSV911's pads overlap their terminals by 0.05 mm where the
+drawing wants 0.35.
+
+**This has now crossed the same evidential bar the axis fix cleared** - two of
+two, a mechanism legible in the document, and a clause that can only remove a
+wrong candidate rather than change which right one is chosen. `landPadLengthMm`
+asks for "the length of ONE land" and never excludes the large central land under
+an exposed pad.
+
+Not fixed today, and deliberately so: a prompt edit strands the entire model
+cache, so making one without paying for a re-run leaves every free bench dark and
+the repo less measurable than it was. It is queued as the FIRST thing to go into
+the next paid run.
+
+## Two ST datasheets, one package, different completeness
+
+TSZ121's DFN8 2x2 table matches TSV911's on every reference except the seated
+foot: DS9216 prints L as 0.225 / 0.325 / 0.425 and DS4899 prints only the 0.425
+maximum. They stay two oracle entries for that reason. Merging them would make
+this file assert a minimum that TSV911's drawing does not print - the same
+overreach the TPS7A4501-SP pin entry was corrected for.
+
+The opposite case is in the same file and resolved the opposite way: TS922's SO8
+table matches LD1117's on all fourteen references exactly, so TS922 is listed
+under that entry rather than given its own. The test is whether the documents
+actually agree, checked value by value, not whether the packages share a name.

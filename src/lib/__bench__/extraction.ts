@@ -722,10 +722,27 @@ async function main() {
     // The rule: this metric must agree with `bench:dimensions` about what is
     // covered, because two instruments disagreeing about one part is how you
     // learn one of them is lying.
+    // A CODE THE PART SHIPPED AS BEATS THE PART LIST, INCLUDING WHEN IT MATCHES
+    // NOTHING.
+    //
+    // The part list answers "which drawing does this part read", and it is wrong
+    // whenever the datasheet prints several and the part settled on a different
+    // one. Since `shipOutcome` reports the package the copper was actually built
+    // from, the code is right by construction and the list is a fallback for
+    // when no code came back at all.
+    //
+    // Measured 2026-08-22, the run after the shipped code was wired in: AD8628
+    // ships as UJ-5, a 5-lead TSOT, and was reported `checked` against the R-8
+    // SOIC entry in the same datasheet, which lists it. `bench:dimensions` had
+    // already been corrected for exactly this and the two instruments then
+    // disagreed about one part - which this file's own note says is how you
+    // learn one of them is lying. It was this one, and it was overstating
+    // VERIFIED, the number meant to be quoted to a customer.
     const oraclePart = new Set(Object.values(DIMENSION_ORACLE).flatMap((entry) => entry.parts));
     const oracleCovers = (code: string | null, partNumber: string): boolean =>
-      oraclePart.has(partNumber) ||
-      (code !== null && Object.keys(DIMENSION_ORACLE).some((key) => sameOutlineCode(key, code)));
+      code !== null
+        ? Object.keys(DIMENSION_ORACLE).some((key) => sameOutlineCode(key, code))
+        : oraclePart.has(partNumber);
     const verified = shipping.filter((row) => oracleCovers(row.outlineCode ?? null, row.part.partNumber));
     const pct = shipping.length > 0 ? Math.round((verified.length / shipping.length) * 100) : 0;
     console.log(

@@ -54,18 +54,41 @@ itself: VERIFIED went 17/46 to 25/46 the moment the bench stopped printing the
 record's outline code beside parts that ship as something else. Now **36/48
 (75%)**.
 
-**1b. Read those drawings.** NINE READ, covering eight parts: `R-8` (AD8628,
-ADR4525, AD590 - cross-checked across all three datasheets), `RU-16`,
-`DRM0008A`, `NS0016A`, `DW0016B`, `BQA0014A`. One live wrong footprint found, at
-roughly the predicted rate.
+**1b. Read those drawings.** SEVENTEEN READ: `R-8` (AD8628, ADR4525, AD590 -
+cross-checked across all three datasheets), `RU-16`, `DRM0008A`, `NS0016A`,
+`DW0016B`, `BQA0014A`, `0016023_Rev_G`, `0015988_21_Type A`, `05-08-1668 Rev A`,
+`CASE 626-05`, `UJ-5`, `DFN8 2 x 2 (ST)`, `Ceramic Flat-8 (ST)`,
+`DFN8 2 x 2 (ST, DS9216)`, plus TS922 cross-checked onto the ST SO-8.
+**Four live wrong footprints found**, at the predicted rate of about one per four:
 
-**Still unread, and the list is a work queue:** RHF310A, RHFL4913, RHFL4913A,
-ADC128S102QML-SP, UT54LVDS217, LT1013, TS922, TSZ121, ADS1115, TSV911, LTC3105,
-LD1117, L7805.
+  - **TXB0104** shipped its land spans transposed. FIXED.
+  - **TSV911 and TSZ121** both ship a land 0.30 mm short at the heel - TSV911's
+    overlaps its terminal by 0.05 mm where the drawing wants 0.35. Both readers
+    took the THERMAL land's 0.45 as the lead land's length and then derived the
+    span from it correctly, so both records are self-consistent and no check can
+    see either. **2 of 2, so this is a class**, and it is the first thing queued
+    for the next paid run.
+  - **LTC3105** ships pads computed from the lead THICKNESS (0.22-0.38) where the
+    width (0.406 +/- 0.076) was wanted; about 0.1 mm narrow.
+  - **DRV8825 and three others** return the inner gap as the centre span; all but
+    TPS7A4700 are contained by the band guard.
+
+**Still unread, and the list is a work queue:** RHFL4913, RHFL4913A,
+UT54LVDS217, ISL71001M (`PT0064AA`), LT1013 (`05-08-1610`),
+STM32G071RB (`5V_LQFP32_ME_V1`), ADS1115.
+
+Three of those appeared only after the VERIFIED metric stopped preferring the
+part list over the code a part actually shipped as - AD8628 ships as a TSOT and
+was being reported `checked` against the R-8 SOIC listed beside it. **VERIFIED is
+honestly 33/48 (69%)**, not the 36/48 the overstating version printed.
 
 Two of them need something this record cannot express, and that is worth knowing
 before starting:
 
+  - **05-08-1668 Rev A (LTC3105)** is LESS PRECISE than this answer key. It
+    prints a pad length, an inner gap and an outer extent marked MIN, and never a
+    centre distance; the two routes to one disagree by more than the 0.005 mm the
+    bench compares at. Its entry records no land block and says so.
   - **RUG0010A (ADS1115)** prints TWO LAND SIZES in one footprint - 0.55 x 0.25
     on the eight side lands and 0.30 x 0.60 on the two end lands. The record
     holds one `landPadLengthMm`. There is no right single answer.
