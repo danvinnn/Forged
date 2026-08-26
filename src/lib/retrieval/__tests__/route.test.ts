@@ -322,7 +322,20 @@ test("air-gapped upload NEVER invokes the cloud extractor, even with a key prese
 
 test("commercial upload without a Gemini key falls back to the local parser", async () => {
   // The gate is (commercial AND key). Commercial alone must not force a cloud call.
-  const restoreEnv = setEnv({ FORGE_DEPLOYMENT_MODE: "commercial", GOOGLE_GEMINI_API_KEY: undefined, FORGE_LOCAL_MODEL_URL: undefined });
+  // EVERY credential, not just the API key. `factory.ts` prefers Vertex where
+  // `GOOGLE_APPLICATION_CREDENTIALS` and `FORGE_VERTEX_PROJECT` are set, and
+  // this list was written before Vertex existed. Left as it was, the test
+  // passed on a clean machine and failed on a developer who had sourced
+  // `.env.local`, which `LEARNINGS.md` tells them to do before a bench. A test
+  // whose answer depends on whose laptop it runs on is not evidence.
+  const restoreEnv = setEnv({
+    FORGE_DEPLOYMENT_MODE: "commercial",
+    GOOGLE_GEMINI_API_KEY: undefined,
+    FORGE_LOCAL_MODEL_URL: undefined,
+    GOOGLE_APPLICATION_CREDENTIALS: undefined,
+    FORGE_VERTEX_PROJECT: undefined,
+    FORGE_VERTEX_LOCATION: undefined
+  });
   try {
     const form = new FormData();
     form.set("file", new File([new Uint8Array(REAL_PDF)], "LMP7704-SP.pdf", { type: "application/pdf" }));

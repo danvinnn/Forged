@@ -93,29 +93,64 @@ export class ByteWriter {
 }
 
 /**
+ * The 0x80-0x9F block, which is the whole reason Windows-1252 is not Latin-1.
+ *
+ * ## The bug this table replaces
+ *
+ * The encoder used to accept any code point up to 0xFF and write it out as that
+ * byte, under a comment saying "everything else in 0x00-0xFF maps". That is
+ * true of Latin-1 and false of Windows-1252, and it was wrong in BOTH
+ * directions at once.
+ *
+ * It REFUSED the twenty-six characters this block actually holds. An LMP7704-SP
+ * prints a pin name containing a U+2013 en dash, which Windows-1252 encodes
+ * perfectly well as 0x96, and the Altium export died on it. Reported
+ * 2026-08-24 as "export failed", and it took the whole bundle down: the route
+ * did not catch the error, so it went out as a 500 and the screen showed the
+ * bare words "Export failed."
+ *
+ * And it silently ACCEPTED U+0080 to U+009F, the C1 control characters, writing
+ * each as the byte of the same number. Those bytes are not controls in
+ * Windows-1252, they are this table. A stray U+0096 in a pin name would have
+ * arrived in Altium as an en dash nobody typed, which is the "silently
+ * substituting a character would put a wrong designator on a pad" failure the
+ * original comment was written to prevent, produced by the check itself.
+ *
+ * Mapping is by Unicode code point, in the direction the encoder actually needs.
+ */
+const WINDOWS_1252_HIGH = new Map<number, number>([
+  [0x20ac, 0x80], [0x201a, 0x82], [0x0192, 0x83], [0x201e, 0x84], [0x2026, 0x85],
+  [0x2020, 0x86], [0x2021, 0x87], [0x02c6, 0x88], [0x2030, 0x89], [0x0160, 0x8a],
+  [0x2039, 0x8b], [0x0152, 0x8c], [0x017d, 0x8e], [0x2018, 0x91], [0x2019, 0x92],
+  [0x201c, 0x93], [0x201d, 0x94], [0x2022, 0x95], [0x2013, 0x96], [0x2014, 0x97],
+  [0x02dc, 0x98], [0x2122, 0x99], [0x0161, 0x9a], [0x203a, 0x9b], [0x0153, 0x9c],
+  [0x017e, 0x9e], [0x0178, 0x9f]
+]);
+
+/**
  * Encodes text as Windows-1252, refusing anything that does not fit.
  *
- * Part numbers and package names reach here from an extracted datasheet, so
- * this is also where a value that cannot be written honestly stops. Silently
- * substituting "?" for a character would put a wrong designator on a pad.
+ * Part numbers, package names and PIN NAMES reach here from an extracted
+ * datasheet, so this is also where a value that cannot be written honestly
+ * stops. Silently substituting "?" for a character would put a wrong designator
+ * on a pad. Refusing a character the encoding does hold is the opposite error
+ * and costs the user the whole export; see `WINDOWS_1252_HIGH`.
  */
 export function encodeAltiumText(value: string): Buffer {
-  const out = Buffer.alloc(value.length);
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.codePointAt(index) ?? 0;
-    if (code > 0xff || WINDOWS_1252_UNMAPPED.has(code)) {
+  const bytes: number[] = [];
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    const mapped =
+      code < 0x80 || (code >= 0xa0 && code <= 0xff) ? code : WINDOWS_1252_HIGH.get(code);
+    if (mapped === undefined) {
       throw new AltiumEmitError(
         `"${value}" contains a character (U+${code.toString(16).toUpperCase().padStart(4, "0")}) that Altium's Windows-1252 strings cannot represent.`
       );
     }
-    out[index] = code;
+    bytes.push(mapped);
   }
-  return out;
+  return Buffer.from(bytes);
 }
-
-// The five byte values Windows-1252 leaves undefined. Everything else in
-// 0x00-0xFF maps, and for 0x00-0x7F it is ASCII.
-const WINDOWS_1252_UNMAPPED = new Set([0x81, 0x8d, 0x8f, 0x90, 0x9d]);
 
 /**
  * Strips a value of the characters that would break out of a `|KEY=VALUE`

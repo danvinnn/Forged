@@ -84,6 +84,21 @@ export interface DimensionOracleEntry {
    */
   alsoKnownAs?: string[];
   /**
+   * The package DESIGNATORS this drawing is offered under, for entries whose
+   * drawing prints no code.
+   *
+   * ST names its package sections and prints no code on the figure, so those
+   * entries can only be reached through `parts` - and `parts` is wrong the
+   * moment a multi-package datasheet resolves somewhere else. TSZ121 offers
+   * seven packages; on 2026-08-24 it settled on the SC70 and its SC70 reading
+   * was scored against the DFN8 entry, producing six WRONG values that were all
+   * correct readings of a different package.
+   *
+   * Checked against the designator the part actually SHIPPED as, and only when
+   * no outline code was reported. An entry with a code never needs this.
+   */
+  designators?: string[];
+  /**
    * How the leads leave the body, as DRAWN.
    *
    * `straight` exists here because it exists on the drawings: a ceramic flat
@@ -201,6 +216,38 @@ export interface DimensionOracleEntry {
    * document, and a field that lands here repeatedly is a schema gap to fix.
    */
   notRecordable?: string[];
+  /**
+   * Fields a person looked for on this drawing and confirmed it does NOT state.
+   * Reading one anyway is an invention, and this is what makes that checkable.
+   *
+   * ## Why an absent key is not enough
+   *
+   * Every entry here is partial, so most absences mean "nobody has read this
+   * field yet" rather than "the drawing is silent". `leadContactMm` is the one
+   * exception and it is hard-coded, because its absence was always meant as a
+   * claim. That does not generalise: turning every absence into an assertion
+   * would report a hundred unread fields as invented values.
+   *
+   * So the claim is made explicitly, per field, by whoever looked. Three kinds
+   * of thing land here:
+   *
+   *   `land`      the datasheet draws no recommended footprint for THIS package,
+   *               checked by reading its whole package section. STM32G071RB's
+   *               LQFP64 section is three pages - figure, table, notes - and the
+   *               product reported a 1.2 x 0.3 land on an 11.5 mm span citing
+   *               the NOTES page.
+   *   `pitchMm`   the terminals are not in a row, so no single pitch describes
+   *               them. A TO-52's three leads sit on a 0.050 inch grid around
+   *               the can's centre; the drawing prints `0.100 T.P.` between two
+   *               of them, and reading that as a lead pitch builds three
+   *               collinear pads for a triangular package.
+   *   any other   the drawing simply does not dimension it.
+   *
+   * Distinct from `notRecordable`, which says the drawing states a field SEVERAL
+   * times and this schema cannot hold the answer. That disables a check; this
+   * one turns a check on.
+   */
+  printsNothingFor?: string[];
   /** The datasheet's OWN printed footprint, where it prints one. */
   land?: {
     source: string;
@@ -861,6 +908,8 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   "DFN8 2 x 2 (ST)": {
     packageType: "DFN8 2 x 2",
     parts: ["TSV911"],
+    // Reached by DESIGNATOR when no code is reported; see the type comment.
+    designators: ["DFN8 2 x 2", "DFN8"],
     source: "TSV911 page 16, Figure 21 and Table 7 (rendered); land block from page 17, Figure 22",
     leadForm: "nolead",
     // NO `leadSpanMm`: a no-lead terminal is flush with the body and the table
@@ -909,6 +958,8 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   "Ceramic Flat-8 (ST)": {
     packageType: "Ceramic Flat-8",
     parts: ["RHF310A"],
+    // Reached by DESIGNATOR when no code is reported; see the type comment.
+    designators: ["Ceramic Flat-8", "Flat-8"],
     source: "RHF310A page 18, Table 6 Ceramic Flat-8 mechanical data, with Figure 29 on page 17 (rendered)",
     // The leads leave the body flat and unformed; the assembler forms them,
     // which is what `formedLeadSpanMm` in settings exists for.
@@ -944,6 +995,8 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   "DFN8 2 x 2 (ST, DS9216)": {
     packageType: "DFN8 2 x 2",
     parts: ["TSZ121"],
+    // Reached by DESIGNATOR when no code is reported; see the type comment.
+    designators: ["DFN8 2 x 2", "DFN8"],
     source: "TSZ121 page 24, Figure 52 and Table 8 (rendered); land block from page 25, Figure 53",
     leadForm: "nolead",
     leadWidthMm: { minMm: 0.18, maxMm: 0.3 },
@@ -1022,6 +1075,8 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   "48-Lead Flatpack (CAES)": {
     packageType: "48-Lead Flatpack",
     parts: ["UT54LVDS217"],
+    // Reached by DESIGNATOR when no code is reported; see the type comment.
+    designators: ["48-Lead Flatpack", "48-lead flatpack"],
     source: "UT54LVDS217 page 11, Figure 15, 48-Lead Flatpack (rendered). All dimensions printed in inches",
     // A ceramic flat pack leaves the factory with its leads in line with the
     // body; the assembler forms them.
@@ -1098,6 +1153,8 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   "TO-257 (ST)": {
     packageType: "TO-257",
     parts: ["RHFL4913"],
+    // Reached by DESIGNATOR when no code is reported; see the type comment.
+    designators: ["TO-257"],
     source: "RHFL4913 page 13, Table 7 TO-257 package mechanical data, with Figure 8 (rendered)",
     // K, printed Typ only, between adjacent leads.
     pitchMm: 2.54,
@@ -1139,6 +1196,8 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
   "Flat-16P (ST)": {
     packageType: "Flat-16P",
     parts: ["RHFL4913A"],
+    // Reached by DESIGNATOR when no code is reported; see the type comment.
+    designators: ["Flat-16P"],
     source: "RHFL4913A page 24, Table 9 Flat-16P package mechanical data, with Figure 57 (rendered)",
     // The leads leave the body flat and unformed; the assembler forms them.
     leadForm: "straight",
@@ -1187,7 +1246,18 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     // A is printed with a Max and nothing else. A2 (1.35 / 1.40 / 1.45) is the
     // moulded body alone and is not the seated envelope.
     bodyHeightMaxMm: 1.6,
-    leadSides: 4
+    leadSides: 4,
+    land: {
+      source: "STM32G071RB datasheet DS12232 Rev 5, page 120, Figure 40, LQFP32 - Footprint example (5V_LQFP32_FP_V4)",
+      // 9.80 and 7.40 are the OUTER and INNER extents across two opposing rows,
+      // on both axes, so one land is (9.80 - 7.40) / 2 = 1.20 long - which the
+      // figure prints outright as `1.2 REF` - and the centre-to-centre span is
+      // their mean, 8.60. 0.45 is the land across the row and 0.8 is the pitch.
+      padLengthMm: 1.2,
+      padWidthMm: 0.45,
+      spanMm: 8.6,
+      spanCrossMm: 8.6
+    }
   },
 
   "05-08-1795": {
@@ -2389,5 +2459,218 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     // A, 2.18 / 2.47 / 2.72, lid included.
     bodyHeightMaxMm: 2.72,
     leadSides: 2
+  },
+
+  // ---------------------------------------------------------------------------
+  // Read 2026-08-25, off the rendered pages, to close the five SHIPPING parts
+  // whose copper nothing had ever been able to check.
+  //
+  // `bench:extraction` reported VERIFIED 47/52 and named the five: every one of
+  // them was building a footprint that no hand read could contradict. Two turned
+  // out to be wrong, which is the whole argument for reading the drawings rather
+  // than trusting a green run.
+  // ---------------------------------------------------------------------------
+
+  // 20-terminal ceramic leadless chip carrier. TI's older MECHANICAL DATA sheet,
+  // dimensioned in inches with millimetres in brackets.
+  //
+  // `leadContactMm` is ABSENT and that is an assertion. The only length-wise
+  // dimension on the terminal face is `.085 [2.16]`, and its leader runs to the
+  // ONE deep slot on the top edge - the pin 1 identifier - not to a terminal.
+  // The terminals themselves are dimensioned for width and pitch and for nothing
+  // else. Recording 2.16 as a seated foot would be the invention this file's
+  // partial entries exist to catch.
+  //
+  // No `land`: this datasheet draws EXAMPLE BOARD LAYOUT pages for J0014A and
+  // NAC0014A only, and prints no footprint for NAJ0020A.
+  NAJ0020A: {
+    packageType: "LCC (20)",
+    parts: ["LM139AQML-SP"],
+    source: "LM139AQML-SP datasheet, page 33, MECHANICAL DATA NAJ0020A, E20A (Rev F)",
+    alsoKnownAs: ["E20A"],
+    leadForm: "nolead",
+    // 20X .025 +/- .003 [0.64 +/- 0.07] on the terminal face.
+    leadWidthMm: { minMm: 0.57, maxMm: 0.71 },
+    // 16X and 19X .050 +/- .005 [1.27 +/- 0.12], both printed.
+    pitchMm: 1.27,
+    // Square: the drawing prints one dimension with a square symbol,
+    // .350 +/- .008 [8.89 +/- 0.2], so both axes carry it.
+    bodyLengthMm: { minMm: 8.69, maxMm: 9.09 },
+    bodyWidthMm: { minMm: 8.69, maxMm: 9.09 },
+    // .069 +/- .006 [1.76 +/- 0.15] on the side view.
+    bodyHeightMm: { minMm: 1.61, maxMm: 1.91 },
+    leadSides: 4,
+    // Checked by reading the whole datasheet's package section: it draws EXAMPLE
+    // BOARD LAYOUT pages for J0014A and NAC0014A and none for this package.
+    printsNothingFor: ["land"]
+  },
+
+  // TO-52 metal header, three leads on a TRIANGULAR grid.
+  //
+  // `pitchMm` is `notRecordable` rather than absent, and the distinction matters
+  // here more than anywhere else in this file. The drawing prints `0.100 (2.54)
+  // T.P.` between pins 1 and 3 and `0.050 (1.27) T.P.` twice more, because the
+  // three leads sit on a 0.050 inch grid around the can's centre and NOT in a
+  // row. There is no lead pitch to record: any single number would assert a
+  // row this package does not have.
+  //
+  // `leadSides` is absent for the same reason. The schema offers 1, 2 or 4 and
+  // this package has three terminals on a circle, which is none of them.
+  "H-03-1": {
+    packageType: "TO-52 (3)",
+    parts: ["AD590"],
+    source: "AD590 datasheet, page 13, Figure 26, 3-Pin Metal Header Package [TO-52] (H-03-1), rev 022306-A",
+    leadForm: "straight",
+    // The can, 0.209 (5.31) to 0.230 (5.84). Round, so both axes carry it.
+    bodyLengthMm: { minMm: 5.31, maxMm: 5.84 },
+    bodyWidthMm: { minMm: 5.31, maxMm: 5.84 },
+    notRecordable: ["leadContactMm"],
+    // The drawing prints `0.100 (2.54) T.P.` and `0.050 (1.27) T.P.`, which are
+    // grid coordinates for three leads arranged around the can's centre. None of
+    // them is a lead pitch, and there is no row for a pitch to describe.
+    printsNothingFor: ["pitchMm"]
+  },
+
+  // 128-pin ceramic LQFP, Spectrum Semiconductor Materials CQZ12805.
+  //
+  // The pitch is read from `12.40 +/- 0.10`, the extent of one lead row, which
+  // is 31 x 0.40 exactly for the thirty-two leads a side that 128 pins on four
+  // sides requires. The drawing also prints `0.40 +/- 0.05` beside the leads.
+  // Two independent statements of the same number is the strongest reading this
+  // page offers, and it is recorded because a pitch places every pad.
+  CQZ12805: {
+    packageType: "Ceramic LQFP (128)",
+    parts: ["VA10820"],
+    source: "VA10820 datasheet, page 32, section 9.1, 128 Pin Ceramic LQFP Nominal Package Dimensions",
+    leadForm: "gullwing",
+    // Square 13.97 +/- 0.15 (.550 +/- .006), the outermost dimension: lead tip
+    // to lead tip.
+    leadSpanMm: { minMm: 13.82, maxMm: 14.12 },
+    // 0.15 +/- 0.05 (.006 +/- .002), one lead across the row.
+    leadWidthMm: { minMm: 0.1, maxMm: 0.2 },
+    pitchMm: 0.4,
+    // Square 12.00 +/- 0.12 (.472 +/- .005), the ceramic body.
+    bodyLengthMm: { minMm: 11.88, maxMm: 12.12 },
+    bodyWidthMm: { minMm: 11.88, maxMm: 12.12 },
+    leadSides: 4,
+    // The page dimensions the body, the lead span and the lead frame, and prints
+    // no seated foot length for the formed lead.
+    notRecordable: ["leadContactMm"]
+  },
+
+  // ST LQFP64 (5W), 10 x 10 mm body on a 12 x 12 mm lead span.
+  //
+  // Every value is from Table 84, which prints BSC figures for the spans and the
+  // pitch: those are exact by definition, so they are recorded as degenerate
+  // ranges rather than given a tolerance the document does not state.
+  //
+  // No `land`: section 6.8 runs pages 130 to 132 and is the outline figure, this
+  // table and the notes. The document draws a Footprint example for its UFQFPN
+  // and LQFP32 packages and none for this one.
+  "5W_LQFP64_ME_V1": {
+    packageType: "LQFP64",
+    parts: ["STM32G071RB"],
+    source: "STM32G071RB datasheet DS12232 Rev 5, page 131, Table 84, LQFP64 mechanical data",
+    designators: ["LQFP64"],
+    leadForm: "gullwing",
+    // D and E, 12.00 BSC. Square, so `leadSpanCrossMm` is omitted per the type.
+    leadSpanMm: { minMm: 12, maxMm: 12 },
+    // b, 0.17 / 0.22 / 0.27.
+    leadWidthMm: { minMm: 0.17, maxMm: 0.27 },
+    // L, 0.45 / 0.60 / 0.75, the seated foot.
+    leadContactMm: { minMm: 0.45, maxMm: 0.75 },
+    // e, 0.50 BSC.
+    pitchMm: 0.5,
+    // D1 and E1, 10.00 BSC.
+    bodyLengthMm: { minMm: 10, maxMm: 10 },
+    bodyWidthMm: { minMm: 10, maxMm: 10 },
+    // A, max 1.60 and no other value stated for the envelope. A2 is the body
+    // thickness at 1.35 / 1.40 / 1.45 and is a different quantity.
+    bodyHeightMaxMm: 1.6,
+    leadSides: 4,
+    // THIS ENTRY CLAIMED THE DATASHEET PRINTS NO FOOTPRINT FOR LQFP64. IT DOES.
+    //
+    // The claim was "Section 6.8 is pages 130 to 132: the outline figure, this
+    // table and the notes. The document draws a Footprint example for its
+    // UFQFPN and LQFP32 packages and none for this one." Page 132 ENDS with
+    // `Figure 48. LQFP64 - Footprint example`, drawing code `5W_LQFP64_FP_V2`,
+    // printed below the fifteen notes rather than beside the outline. The LQFP32
+    // half of the sentence was also wrong in the other direction: that footprint
+    // is on page 120 and this file recorded nothing for it either.
+    //
+    // The cost was four rows of `bench:dimensions` reporting the product WRONG
+    // for reading a figure correctly. That is the failure this project has
+    // already been caught by twice, most recently as "this datasheet prints no
+    // footprint" displayed beside the page that printed it. **An oracle is
+    // evidence, and a wrong one is worse than none, because it is believed.**
+    //
+    // A `printsNothingFor: ["land"]` claim is about a DOCUMENT and has to be
+    // checked against the whole document. Being keyed to the MECHANICAL drawing
+    // (`_ME_`) is what made it easy to read one figure and answer for the file.
+    land: {
+      source: "STM32G071RB datasheet DS12232 Rev 5, page 132, Figure 48, LQFP64 - Footprint example (5W_LQFP64_FP_V2)",
+      // 12.70 and 10.30 are the OUTER and INNER extents across two opposing
+      // rows, on both axes, so one land is (12.70 - 10.30) / 2 = 1.20 long -
+      // which the figure prints outright - and the centre-to-centre span is
+      // their mean, 11.50. 0.30 is the land across the row.
+      padLengthMm: 1.2,
+      padWidthMm: 0.3,
+      spanMm: 11.5,
+      spanCrossMm: 11.5
+    }
+  },
+
+  // ST UFQFPN48 (A0B9), 7 x 7 mm no-lead quad with an exposed pad, AND the
+  // recommended footprint the same datasheet prints for it.
+  //
+  // ## Which symbol is the pad
+  //
+  // Figure 43's bottom view settles it and the table alone does not: the leader
+  // reading EXPOSED PAD points at the hatched square, and D1 and E1 are the
+  // dimensions across that square. D2 and E2 span the terminal ROW, corner
+  // terminal to corner terminal, which is a different quantity and only 0.1 mm
+  // away from it in this table. Reading the table without the figure gets a
+  // thermal pad 0.1 mm wrong in copper.
+  //
+  // ## The land, and the number that is not a land
+  //
+  // Figure 44 prints 7.30 and 6.20 as the OUTER and INNER extents across two
+  // opposing rows, so one land is (7.30 - 6.20) / 2 = 0.55 long and the centre
+  // span is their mean, 6.75. The figure states 0.55 separately, which
+  // corroborates it.
+  //
+  // The 0.75 on that figure is NOT a land length. It is (7.30 - 5.80) / 2, the
+  // clearance from the outer edge of one row to the first land of the row at
+  // right angles to it - a corner gap. The product read it as the pad length and
+  // derived the span from 7.30 - 0.75, which is why this entry exists.
+  A0B9: {
+    packageType: "UFQFPN48",
+    parts: ["STM32F103C8"],
+    source:
+      "STM32F103C8 datasheet DS5319 Rev 20, pages 83 and 84: Figure 43 UFQFPN48 Outline, Table 53 mechanical data, Figure 44 Footprint example (A0B9_UFQFPN48_FP_V3)",
+    designators: ["UFQFPN48"],
+    leadForm: "nolead",
+    // b, 0.200 / 0.250 / 0.300.
+    leadWidthMm: { minMm: 0.2, maxMm: 0.3 },
+    // L, 0.300 / 0.400 / 0.500, the terminal length on the underside.
+    leadContactMm: { minMm: 0.3, maxMm: 0.5 },
+    // e, 0.500.
+    pitchMm: 0.5,
+    // D and E on the top view, 6.900 / 7.000 / 7.100.
+    bodyLengthMm: { minMm: 6.9, maxMm: 7.1 },
+    bodyWidthMm: { minMm: 6.9, maxMm: 7.1 },
+    // A, 0.500 / 0.550 / 0.600.
+    bodyHeightMm: { minMm: 0.5, maxMm: 0.6 },
+    // D1 and E1, 5.400 / 5.500 / 5.600. The EXPOSED PAD, per Figure 43.
+    thermalPadLengthMm: { minMm: 5.4, maxMm: 5.6 },
+    thermalPadWidthMm: { minMm: 5.4, maxMm: 5.6 },
+    leadSides: 4,
+    land: {
+      source: "STM32F103C8 datasheet page 84, Figure 44, UFQFPN48 - Footprint example",
+      padLengthMm: 0.55,
+      padWidthMm: 0.3,
+      spanMm: 6.75,
+      spanCrossMm: 6.75
+    }
   }
 };

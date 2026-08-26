@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "test": "tsx --test 'src/lib/**/__tests__/*.test.ts'",
     "test:retrieval": "tsx --test 'src/lib/**/__tests__/*.test.ts'",
     "bench:coverage": "tsx src/lib/retrieval/__bench__/coverage.ts",
@@ -17,9 +17,12 @@
     "oracle:build": "bash tools/altium-oracle/setup.sh",
     "bench:mutation": "tsx src/lib/__bench__/mutation.ts",
     "bench:dimensions": "tsx src/lib/__bench__/dimensions.ts",
+    "bench:questions": "tsx src/lib/__bench__/questions.ts",
     "bench:corpus": "tsx src/lib/__bench__/corpus.ts",
     "bench:copper": "tsx src/lib/__bench__/copper.ts",
-    "bench:repeat": "tsx src/lib/__bench__/repeat.ts"
+    "bench:repeat": "tsx src/lib/__bench__/repeat.ts",
+    "bench:browser": "tsx src/lib/__bench__/browser.ts",
+    "bench:discards": "tsx src/lib/__bench__/discards.ts"
   },
   "dependencies": {
     "@google/genai": "^2.17.1",
@@ -40,6 +43,7 @@
     "@types/react-dom": "^19.0.3",
     "eslint": "^9.20.1",
     "eslint-config-next": "^15.4.0",
+    "playwright": "^1.62.1",
     "tsx": "^4.23.1",
     "typescript": "^5.7.3"
   }

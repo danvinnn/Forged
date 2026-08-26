@@ -25,16 +25,18 @@ import {
   familyToken,
   normaliseForMatch,
   outlineCodeDesignator,
-  pinTableFor
+  pinTableFor,
+  sameDesignatorName
 } from "./packagevariants";
 import {
+  thermalPadNumber,
   type FootprintGeometry,
   type Pad,
   type SymbolGeometry,
   type SymbolPin,
   type ThermalVia
 } from "./geometry";
-import { confidenceChecks, summariseChecks, validateGeometry } from "./confidence";
+import { confidenceChecks, FootprintInvalidError, summariseChecks, validateGeometry, validateSymbol } from "./confidence";
 import { emitKicadFootprint, emitKicadSymbol } from "./emitters/kicad";
 import { emitAltiumPcbLib, emitAltiumSchLib } from "./emitters/altium";
 
@@ -52,6 +54,72 @@ import { emitAltiumPcbLib, emitAltiumSchLib } from "./emitters/altium";
  * `part` would be asked per part, which is friction, and every one of those is
  * a parsing gap rather than a permanent field.
  */
+/**
+ * EVERY FIELD THE PRODUCT MAY ASK A USER FOR, in one list.
+ *
+ * ## Why this is a value and not just a union
+ *
+ * A question is only a question if an answer can be given. Twice now the
+ * generator has asked for a field the export route had no way to receive:
+ * `leadsPerSide` from 2026-08-14, so a quad with unequal sides was told exactly
+ * which value would fix it and then had that value rejected as unknown, and
+ * `landSpanCrossMm` after it. Both were a refusal wearing the form of a
+ * question, which is worse than a plain refusal because it wastes the user's
+ * time before giving the same answer.
+ *
+ * The route used to repeat this list by hand, so the two could disagree and did.
+ * It now derives its accepted fields from here, and the partition below is
+ * proved complete by a test, so a field added to the catalogue is answerable the
+ * moment it exists or nothing compiles.
+ */
+export const REQUIRED_INPUT_FIELDS = [
+  "bodyLengthMm",
+  "bodyWidthMm",
+  "bodyHeightMm",
+  "formedLeadSpanMm",
+  "formedLeadContactMm",
+  "landPadLengthMm",
+  "landPadWidthMm",
+  "landSpanMm",
+  "landSpanCrossMm",
+  "leadDiameterMm",
+  "leadSides",
+  "pitchMm",
+  "leadsPerSide",
+  "thermalPadLengthMm",
+  "thermalPadWidthMm",
+  "vacantLeadSlot"
+] as const;
+
+/**
+ * The part-scoped fields answered by a plain millimetre figure, which is most of
+ * them. The export route validates exactly these as millimetres.
+ *
+ * The four that are not here are answered differently and each is handled by
+ * name on the route: `leadSides` is one of three counts, `vacantLeadSlot` is a
+ * grid position, `leadsPerSide` is a comma-separated list, and the two forming
+ * numbers are the installation's settings rather than this part's.
+ */
+export const MILLIMETRE_INPUT_FIELDS = [
+  "bodyLengthMm",
+  "bodyWidthMm",
+  "bodyHeightMm",
+  "landPadLengthMm",
+  "landPadWidthMm",
+  "landSpanMm",
+  "landSpanCrossMm",
+  "leadDiameterMm",
+  "pitchMm",
+  "thermalPadLengthMm",
+  "thermalPadWidthMm"
+] as const;
+
+/** Answered by their own rule on the route, one branch each. */
+export const SHAPED_INPUT_FIELDS = ["leadSides", "vacantLeadSlot", "leadsPerSide"] as const;
+
+/** Answered once per account on the settings screen, not per datasheet. */
+export const SETTING_INPUT_FIELDS = ["formedLeadSpanMm", "formedLeadContactMm"] as const;
+
 export interface RequiredInput {
   /**
    * The `/api/export` request field that answers it.
@@ -63,23 +131,7 @@ export interface RequiredInput {
    * a package it HAD heard of was quietly given that table's invented lead
    * dimensions. Neither is the document speaking.
    */
-  field:
-    | "bodyLengthMm"
-    | "bodyWidthMm"
-    | "bodyHeightMm"
-    | "formedLeadSpanMm"
-    | "formedLeadContactMm"
-    | "landPadLengthMm"
-    | "landPadWidthMm"
-    | "landSpanMm"
-    | "landSpanCrossMm"
-    | "leadDiameterMm"
-    | "leadSides"
-    | "pitchMm"
-    | "leadsPerSide"
-    | "thermalPadLengthMm"
-    | "thermalPadWidthMm"
-    | "vacantLeadSlot";
+  field: (typeof REQUIRED_INPUT_FIELDS)[number];
   /** Label for the input, in the user's language rather than the standard's. */
   label: string;
   /** Why no datasheet can answer it. Shown, not logged. */
@@ -805,10 +857,14 @@ export function buildFootprintGeometry(
   const declared = declaredLeadCount(part.packageType);
   if (declared !== null && declared !== part.pinCount) {
     throw new FootprintUnavailableError(
+      // NOT "this document covers several". That is an inference past the
+        // evidence, which is a lead count declared by a package name and a
+        // different number of rows in the table that was read. Both of those
+        // are stated; what the rest of the document holds was not checked.
       `${part.packageType} is a ${declared}-lead package and the pin table read from this datasheet has ` +
-        `${part.pinCount} pins, so the two describe different packages. This document covers several, and the ` +
-        `pinout on the record belongs to one of the others. Re-read the datasheet for ${part.packageType} to ` +
-        `get its own pinout; no footprint is generated from a pin table that is not this package's.`,
+        `${part.pinCount} pins, so the two describe different packages and this pinout is not this ` +
+        `package's. Re-read the datasheet for ${part.packageType} to get its own pinout; no footprint is ` +
+        `generated from a pin table that is not this package's.`,
       []
     );
   }
@@ -918,10 +974,16 @@ export function buildFootprintGeometry(
     const matched = verdicts.includes("match") || verdicts.includes("undecidable");
     if (!matched) {
       throw new FootprintUnavailableError(
-        `This datasheet prints an outline drawing for ${drawn.join(", ")}, and none of them is ` +
-          `${part.packageType}. A footprint for ${part.packageType} cannot be measured from this document, ` +
-          `so any dimensions on the record describe one of the other packages. Use the datasheet that draws ` +
-          `${part.packageType}, or pick one of the packages this document does draw.`,
+        // SAID ABOUT THE READING, NOT ABOUT THE DOCUMENT. `drawn` is the list of
+        // outline drawings this run FOUND, and a drawing it missed is not a
+        // drawing the datasheet lacks. The old wording asserted the second, and
+        // that is the sentence this product has already been caught getting
+        // wrong: "this datasheet prints no footprint", shown beside the page
+        // that printed it.
+        `The outline drawings read from this datasheet are for ${drawn.join(", ")}, and none of them is ` +
+          `${part.packageType}. No dimensions for ${part.packageType} were read here, so any on the record ` +
+          `describe one of the other packages. Pick one of the packages listed above, or use a datasheet ` +
+          `whose outline drawing is read as ${part.packageType}.`,
         []
       );
     }
@@ -1072,7 +1134,10 @@ export function buildFootprintGeometry(
   const readPattern = printed !== null;
   throw new FootprintUnavailableError(
     discards.length > 0
-      ? `${part.packageType}: ${discards.join("; ")}. Nothing else in this datasheet supplies a land pattern, ` +
+      // "Nothing else in this datasheet supplies a land pattern" was a claim
+        // about the document that nothing checked. What is actually known is
+        // that nothing else was READ, which is what it now says.
+      ? `${part.packageType}: ${discards.join("; ")}. No other land pattern was read from this datasheet, ` +
           `and none is derived from anything outside it. Supply it and it will be built from your numbers.`
       : readPattern
         ? `This datasheet's own recommended footprint for ${part.packageType} was read (${part.dimensions.landPadLengthMm} x ` +
@@ -1616,11 +1681,6 @@ function askForLandPattern(
     return needs;
   }
 
-  const why =
-    `This datasheet does not print a recommended footprint for ${part.packageType}, ` +
-    `and no land pattern is derived from anything outside it. Take these three from the ` +
-    `vendor's application note or your own library.`;
-
   // Where the answer is, when the document turned out to have it after all.
   //
   // `vendorLandPattern` is the page a land-pattern drawing was found on. It used
@@ -1630,6 +1690,33 @@ function askForLandPattern(
   // what the document being non-silent actually entitles them to.
   const landPage = part.vendorLandPattern?.page ?? null;
   const landLabel = "Recommended footprint printed in this datasheet";
+
+  /**
+   * WHAT WE DID, NOT WHAT THE DOCUMENT CONTAINS.
+   *
+   * This said "This datasheet does not print a recommended footprint for X",
+   * flatly, whenever the three land values were missing. That is an assertion
+   * about the DOCUMENT, and we are not entitled to it: the values being absent
+   * from our record means we did not read them, which is a different fact.
+   *
+   * Reported 2026-08-25 by a user who read the page we were showing them. An
+   * LTC6563 prints "RECOMMENDED SOLDER PAD PITCH AND DIMENSIONS" on page 33,
+   * dimensioned 0.70 x 0.25 with 5.50/4.10 and 3.50/2.10 extents, and the
+   * screen displayed that page beside a sentence saying no such drawing
+   * existed. Four of six cached reads of that part get those numbers right, so
+   * this was our reader missing something on a page we had already located and
+   * rendered.
+   *
+   * Saying "we could not read it" costs nothing and is true either way. Saying
+   * the vendor did not print it is false whenever they did, and it sends the
+   * user to an application note instead of to the page in front of them.
+   */
+  const why = landPage
+    ? `This datasheet prints a recommended footprint on page ${landPage}, and these values could not be ` +
+      `read off it. They are asked rather than guessed. The page is beside this.`
+    : `No recommended footprint was read from this datasheet for ${part.packageType}. If the document ` +
+      `prints one it is usually beside the package outline drawing, and the page is shown here; ` +
+      `otherwise take these from the vendor's application note or your own library.`;
 
   if (part.dimensions.landPadLengthMm === null) {
     needs.push({ field: "landPadLengthMm", label: "Land length, along the lead", why, unit: "mm", scope: "part", page: landPage, pageLabel: landLabel });
@@ -1989,7 +2076,7 @@ function assemble(
     // expects exactly `pinCount + 1` for the pad, and a vendor label like `EP`
     // would fail that check.
     pads.push({
-      number: String(part.pinCount + 1),
+      number: thermalPadNumber(part.pinCount),
       centre: { xMm: 0, yMm: 0 },
       widthMm: thermal.widthMm,
       heightMm: thermal.heightMm,
@@ -2204,10 +2291,53 @@ function assemble(
   // the same arithmetic that produced `gMinMm` for the main one.
   const crossGapMm =
     land.padCentreCrossMm !== undefined ? land.padCentreCrossMm * 2 - land.padLengthMm : land.gMinMm;
-  const bodyHalfLengthMm = quad
+  // The fallbacks are per axis, and `rowSpanMm + pitch` belongs to whichever
+  // axis the ROW is on: Y for a dual, X for a single line of pins.
+  const readBodyHalfLengthMm = quad
     ? (part.dimensions.bodyLengthMm ?? crossGapMm) / 2
     : (part.dimensions.bodyLengthMm ?? rowSpanMm + definition.pitchMm) / 2;
-  const bodyHalfWidthMm = (part.dimensions.bodyWidthMm ?? land.gMinMm) / 2;
+  const readBodyHalfWidthMm = (part.dimensions.bodyWidthMm ?? land.gMinMm) / 2;
+
+  const single = definition.arrangement === "single";
+
+  // WHICH AXIS EACH BODY DIMENSION IS DRAWN ON, stated rather than assumed.
+  //
+  // `bodyLengthMm` is drawing dimension D and it runs ALONG the lead rows. On a
+  // dual and a quad the rows run down the page, so D is the Y extent, and every
+  // other axis-aware piece of this file follows that: the thermal pad, the via
+  // grid, the courtyard.
+  //
+  // A SINGLE ROW RUNS THE OTHER WAY. Its pads are stepped along X - see the
+  // placement above and the pin-1 marker below, both of which put the row on X -
+  // so D is the X extent and E is the Y extent, the transpose of the dual case.
+  // This block used the dual mapping for all three arrangements, so a TO-220 was
+  // drawn 4.6 mm wide and 10 mm tall with a 5.08 mm row of pins coming out of
+  // the 4.6 mm side: a fabrication outline ninety degrees from its own copper.
+  //
+  // Invisible on every single-row part in the corpus, because all of them read a
+  // SQUARE body: AD590's TO-52 at 5.31 x 5.31, RHFL4913's TO-257 at 10.54 x
+  // 10.54, LT1013's TO-5 at 8.95 x 8.95. It was the row-fits-body invariant in
+  // `geometryViolations` that surfaced it, on the one rectangular single-row
+  // body anywhere in this repo, which is the L7805 test fixture.
+  //
+  // Same failure as the thermal pad rotated off its own package on 2026-08-16,
+  // and the via grid rotated off the pad it sits on: two fields both called
+  // "length" on opposite axes.
+  //
+  // THE BODY IS DRAWN AS READ, and an earlier version of this block grew it to
+  // hold its own lead rows wherever the row was longer. That was wrong, and the
+  // hand-read drawing that disproves it is CQZ12805, VA10820's 128-lead ceramic
+  // LQFP: it prints a 12.40 mm lead row on a 12.00 mm ceramic body, both
+  // measured off the page. A lead frame brazed to a ceramic body OVERHANGS it,
+  // so the row legitimately reaches past the outline, and growing the outline to
+  // 12.40 drew a body 0.4 mm larger than the drawing states.
+  //
+  // The reasoning behind the growth - that the copper is corroborated so the body
+  // must be the outlier - was sound and the premise was false: the body was the
+  // number that was RIGHT. Only `bench:dimensions`, scoring against the hand-read
+  // drawing, could say so.
+  const bodyHalfXMm = single ? readBodyHalfLengthMm : readBodyHalfWidthMm;
+  const bodyHalfYMm = single ? readBodyHalfWidthMm : readBodyHalfLengthMm;
 
   // How far the lands actually reach, which is what the courtyard has to clear.
   // Paste apertures are inside their own copper and thermal vias inside the pad,
@@ -2239,7 +2369,7 @@ function assemble(
         : `${part.partNumber} ${definition.family}, IPC-7351B density level ${densityLevel}. Lead data: ${definition.source}`,
     partNumber: part.partNumber,
     pads,
-    body: { halfWidthMm: bodyHalfWidthMm, halfHeightMm: bodyHalfLengthMm },
+    body: { halfWidthMm: bodyHalfXMm, halfHeightMm: bodyHalfYMm },
     // The keep-out has to clear the LANDS, and on a quad they reach the same
     // distance out on all four sides. Taking the height from the body, as the
     // dual case does, would draw a courtyard inside the top and bottom lands.
@@ -2268,7 +2398,7 @@ function assemble(
     courtyard: {
       halfWidthMm: Math.max(land.courtyardHalfMm, padHalfExtentXMm + COURTYARD_EXCESS[densityLevel]),
       halfHeightMm: Math.max(
-        quad ? land.courtyardHalfMm : bodyHalfLengthMm + COURTYARD_EXCESS[densityLevel],
+        quad ? land.courtyardHalfMm : bodyHalfYMm + COURTYARD_EXCESS[densityLevel],
         padHalfExtentYMm + COURTYARD_EXCESS[densityLevel]
       )
     },
@@ -2317,6 +2447,7 @@ function assemble(
         ? { centreToCentreCrossMm: Number((land.padCentreCrossMm * 2).toFixed(3)) }
         : {}),
       pitchMm: definition.pitchMm,
+      arrangement: definition.arrangement,
       // See `FootprintProvenance.discards`. Threaded from the caller rather than
       // rebuilt, because the discards happen before `assemble` is reached.
       discards
@@ -2334,6 +2465,16 @@ function assemble(
  * was not really an Altium file, which is worse than nothing: it looks like a
  * deliverable in a file listing and it is not one.
  */
+/**
+ * Re-exported so `/api/export` has one door into the generator layer.
+ *
+ * The route already imports every other refusal it handles from this module.
+ * `AltiumEmitError` was reachable only from `emitters/altium/units`, so the
+ * route did not catch it, and a name the format cannot write left as a 500
+ * reading "Export failed."
+ */
+export { AltiumEmitError } from "./emitters/altium/units";
+
 export class GeneratorUnavailableError extends Error {
   constructor(
     readonly format: ExportFormat,
@@ -2516,6 +2657,14 @@ export async function createExportZip(
   // file list.
   if (!footprint) throw new FootprintUnavailableError("No footprint was built.", []);
   const symbol = buildSymbolGeometry(part);
+  // THE SYMBOL CHECKS ITSELF TOO, and for the same reason the footprint does.
+  //
+  // The netlist is the two halves together: a connection exists only where the
+  // footprint and the symbol name the same pin. Only the footprint was ever
+  // checked, and `buildSymbolGeometry` DROPS a pin its lookup misses, so a
+  // gapped table shipped N lands beside a symbol with fewer pins and every check
+  // passed. See `symbolViolations`.
+  validateSymbol(symbol, part);
 
   // One generator per format, each reading the geometry above and nothing else.
   // Formats are peers: none is produced by converting another.
@@ -2683,7 +2832,10 @@ export type PackageChoice =
  * it deliberately.
  */
 export function asPackage(part: ResolvedPart, designator: string): ResolvedPart {
-  if (designator === part.packageType) return part;
+  // The SAME package spelled differently is not a different package. See
+  // `sameDesignatorName`: `===` here discarded every dimension on an LTC6563
+  // over one capital letter.
+  if (sameDesignatorName(designator, part.packageType)) return part;
   const blank = Object.fromEntries(
     Object.keys(part.dimensions).map((key) => [key, null])
   ) as ResolvedPart["dimensions"];
@@ -2831,13 +2983,30 @@ function optionFor(
   // package the user was told would ship asked three questions when pressed.
   const body = askForBody(withSupplied(candidate, answers.supplied));
   try {
-    buildFootprintGeometry(
+    const geometry = buildFootprintGeometry(
       candidate,
       "B",
       answers.formedLeadSpanMm,
       answers.supplied,
       answers.formedLeadContactMm
     );
+    // THE SAME INVARIANTS THE EXPORT RUNS, or this reports a click that fails.
+    //
+    // `createExportZip` builds the geometry and then checks it, and only the
+    // build was mirrored here. So an option whose lands overlap, whose courtyard
+    // sits inside its own copper, or whose symbol is missing a pin was offered
+    // as `ships` and refused the moment it was clicked - with a
+    // `FootprintInvalidError`, which reads as a crash rather than as an answer.
+    //
+    // Live on LT1013 the day the single-row invariant was added: its TO-5 metal
+    // can builds eight lands in a 35.56 mm line, `buildFootprintGeometry`
+    // returns them without complaint, and `validateGeometry` is what refuses.
+    // The chooser offered that package under two names.
+    //
+    // This is the drift the paragraph above describes and the whole reason this
+    // function exists: a click's outcome must not differ from the export's.
+    validateGeometry(geometry, withSupplied(candidate, answers.supplied));
+    validateSymbol(buildSymbolGeometry(candidate), candidate);
     return body.length > 0
       ? { ...base, status: "needs-input", needs: body, reason: null }
       : { ...base, status: "ships", needs: [], reason: null };
@@ -2846,6 +3015,16 @@ function optionFor(
       return error.needs.length > 0
         ? { ...base, status: "needs-input", needs: [...error.needs, ...body], reason: null }
         : { ...base, status: "unsupported", needs: [], reason: error.reason };
+    }
+    // A footprint that fails its own invariants is a NON-SHIP and says why.
+    //
+    // `shipOutcome` has treated it that way since 2026-08-17 - "an invalid
+    // footprint IS a non-ship, and saying so is strictly more informative than a
+    // stack trace" - and this is the same rule with the second copy hardened.
+    // Without it the message lands in the branch below, which is worded as
+    // though Forge had crashed.
+    if (error instanceof FootprintInvalidError) {
+      return { ...base, status: "unsupported", needs: [], reason: error.violations.join("; ") };
     }
     // Anything else is a defect rather than a refusal, and reporting it as an
     // unbuildable package would bury it. It is still not allowed to fail the
@@ -3040,41 +3219,155 @@ function optionsFromPerPackageTables(
         }))
       : offered;
 
-  const options = choices.map((variant) => {
-    const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
-    const entry = pinTableFor(tables, variant.designator);
-    // Two different absences, and telling the user they are the same misdirects
-    // them: no entry at all means the reading never covered this package, while
-    // an entry carrying only measurements means its drawings were read and its
-    // pinout was not. Only the second says where to look.
-    if (!entry || !entry.pins) {
-      return {
-        ...base,
-        status: "unsupported" as const,
-        needs: [],
-        reason: entry
-          ? `This datasheet's drawings for ${variant.designator} were read, but no pin table was found ` +
-            `for it, and a footprint cannot be numbered without one. Re-reading the datasheet for this ` +
-            `package is what would settle it.`
-          : `This document gives a pinout for each package it describes, and none of them matches ` +
-            `${variant.designator}. Re-reading the datasheet for this package is what would settle it.`
-      };
-    }
-    const forThisPackage = withPinTable(record, entry);
-    const usable = resolveForExport(forThisPackage);
-    if (!usable.ok) {
-      const why = usable.missing.length > 0 ? usable.missing : (usable.untraceable ?? []);
-      return {
-        ...base,
-        status: "unsupported" as const,
-        needs: [],
-        reason: `${variant.designator}'s own pin table is on the record but cannot be used: ${why.join(", ")}.`
-      };
-    }
-    return optionFor(usable.part, variant, false, answers);
-  });
+  const options = choices.map((variant) => optionFromPerPackageTable(record, tables, variant, answers));
+  // AND THE PACKAGES THE DOCUMENT DESCRIBES THAT NOTHING ABOVE REACHED.
+  //
+  // The same addition the other route makes, and needed here for the same
+  // reason: `choices` is still the ordering table's vocabulary wherever any one
+  // harvested designator resolved, so a package the document tabulates under a
+  // name the ordering guide never used stays invisible. See
+  // `packagesOnlyTheDocumentNames`.
+  const extra = packagesOnlyTheDocumentNames(record, options).map((variant) =>
+    optionFromPerPackageTable(record, tables, variant, answers)
+  );
 
-  return { ok: true, options };
+  return { ok: true, options: [...options, ...extra] };
+}
+
+/**
+ * One chooser option built from the document's own per-package section.
+ *
+ * Named and shared because both routes into the chooser need it: the route for a
+ * record with no flat pinout, and the one below that offers packages the
+ * ordering table never listed. Two copies of this would be two answers to "can
+ * the user build this package", which is the whole question the chooser asks.
+ */
+function optionFromPerPackageTable(
+  record: PartRecord,
+  tables: NonNullable<PartRecord["packagesInThisDocument"]>,
+  variant: { designator: string; family: string; leadCount: number | null },
+  answers: OptionAnswers
+): PackageOption {
+  const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
+  const entry = pinTableFor(tables, variant.designator);
+  // Two different absences, and telling the user they are the same misdirects
+  // them: no entry at all means the reading never covered this package, while
+  // an entry carrying only measurements means its drawings were read and its
+  // pinout was not. Only the second says where to look.
+  if (!entry || !entry.pins) {
+    return {
+      ...base,
+      status: "unsupported" as const,
+      needs: [],
+      reason: entry
+        ? `This datasheet's drawings for ${variant.designator} were read, but no pin table was found ` +
+          `for it, and a footprint cannot be numbered without one. Re-reading the datasheet for this ` +
+          `package is what would settle it.`
+        : `Pinouts were read from this datasheet for other packages, and none of them matches ` +
+          `${variant.designator}. Re-reading the datasheet for this package is what would settle it.`
+    };
+  }
+  const forThisPackage = withPinTable(record, entry);
+  const usable = resolveForExport(forThisPackage);
+  if (!usable.ok) {
+    const why = usable.missing.length > 0 ? usable.missing : (usable.untraceable ?? []);
+    return {
+      ...base,
+      status: "unsupported" as const,
+      needs: [],
+      reason: `${variant.designator}'s own pin table is on the record but cannot be used: ${why.join(", ")}.`
+    };
+  }
+  return optionFor(usable.part, variant, false, answers);
+}
+
+/**
+ * Packages the document DESCRIBES that no harvested designator reaches.
+ *
+ * ## Why the ordering table is not the list of packages
+ *
+ * `packageVariants` is harvested from the ordering table and the prose. That is
+ * one of the two places a datasheet names its packages, and it is the one that
+ * goes out of date: a document routinely draws and tabulates a package its
+ * ordering guide does not list, or lists it under a name the harvest does not
+ * recognise. RHFL4913A prints a complete `SMD5C` pin table and a full set of
+ * measurements, and its harvested variants name only the Flat-16P.
+ *
+ * The chooser then offered one package while holding two, which is this
+ * codebase's recurring failure written out in the interface: we had it and threw
+ * it away. Measured over the tuned corpus on 2026-08-25, eighteen of fifty-seven
+ * parts were in that state, covering thirty-four packages.
+ *
+ * ## Why this cannot invent an option
+ *
+ * Every entry offered here is one the DOCUMENT wrote: it carries a pin table
+ * that was read, located and proved to number 1..N, and it has already been
+ * filtered to this part rather than a sibling during the extraction join. The
+ * name shown is the document's own caption, with the drawing code appended only
+ * where two captions collide and would otherwise be indistinguishable.
+ *
+ * Nothing is offered that a harvested variant already reaches, so a part whose
+ * chooser works today gains nothing and cannot gain a duplicate.
+ */
+function packagesOnlyTheDocumentNames(
+  record: PartRecord,
+  offered: readonly PackageOption[]
+): Array<{ designator: string; family: string; leadCount: number | null }> {
+  const tables = record.packagesInThisDocument;
+  if (!tables || tables.length === 0) return [];
+  const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  const reached = new Set<string>();
+  for (const option of offered) {
+    const hit = pinTableFor(tables, option.designator);
+    if (hit) reached.add(`${key(hit.packageType)}|${key(hit.outlineCode ?? "")}`);
+  }
+
+  /**
+   * AN OPTION'S LABEL MUST RESOLVE BACK TO THE TABLE IT WAS MADE FROM.
+   *
+   * A chooser entry is a promise that picking it builds that package, and the
+   * pick is resolved by looking the label up again. So a label is only usable if
+   * the lookup returns this same table, and where the plain caption does not,
+   * the drawing code is appended - which is the one thing on the page that names
+   * a drawing unambiguously.
+   *
+   * Two ways a caption fails to resolve, and this covers both without knowing
+   * which it is: a document printing two drawings the model captioned
+   * identically, and a caption that CONTAINS another - `HVSSOP (DGN)` and
+   * `VSSOP (DGN)` are one drawing each, and `pinTableFor` matches by containment
+   * and correctly refuses to guess between them.
+   */
+  const labelFor = (table: (typeof tables)[number]): string | null => {
+    const same = (found: typeof table | null) =>
+      found !== null &&
+      key(found.packageType) === key(table.packageType) &&
+      key(found.outlineCode ?? "") === key(table.outlineCode ?? "");
+    if (same(pinTableFor(tables, table.packageType))) return table.packageType;
+    if (!table.outlineCode) return null;
+    const withCode = `${table.packageType} [${table.outlineCode}]`;
+    return same(pinTableFor(tables, withCode)) ? withCode : null;
+  };
+
+  const extra: Array<{ designator: string; family: string; leadCount: number | null }> = [];
+  for (const table of tables) {
+    if (!table.pins || table.pins.length === 0) continue;
+    if (reached.has(`${key(table.packageType)}|${key(table.outlineCode ?? "")}`)) continue;
+    // Nothing is offered that cannot be resolved back, because an option the
+    // user picks and the code then cannot find is worse than an absent one.
+    const designator = labelFor(table);
+    if (designator === null) continue;
+    // A label already on the list is not a second option: two rows reading the
+    // same thing are not a choice.
+    if (offered.some((option) => key(option.designator) === key(designator))) continue;
+    if (extra.some((option) => key(option.designator) === key(designator))) continue;
+    extra.push({
+      designator,
+      family: familyToken(table.packageType) ?? table.packageType,
+      leadCount: table.pins.length
+    });
+  }
+  return extra;
 }
 
 /** The record as it stands for ONE package, carrying that package's own pinout. */
@@ -3136,10 +3429,18 @@ export function packageOptions(record: PartRecord, answers: OptionAnswers = {}):
   }
 
   const chosen = record.packageType.value;
-  return {
-    ok: true,
-    options: record.packageVariants.map((variant) =>
-      optionFor(resolved.part, variant, variant.designator === chosen, answers)
-    )
-  };
+  const harvested = record.packageVariants.map((variant) =>
+    // Same rule as `asPackage`, and for the same reason: the chosen package
+    // spelled differently is still the chosen package.
+    optionFor(resolved.part, variant, chosen !== null && sameDesignatorName(variant.designator, chosen), answers)
+  );
+  // AND THE PACKAGES THE DOCUMENT DESCRIBES THAT THE ORDERING TABLE DID NOT
+  // NAME. See `packagesOnlyTheDocumentNames`.
+  const tables = record.packagesInThisDocument;
+  const extra = tables
+    ? packagesOnlyTheDocumentNames(record, harvested).map((variant) =>
+        optionFromPerPackageTable(record, tables, variant, answers)
+      )
+    : [];
+  return { ok: true, options: [...harvested, ...extra] };
 }

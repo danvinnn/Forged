@@ -1,6 +1,7 @@
 import { computeLandPattern, COURTYARD_EXCESS } from "./ipc7351";
 import type { ResolvedPart } from "./types";
-import type { FootprintGeometry } from "./geometry";
+import { thermalPadNumber } from "./geometry";
+import type { FootprintGeometry, SymbolGeometry } from "./geometry";
 
 /**
  * How much to believe a record, from evidence already in hand.
@@ -427,7 +428,7 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
   // table was empty but whose count was known, which is a different defect and
   // one `pins-match-count` above already reports.
   const wanted = new Set(Array.from({ length: part.pinCount }, (_, index) => String(index + 1)));
-  if (part.exposedPad) wanted.add(String(part.pinCount + 1));
+  if (part.exposedPad) wanted.add(thermalPadNumber(part.pinCount));
   const seen = new Map<string, number>();
   for (const pad of lands) seen.set(pad.number, (seen.get(pad.number) ?? 0) + 1);
 
@@ -483,6 +484,53 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
       if (overlaps) {
         problems.push(`lands ${lands[left].number} and ${lands[right].number} overlap, which shorts them together`);
       }
+    }
+  }
+
+  // A SINGLE ROW OF LANDS CANNOT BE FOUR TIMES THE PACKAGE IT COMES OUT OF.
+  //
+  // LIVE ON LT1013, found 2026-08-25. Its 8-lead TO-5 metal can builds EIGHT
+  // PADS IN A STRAIGHT LINE 35.56 MM LONG on a body 8.95 mm across, and ships:
+  // nothing refuses it, no confidence check covers it, and it looks like an
+  // ordinary SIP in CAD. The cause is that 5.08 mm on a metal can drawing is the
+  // LEAD CIRCLE DIAMETER, and this generator has no circular arrangement, so it
+  // was read as a linear pitch and laid out as a row. The chooser offered that
+  // package under two names and both built.
+  //
+  // ONLY THE SINGLE ROW, and the reason is which reading can be checked against
+  // which. On a single row the pads come from the pitch and the count alone:
+  // there is no lead span and no printed land pattern, so the body is the ONLY
+  // independent measurement of the same package and a disagreement convicts the
+  // placement. On a dual or a quad the land span is read off the datasheet's own
+  // printed footprint, which measures the package independently, so the body is
+  // not the arbiter there and this must not be extended to them.
+  //
+  // AND THE ROW MAY LEGITIMATELY OVERHANG THE BODY, BY ABOUT A PITCH.
+  //
+  // The bound is `body + pitch` rather than `body`, and that slack is taken from
+  // a hand-read drawing rather than invented. CQZ12805, VA10820's 128-lead
+  // ceramic LQFP, prints a 12.40 mm lead row on a 12.00 mm ceramic body - both
+  // measured off page 32 by a person - because a lead frame brazed to a ceramic
+  // body overhangs it. That is 0.4 mm, exactly the pitch, and it is a correct
+  // package rather than a defect.
+  //
+  // A strict `row > body` was written first, on the reasoning that leads emerge
+  // from the body so the row cannot be longer. The reasoning is wrong for any
+  // package whose leads are carried on a frame, and `bench:dimensions` is what
+  // said so. LT1013 clears the widened bound by a factor of two and a half:
+  // 35.56 mm against 8.95 + 5.08.
+  const bodyAlongRowMm = part.dimensions.bodyLengthMm;
+  const pitchMm = geometry.provenance.pitchMm;
+  if (geometry.provenance.arrangement === "single" && bodyAlongRowMm !== null && lands.length > 1) {
+    const xs = lands.map((pad) => pad.centre.xMm);
+    const rowMm = Math.max(...xs) - Math.min(...xs);
+    if (rowMm > bodyAlongRowMm + pitchMm + TOUCHING_MM) {
+      problems.push(
+        `the ${lands.length} lands form a single row ${rowMm.toFixed(2)} mm long on a body ` +
+          `${bodyAlongRowMm} mm across, so they cannot all be leads coming out of it. Either the ` +
+          `${pitchMm} mm pitch is not a spacing along a row - a metal can spaces its leads around a ` +
+          `circle, and its drawing gives that circle's diameter - or the body was misread`
+      );
     }
   }
 
@@ -569,6 +617,118 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
   }
 
   return problems;
+}
+
+/**
+ * The SYMBOL's invariants, checked against the part it claims to be.
+ *
+ * ## Why this exists separately
+ *
+ * `geometryViolations` is an invariant over the FOOTPRINT, and the netlist is
+ * made by the footprint and the symbol together: a connection exists only where
+ * both name the same pin. Everything in this file checked one half.
+ *
+ * `buildSymbolGeometry` collects its pins by walking 1..`pinCount` and looking
+ * each number up in the pin table, and a number the table does not carry is
+ * SKIPPED - one `if (!pin) return;` with no note and no refusal. So a record
+ * whose table is gapped shipped a footprint with N lands beside a symbol with
+ * fewer pins, and nothing anywhere said so: the footprint's own checks pass,
+ * because the pads are numbered from `pinCount` and every pin the table DOES
+ * list has one.
+ *
+ * `types.ts` has carried a comment about this exact hole - a record edited to
+ * eight pads against SEVEN symbol pins, "validateGeometry cannot catch it" -
+ * since 2026-08-16. It could not, because it was only ever shown the footprint.
+ *
+ * The input guards do not close it. `mergeModelValues` holds a model pin table
+ * to `isGapFreeSequence` and `partSchema` guards the export route, but both are
+ * guards on the INPUT and this product has now been caught three times by a
+ * fourth door: a per-package table, a package relabel, an inline edit in the
+ * review panel. An invariant on the OUTPUT has one door however the record got
+ * there, which is the argument `geometryViolations` already makes for itself.
+ */
+export function symbolViolations(symbol: SymbolGeometry, part: ResolvedPart): string[] {
+  const problems: string[] = [];
+  const drawn = new Map<string, number>();
+  for (const pin of symbol.pins) drawn.set(pin.number, (drawn.get(pin.number) ?? 0) + 1);
+
+  // ONE SYMBOL PIN PER LAND THE FOOTPRINT PLACES. A pin the symbol omits is a
+  // connection that exists on the board and not in the schematic, which is the
+  // failure a netlist cannot survive and no geometric check can see.
+  //
+  // COUNTED FROM `pinCount`, not from the pins array, and this is the whole
+  // check. The pads are numbered 1..N from `pinCount` - `geometryViolations`
+  // says so and says why - so that is the set the symbol has to match. Asking
+  // the pins array instead misses the only case that matters: a table missing
+  // pin 2 on a three-pin part draws pins 1 and 3, and every pin the TABLE lists
+  // is then present and correct. Three lands, two pins, nothing to report.
+  const named = new Map<string, string>();
+  for (const pin of part.pins) {
+    if (/^\d+$/.test(pin.number)) named.set(pin.number, pin.name);
+  }
+  for (let number = 1; number <= part.pinCount; number += 1) {
+    const key = String(number);
+    const count = drawn.get(key) ?? 0;
+    if (count === 1) continue;
+    const label = named.has(key) ? ` ("${named.get(key)}")` : ", which the pin table does not list,";
+    problems.push(
+      `the footprint places a land for pin ${key}${label} and the symbol draws it ${count} times, ` +
+        `so that connection does not exist in the schematic`
+    );
+  }
+  // THE EXPOSED PAD IS NOT A SCHEMATIC PIN, and it is the one row that may sit
+  // past the lead count without being an error.
+  //
+  // Texas Instruments numbers the pad as an ordinary row - a PowerPAD SOIC-8 has
+  // a NINTH called `9` - and `geometryViolations` already allows a land at that
+  // number on an exposed-pad part for exactly this reason. It carries no signal,
+  // so this generator draws no stub for it, and reporting the absent stub would
+  // refuse every PowerPAD part in the corpus.
+  const padNumber = part.exposedPad ? thermalPadNumber(part.pinCount) : null;
+
+  // A pin the TABLE carries that no land and no symbol pin reaches. The
+  // footprint's own checks report the missing land; this reports the missing
+  // stub, so a reader is not told half of it.
+  for (const [number, name] of named) {
+    if (Number(number) <= part.pinCount || number === padNumber) continue;
+    problems.push(
+      `the pin table lists pin ${number} ("${name}"), which is past this part's ${part.pinCount} pins, ` +
+        `and the symbol does not draw it`
+    );
+  }
+  for (const [number] of drawn) {
+    if (Number(number) >= 1 && Number(number) <= part.pinCount) continue;
+    problems.push(`the symbol draws pin ${number}, which is not one of this part's ${part.pinCount} pins`);
+  }
+
+  // AND UNDER THE NAME THE RECORD GIVES IT. A symbol pin renamed on the way out
+  // is a wire connected to the wrong net by a reviewer reading the schematic.
+  for (const pin of symbol.pins) {
+    const expected = named.get(pin.number);
+    if (expected !== undefined && expected !== pin.name) {
+      problems.push(`symbol pin ${pin.number} is drawn as "${pin.name}" and the record reads "${expected}"`);
+    }
+  }
+
+  // NO TWO PINS ON ONE POINT. Two stubs at the same anchor are a short the
+  // moment a wire touches either, and they look like one pin on the sheet.
+  const seen = new Map<string, string>();
+  for (const pin of symbol.pins) {
+    const at = `${pin.anchor.xMm.toFixed(4)},${pin.anchor.yMm.toFixed(4)}`;
+    const other = seen.get(at);
+    if (other !== undefined) {
+      problems.push(`symbol pins ${other} and ${pin.number} share one anchor point, which shorts them`);
+    }
+    seen.set(at, pin.number);
+  }
+
+  return problems;
+}
+
+/** Throws unless the SYMBOL is one this generator is willing to stand behind. */
+export function validateSymbol(symbol: SymbolGeometry, part: ResolvedPart): void {
+  const violations = symbolViolations(symbol, part);
+  if (violations.length > 0) throw new FootprintInvalidError(violations);
 }
 
 /** Throws unless the footprint is one this generator is willing to stand behind. */

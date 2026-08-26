@@ -89,8 +89,15 @@ const PACKAGE_FAMILIES = [
  * three-lead part; `SC70` counts nothing at all. Reading those numbers as lead
  * counts is how an LD1117 declared 220 pins and an RTAX2000S 883, so for these
  * the number is kept as part of the NAME and no count is claimed.
+ *
+ * `TSOT` is here because it is the SAME OUTLINE, thinned: a TSOT-23 is a
+ * SOT-23 body at a lower profile, and its 23 is the identical JEDEC outline
+ * number carried over. `SOT` was on this list and `TSOT` was not, so the two
+ * spellings of one outline disagreed. Seen live in the package chooser on an
+ * AD8628, which offers both: `SOT-23` claimed no lead count, correctly, and
+ * `TSOT-23` sat beside it reading "TSOT, 23 leads" on a five-lead part.
  */
-const OUTLINE_NUMBERED = new Set(["TO", "SOT", "SC", "DO", "SOD", "DPAK"]);
+const OUTLINE_NUMBERED = new Set(["TO", "SOT", "TSOT", "SC", "DO", "SOD", "DPAK"]);
 
 /**
  * Families that are also ordinary English words or common abbreviations, and so
@@ -183,6 +190,25 @@ interface DesignatorForm {
   adjectiveGroup?: number;
   /** Glued forms claim a count with no keyword, so a small one is a footnote. */
   minCount?: number;
+  /**
+   * Whether this form's number is anchored by the vendor's own word for a lead.
+   *
+   * ## Why an outline-numbered family still gets a count from this form
+   *
+   * `OUTLINE_NUMBERED` exists because a trailing number on those families is a
+   * NAME: the 23 in `SOT-23` is a body outline sold with 3, 5, 6 and 8 leads.
+   * That was applied to every form at once, which threw away counts the
+   * document states in words. Measured on an AD8628, which prints `5-Lead SOT`
+   * and `5-Lead TSOT`: both came back declaring no lead count at all, on a
+   * datasheet that says "5-Lead" in front of the family name.
+   *
+   * That is the failure shape this repo keeps finding: the evidence was on the
+   * page, was matched, and was discarded by a rule written for a different
+   * form. `5-Lead SOT` is not ambiguous. The count is a count because the
+   * vendor wrote "Lead" next to it, and no outline number can be confused for
+   * one when the digits are on the other side of that word.
+   */
+  countIsAnchored?: boolean;
 }
 
 /**
@@ -243,7 +269,8 @@ const FORMS: DesignatorForm[] = [
     ),
     countGroup: 1,
     familyGroup: 3,
-    adjectiveGroup: 2
+    adjectiveGroup: 2,
+    countIsAnchored: true
   },
   // `SOIC (8)`, `SON (6)`, `LQFP (80)`. The space before the bracket is
   // required and it is doing real work: across the corpus a designator is a
@@ -311,7 +338,9 @@ export function findPackageVariants(text: string, frontMatterEnd: number): Packa
       if (adjective && namesPackageFamily(adjective)) continue;
 
       const raw = form.countGroup === null ? null : Number(match[form.countGroup]);
-      const outlineNumbered = OUTLINE_NUMBERED.has(family);
+      // An outline number is a name, EXCEPT where the vendor anchored it to the
+      // word "lead" or "pin" themselves. See `countIsAnchored`.
+      const outlineNumbered = OUTLINE_NUMBERED.has(family) && form.countIsAnchored !== true;
       const count = raw !== null && Number.isFinite(raw) && !outlineNumbered ? raw : null;
 
       if (count !== null && (count < (form.minCount ?? 2) || count > MAX_LEAD_COUNT)) continue;
@@ -727,6 +756,99 @@ export function findOrderablePackages(text: string, partNumber: string): Package
  * answer rather than a guess. `buildFootprintGeometry` refuses anything left
  * contradictory.
  */
+/**
+ * Whether two printed designators name the SAME package.
+ *
+ * Letters and digits only, upper case, which is the comparison `pinTableFor`
+ * has always used so that `VQFN (RGE)` and `VQFNRGE` are one string. Exported
+ * so `asPackage` can use the same rule instead of `===`.
+ *
+ * ## What `===` cost
+ *
+ * `asPackage` blanks every dimension when the designator it is given differs
+ * from the record's, which is right: those values were read off ONE package's
+ * drawings. It compared with `===`.
+ *
+ * On an LTC6563 the model returned `24-lead QFN` and the chooser offered
+ * `24-Lead QFN`. One capital letter, the same package, and the record's land
+ * length, land width, centre span, lead sides, pitch and all three body
+ * dimensions were discarded, every one of them read and cited to page 33. The
+ * user was then asked for eight numbers the product had already read. Reported
+ * 2026-08-25.
+ *
+ * Deliberately NOT looser than this. `SOIC (D)` and `SOIC (DW)` still differ,
+ * because the drawing code disagreeing is a real disagreement; only the
+ * spelling of one name is being normalised.
+ */
+/** The one package family a name states, or null when it states none or several. */
+function soleFamily(name: string): string | null {
+  const found = new Set(
+    [...name.matchAll(new RegExp(PACKAGE_FAMILY_PATTERN, "gi"))].map((match) => match[0].toUpperCase())
+  );
+  return found.size === 1 ? [...found][0]! : null;
+}
+
+/** The lead count a name states in words, wherever it sits. */
+function statedLeadCount(name: string): number | null {
+  const match = /(\d{1,3})\s*[-\s]?\s*(?:lead|pin|ld)s?\b/i.exec(name);
+  if (!match) return null;
+  const count = Number(match[1]);
+  return Number.isInteger(count) && count >= 2 ? count : null;
+}
+
+export function sameDesignatorName(left: string, right: string): boolean {
+  const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (key(left) === key(right)) return true;
+
+  // A FULLER DESCRIPTION OF THE SAME PACKAGE.
+  //
+  // The model names the package from whatever the page gave it, and the length
+  // of that varies between reads of one document. The same LTC6563 came back as
+  // `24-lead QFN` on one pass and `24-Lead Plastic Side Solderable QFN
+  // (3mm x 5mm)` on the next, while the designator harvested from the text
+  // stayed `24-Lead QFN`. Spelling alone does not reconcile those, and the
+  // second read discarded the same eight values the first one did.
+  //
+  // Three things have to agree, and each is a statement the names actually
+  // make rather than a similarity score:
+  //
+  //   the FAMILY          QFN is not SOIC
+  //   the LEAD COUNT      24-Lead is not 20-Lead
+  //   the DRAWING CODE    `SOIC (D)` is not `SOIC (DW)`
+  //
+  // The code only disqualifies when BOTH names carry one and they disagree. A
+  // name that states no code is not contradicting anything, which is what lets
+  // the long form above match: its bracket holds `3mm x 5mm`, not a code.
+  //
+  // The lead count must be present on both. Two names that state no count are
+  // not distinguishable this way, so they are left alone rather than merged on
+  // family agreement, which would put `SOT-23` and a different `SOT-23` variant
+  // together on the strength of three letters.
+  // The family must be the ONLY one each name states. A pin table's caption
+  // routinely lists every package sharing an assignment, `16-lead
+  // PDIP/SOIC_N/TSSOP`, and that is a statement about the PINOUT rather than
+  // the name of one package. Matching it against a specific package would keep
+  // one package's measured dimensions under another's name, which is the exact
+  // thing `asPackage` exists to prevent.
+  const family = soleFamily(left);
+  if (family === null || family !== soleFamily(right)) return false;
+
+  // Read straight off the words, not via `declaredLeadCount`. That function
+  // requires the count to sit within one adjective of the family, deliberately,
+  // so that `64 Ld Thin Quad Flatpack (EP-TQFP)` cannot reach across to the
+  // wrong family. Here the family is already agreed, so the only question left
+  // is what count each name states, and `24-Lead Plastic Side Solderable QFN`
+  // puts three words in between.
+  const leads = statedLeadCount(left);
+  if (leads === null || leads !== statedLeadCount(right)) return false;
+
+  const leftCode = designatorToken(left);
+  const rightCode = designatorToken(right);
+  if (leftCode !== null && rightCode !== null && leftCode !== rightCode) return false;
+
+  return true;
+}
+
 export function pinTableFor<
   T extends { packageType: string; alsoKnownAs?: string[]; outlineCode?: string; pins?: unknown[] }
 >(tables: readonly T[] | undefined, designator: string): T | null {

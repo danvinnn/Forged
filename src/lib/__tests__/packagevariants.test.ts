@@ -64,11 +64,34 @@ test("but not a whole phrase, because the nearest family is not the loosest", ()
 test("a number that is an outline code is not a lead count", () => {
   // SOT-23 is sold with 3, 5, 6 and 8 leads and TO-220 is a three-lead part.
   // Reading these as counts is how an LD1117 once declared 220 pins.
-  for (const text of ["SOT-23", "TO-220", "SC70", "SOT23"]) {
+  //
+  // `TSOT-23` is on this list because it is the SAME OUTLINE at a lower
+  // profile, carrying the identical JEDEC number. `SOT` was treated as
+  // outline-numbered and `TSOT` was not, so the two spellings of one outline
+  // disagreed with each other. Seen in the package chooser on an AD8628, which
+  // offers both: `SOT-23` correctly claimed no count and `TSOT-23` sat directly
+  // beneath it reading "TSOT, 23 leads" on a five-lead part.
+  for (const text of ["SOT-23", "TO-220", "SC70", "SOT23", "TSOT-23", "TSOT23"]) {
     const variant = all(text)[0];
     assert.ok(variant, `${text} still names a family`);
     assert.equal(variant.leadCount, null, `${text} declares no count`);
   }
+
+  // AND THE COUNT IS STILL READ WHERE THE VENDOR WROTE IT IN WORDS.
+  //
+  // The outline rule used to apply to every form at once, so `5-Lead SOT` and
+  // `5-Lead TSOT` declared no count on a datasheet that says "5-Lead" directly
+  // in front of the family. That is evidence matched and then discarded by a
+  // rule written for a different form. A number on the far side of the word
+  // "Lead" cannot be an outline code.
+  assert.equal(all("5-Lead TSOT")[0]?.leadCount, 5);
+  assert.equal(all("5-Lead SOT")[0]?.leadCount, 5);
+  assert.equal(declaredLeadCount("5-Lead SOT"), 5);
+  assert.equal(declaredLeadCount("3-Pin TO"), 3);
+
+  // The outline number itself is still refused, including where both appear.
+  assert.equal(declaredLeadCount("TSOT-23"), null);
+  assert.equal(declaredLeadCount("SOT-223"), null, "the LD1117 that once declared 223 pins");
 });
 
 test("a bare family token is not a designator", () => {

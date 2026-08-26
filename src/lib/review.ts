@@ -208,6 +208,29 @@ const REVIEWABLE: Array<{ field: string; label: string; consequence: string }> =
 /** Every field the panel can ask about, for tests that check nothing is missed. */
 export const REVIEWABLE_FIELDS: readonly string[] = REVIEWABLE.map((entry) => entry.field);
 
+/**
+ * The human name for a field path, for messages OUTSIDE the review panel.
+ *
+ * `/api/export` refuses with the exact field paths it could not resolve, and
+ * until 2026-08-24 the screen threw that list away and printed "required values
+ * were not extracted from the datasheet. Fill them in before exporting." The
+ * user was told to fill in something the sentence declined to name.
+ *
+ * The table above already carries a name for every field a person is ever shown,
+ * so it is reused rather than a second list started. The fallback turns an
+ * unlisted path into something readable rather than printing
+ * `dimensions.landSpanCrossMm` at somebody: a field with no entry here is one
+ * nobody wrote a label for, which is a gap in the table and not a reason to
+ * show its source code.
+ */
+export function labelForField(field: string): string {
+  const entry = REVIEWABLE.find((candidate) => candidate.field === field);
+  if (entry) return entry.label;
+  const bare = field.replace(/^dimensions\./, "").replace(/Mm$/, "");
+  const spaced = bare.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
 function fieldAt(part: PartRecord, path: string): Extracted<unknown> | null {
   if (!path.includes(".")) {
     return (part as unknown as Record<string, Extracted<unknown>>)[path] ?? null;

@@ -36,7 +36,18 @@ interface Shape {
   label: string;
   pinCount: number;
   pitchMm: number;
-  sides: 2 | 4;
+  /**
+   * 1 was missing until 2026-08-25, and a defect lived in the gap.
+   *
+   * `assemble` maps `bodyLengthMm` onto the Y axis, which is right for the two
+   * arrangements whose rows run down the page and TRANSPOSED for a single line
+   * of pins, whose row runs along X. So every TO-220, TO-92 and SIP was drawn
+   * with a fabrication outline ninety degrees from its own copper. No fixture
+   * caught it, and neither did this file: the space it walks was dual and quad
+   * only, and every single-row part in the corpus reads a SQUARE body, which is
+   * the one shape that cannot show it.
+   */
+  sides: 1 | 2 | 4;
   landLengthMm: number;
   landWidthMm: number;
   landSpanMm: number;
@@ -45,6 +56,8 @@ interface Shape {
   leadsPerSide?: string;
   vacantLeadSlot?: number;
   exposedPad?: [number, number];
+  /** Present on a package whose pins are holes rather than lands. */
+  throughHole?: { leadDiameterMm: number };
 }
 
 /**
@@ -112,6 +125,37 @@ function shapes(): Shape[] {
     landSpanCrossMm: null,
     bodyMm: [4, 4]
   });
+  // ONE LINE OF PINS: a TO-220, a TO-92, a SIP. Through-hole, so the pads are
+  // holes and the layout comes from the lead diameter rather than a land
+  // pattern; see `throughHoleFootprint`.
+  //
+  // RECTANGULAR bodies on purpose, and wide enough to hold the row. A square
+  // body cannot tell a correct axis mapping from a transposed one, and a body
+  // narrower than the row is refused outright by `geometryViolations`, which is
+  // its own test in `geometry-invariants.test.ts`.
+  //
+  // PITCHES AND LEADS THAT A BOARD HOUSE CAN ACTUALLY DRILL. IPC-7251 sizes a
+  // plated hole as the lead plus a 0.2 mm fit and a 0.4 mm ring on each side at
+  // density B, so the pad is always about a millimetre wider than the lead: a
+  // 1.27 mm pitch cannot hold two of them however small the lead, and the first
+  // version of this loop asked for exactly that and was refused for overlapping
+  // its own lands. Which is the invariant working, not a shape worth walking.
+  for (const [pitchMm, leadDiameterMm] of [[2.54, 0.5], [2.54, 0.9], [5.08, 0.9]] as const) {
+    for (const pinCount of [3, 4, 5, 8]) {
+      out.push({
+        label: `single-${pinCount}-p${pitchMm}-d${leadDiameterMm}`,
+        pinCount,
+        pitchMm,
+        sides: 1,
+        throughHole: { leadDiameterMm },
+        landLengthMm: pitchMm * 1.2,
+        landWidthMm: pitchMm * 0.5,
+        landSpanMm: pitchMm * 4 + 2,
+        landSpanCrossMm: null,
+        bodyMm: [pitchMm * pinCount + 2, pitchMm * 1.5]
+      });
+    }
+  }
   // Exposed pads, which add a land and a paste array.
   out.push({
     label: "quad-16-ep",
@@ -158,9 +202,9 @@ function partFor(shape: Shape): ResolvedPart {
       landSpanMm: shape.landSpanMm,
       landSpanCrossMm: null,
       leadSides: shape.sides,
-      leadForm: null,
-      mounting: null,
-      leadDiameterMm: null,
+      leadForm: shape.throughHole ? "straight" : null,
+      mounting: shape.throughHole ? "through-hole" : null,
+      leadDiameterMm: shape.throughHole?.leadDiameterMm ?? null,
       vacantLeadSlot: shape.vacantLeadSlot ?? null,
       leadsPerSide: shape.leadsPerSide ?? null,
       solderMaskExpansionMm: null,
@@ -206,9 +250,9 @@ function parse(footprint: string): { pads: ParsedPad[]; courtyard: [number, numb
   };
 }
 
-/** Every footprint this generator will build across the space, once. */
-async function everyFootprint(): Promise<Array<{ shape: Shape; footprint: string }>> {
-  const built: Array<{ shape: Shape; footprint: string }> = [];
+/** Every footprint AND symbol this generator will build across the space, once. */
+async function everyFootprint(): Promise<Array<{ shape: Shape; footprint: string; symbol: string }>> {
+  const built: Array<{ shape: Shape; footprint: string; symbol: string }> = [];
   for (const shape of shapes()) {
     let bundle: Awaited<ReturnType<typeof createExportZip>>;
     try {
@@ -222,7 +266,12 @@ async function everyFootprint(): Promise<Array<{ shape: Shape; footprint: string
     }
     const zip = await JSZip.loadAsync(bundle.buffer);
     const name = Object.keys(zip.files).find((file) => file.endsWith(".kicad_mod"))!;
-    built.push({ shape, footprint: await zip.files[name].async("string") });
+    const symbolName = Object.keys(zip.files).find((file) => file.endsWith(".kicad_sym"))!;
+    built.push({
+      shape,
+      footprint: await zip.files[name].async("string"),
+      symbol: await zip.files[symbolName].async("string")
+    });
   }
   return built;
 }
@@ -357,6 +406,10 @@ test("every surface-mount land carries solder paste", async () => {
   // the THERMAL pad, where paste deliberately does not follow copper. The
   // ordinary case, which is every land on every part, was covered by nothing.
   for (const { shape, footprint } of await everyFootprint()) {
+    // A THROUGH-HOLE package has no surface-mount land to paste, and pasting one
+    // would be the defect the next test guards. Skipped rather than asserted
+    // over: the rule here is about the SMD case.
+    if (shape.throughHole) continue;
     const lands = [...footprint.matchAll(/\(pad "(\d+)" smd \w+ \(at [^)]*\) \(size [^)]*\) ([^\n]*)/g)];
     assert.ok(lands.length > 0, `${shape.label}: no lands at all`);
     for (const [, number, rest] of lands) {
@@ -369,6 +422,96 @@ test("every surface-mount land carries solder paste", async () => {
         `${shape.label}: land ${number} has no solder paste, so nothing would solder it`
       );
     }
+  }
+});
+
+test("the fabrication outline holds the lands its own rows run along", async () => {
+  // THE DEFECT THIS FILE COULD NOT SEE, until the space gained a single row.
+  //
+  // `assemble` maps `bodyLengthMm` onto Y, which is correct for a dual and a
+  // quad and TRANSPOSED for a single line of pins, whose row runs along X. So
+  // every TO-220, TO-92 and SIP was drawn with its outline ninety degrees from
+  // its own copper: a 5.08 mm row of pins coming out of a 4.6 mm face.
+  //
+  // ALONG THE ROW ONLY, and that is the whole subtlety. Across it the lands
+  // legitimately reach outside the body, because a gull-wing lead bends out and
+  // its land sits under the foot. The rule is about the axis the row is ON.
+  //
+  // AND ONLY ON A SINGLE ROW. The general form of this - "a lead row never
+  // overhangs the body it comes out of" - is FALSE, and the drawing that
+  // disproves it is CQZ12805, VA10820's 128-lead ceramic LQFP, which prints a
+  // 12.40 mm lead row on a 12.00 mm ceramic body. A lead frame brazed to a
+  // ceramic body overhangs it. Asserting the general form here would fail every
+  // ceramic quad flat pack in the corpus, and briefly did worse than that: it
+  // was used to justify GROWING the drawn body, which silently redrew VA10820's
+  // outline 0.4 mm larger than its own drawing states.
+  //
+  // Nothing else in this file catches it. The courtyard is sized from the LANDS,
+  // so it grows to hold them whichever way round the body is, and every other
+  // invariant here is about the pads alone.
+  for (const { shape, footprint } of await everyFootprint()) {
+    const fab = /\(fp_poly \(pts ([^)]*(?:\)[^)]*)*?)\) \(layer "F\.Fab"\)/.exec(footprint);
+    assert.ok(fab, `${shape.label}: no fabrication outline`);
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const point of fab![1].matchAll(/\(xy (-?[\d.]+) (-?[\d.]+)\)/g)) {
+      xs.push(Number(point[1]));
+      ys.push(Number(point[2]));
+    }
+    assert.ok(xs.length >= 4, `${shape.label}: fabrication outline has no points`);
+    const halfX = Math.max(...xs.map(Math.abs));
+    const halfY = Math.max(...ys.map(Math.abs));
+
+    const { pads } = parse(footprint);
+    const lands = pads.filter((pad) => pad.number !== "" && !(shape.exposedPad && pad.number === String(shape.pinCount + 1)));
+    // WHICH ROW EACH LAND IS ON, taken from the land itself.
+    //
+    // A land's LENGTH runs outward from the body, so a left or right column's
+    // land is wider than it is tall and its row runs along Y; a top or bottom
+    // row's land is taller than wide and its row runs along X. Reading it off the
+    // pad rather than off the side count is what keeps a quad honest: its left
+    // column legitimately sits OUTSIDE the body in x, and asking "does any land
+    // reach past the body in x" therefore fails on a correct four-sided package.
+    //
+    // A plated hole is square, so a single row is settled by its arrangement.
+    if (shape.sides !== 1) continue;
+    const reach = Math.max(...lands.map((pad) => Math.abs(pad.x)));
+    assert.ok(
+      reach <= halfX + 1e-6,
+      `${shape.label}: the row of pins reaches ${reach} mm along x and the body is drawn ${halfX} mm across, ` +
+        `so the pins come out of nothing. The body is drawn on the wrong axis`
+    );
+    // The other axis is the one the transpose swapped INTO, so both are pinned.
+    assert.ok(halfY < halfX, `${shape.label}: a single row is wider than it is deep, and this body is not`);
+  }
+});
+
+test("the symbol draws every pin the footprint places a land for", async () => {
+  // THE OTHER HALF OF THE NETLIST, and until 2026-08-25 nothing walked it.
+  //
+  // A connection exists only where the footprint and the symbol name the same
+  // pin. Every invariant in this file was about the footprint, and
+  // `buildSymbolGeometry` DROPS a pin whose number its lookup misses - one
+  // `if (!pin) return;`, no note, no refusal - so a record with a gapped table
+  // shipped N lands beside a symbol with fewer pins and every check passed.
+  //
+  // `symbolViolations` now refuses that inside `createExportZip`, which is a
+  // check on the GEOMETRY. This is the same property asserted on the FILE, so an
+  // emitter that loses a pin on the way out is caught as well.
+  for (const { shape, footprint, symbol } of await everyFootprint()) {
+    const drawn = [...symbol.matchAll(/\(number "([^"]*)"/g)].map((match) => match[1]);
+    const { pads } = parse(footprint);
+    const padNumber = shape.exposedPad ? String(shape.pinCount + 1) : null;
+    const lands = pads
+      .map((pad) => pad.number)
+      .filter((number) => number !== "" && number !== padNumber);
+
+    assert.deepEqual(
+      [...drawn].sort(),
+      [...new Set(lands)].sort(),
+      `${shape.label}: the symbol draws ${drawn.length} pins and the footprint places ${lands.length} lands`
+    );
+    assert.equal(new Set(drawn).size, drawn.length, `${shape.label}: the symbol draws a pin number twice`);
   }
 });
 

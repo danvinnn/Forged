@@ -125,7 +125,68 @@ export function unresolvedFields(part: PartRecord): ExtractionField[] {
  * that cannot be read is a row we do not understand, and a pin table with a hole
  * in it is the input that produces a miswired footprint.
  */
-function normalizeModelPins(
+/**
+ * Typographic plus and minus signs in a pin name, written as ASCII.
+ *
+ * ## Why this is transcription and not invention
+ *
+ * An op-amp's inverting input is printed with whatever minus glyph the
+ * datasheet's font supplies. On an LMP7704-SP the model returns `IN A` followed
+ * by U+207B SUPERSCRIPT MINUS. The hand-read `PINOUT_ORACLE` entry for that
+ * exact table, written by a person looking at the rendered page, says `IN A-`.
+ * Both are the same pin, and the difference is the shape of a glyph rather than
+ * the name of a terminal. No vendor distinguishes `IN A-` from `IN A` plus a
+ * superscript minus; there is no pair of pins anywhere that differ only in
+ * which minus was set.
+ *
+ * ## Why it happens here rather than in an emitter
+ *
+ * Reported 2026-08-24: an Altium export refused with "U+207B ... cannot
+ * represent", correctly, because Windows-1252 has no superscript minus. Fixing
+ * that in the Altium emitter alone would leave KiCad writing `IN A` with a
+ * superscript minus and Altium writing something else, so the two libraries
+ * would disagree about a pin name for the same part. The record is the one
+ * place both read from.
+ *
+ * The set is deliberately SMALL and is only the signs. Measured over the 2294
+ * cached model responses, the characters outside Latin-1 that actually occur
+ * are these, plus micro, ohm and the comparison operators, and those last are
+ * electrical specifications rather than pin names. Nothing here folds case,
+ * strips accents or touches any letter.
+ */
+const ASCII_SIGNS = new Map<string, string>([
+  ["\u207b", "-"], // superscript minus, the reported case
+  ["\u2212", "-"], // minus sign
+  ["\u2013", "-"], // en dash
+  ["\u2014", "-"], // em dash
+  ["\u2010", "-"], // hyphen
+  ["\u2011", "-"], // non-breaking hyphen
+  ["\u207a", "+"] // superscript plus
+]);
+
+export function asciiSigns(name: string): string {
+  let out = "";
+  for (const character of name) out += ASCII_SIGNS.get(character) ?? character;
+  return out;
+}
+
+/**
+ * A row that names itself the exposed pad rather than a numbered pin.
+ *
+ * The vocabulary vendors actually print for it, and nothing else: `PAD`, `EP`,
+ * `EPAD`, `DAP`, `TAB`, `Exposed Pad`, `Thermal Pad`. Anchored so it cannot
+ * match a pin merely containing the letters, which is why `PADDR0` and
+ * `KEYPAD` do not.
+ */
+const PAD_NAME = /^\s*(?:e-?pad|exposed\s*(?:thermal\s*)?pad|thermal\s*pad|die\s*attach\s*pad|dap|tab|pad|ep)\s*$/i;
+
+/**
+ * Exported for `bench:discards`, which runs every cached model response through
+ * THIS function rather than a copy of its rules. A second implementation of a
+ * gate drifts from the first, and then the instrument measures a gate that does
+ * not exist. See `forge-validate-the-instrument`.
+ */
+export function normalizeModelPins(
   rows: unknown
 ): { ok: true; pins: PinRecord[]; exposedPad: boolean } | { ok: false; reason: string } {
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -150,7 +211,48 @@ function normalizeModelPins(
         : typeof entry.number === "string" && entry.number.trim()
           ? entry.number.trim()
           : null;
-    if (raw === null) return { ok: false, reason: "a row carried no pin number" };
+    if (raw === null) {
+      // A ROW WITH NO NUMBER AT ALL IS STILL THE EXPOSED PAD, WHEN IT SAYS SO.
+      //
+      // The branch immediately below already rescues a pad row whose number is
+      // a non-numeric STRING, and its comment records what refusing the whole
+      // table used to cost. That fix never reached the row whose number is
+      // `null`, because this line returns one line above it. The same bug, in
+      // the same function, for the other spelling of "no number".
+      //
+      // Found 2026-08-25 from a user's "why is the read refusing?". An
+      // LMP7704-SP came back with all fourteen pins correct, `1:OUT A` through
+      // `14:OUT D`, plus two rows reading `{ number: null, name: "PAD",
+      // description: "Backside thermal pad..." }`. Fourteen hand-checkable pins
+      // were thrown away because the model had ALSO described the thermal pad.
+      //
+      // Gated on the NAME rather than accepting any numberless row, which is
+      // the conservative half of the rule: a row that names itself a pad is one,
+      // and a real pin that simply lost its number is still fatal, because
+      // dropping it silently would hand back a short table that reads as
+      // complete.
+      const label = String(entry.name ?? "").trim();
+      if (PAD_NAME.test(label)) {
+        exposedPad = true;
+        skipped.push(label || "pad");
+        continue;
+      }
+      // NOT A NUMBERED PIN, SO IT CANNOT BECOME A PAD, SO IT IS SKIPPED.
+      //
+      // The LMP7704-SP row that started this is named `LID`: the metal lid of a
+      // ceramic flat pack, which the datasheet's pin table lists and which is
+      // not a thermal pad and must not be recorded as one. It is also plainly
+      // not pin number anything.
+      //
+      // Skipping is safe because the two guards below catch the case this
+      // risks, a REAL pin whose number the model dropped.
+      // `isGapFreeSequence` requires the numbers to run 1..N with no gaps or
+      // repeats, so a pin lost from anywhere but the end fails there; a pin
+      // lost from the end leaves the table shorter than the declared lead
+      // count, which `asPackage` refuses at export. Neither can pass silently.
+      skipped.push(label || "an unnamed row");
+      continue;
+    }
 
     // A non-numeric designator is almost always the exposed thermal pad
     // (`EP`, `PAD`, `TAB`, `epad`, `Exposed pad`). It is a real, electrically
@@ -174,8 +276,9 @@ function normalizeModelPins(
     }
     const number = raw;
 
-    const name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : null;
-    if (name === null) return { ok: false, reason: `pin ${number} carried no name` };
+    const raw_name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : null;
+    if (raw_name === null) return { ok: false, reason: `pin ${number} carried no name` };
+    const name = asciiSigns(raw_name);
 
     // An unrecognised or absent type is recorded as unspecified rather than
     // rejecting the row: the type is metadata on the symbol, not geometry, and
@@ -295,7 +398,7 @@ export function lastRowIsNumberedThermalPad(record: {
  * the other package's NUMBERS, and the name-based citation check passes it at
  * full marks because every name genuinely is on the page.
  */
-function isGapFreeSequence(pins: PinRecord[]): boolean {
+export function isGapFreeSequence(pins: PinRecord[]): boolean {
   const numbers = pins.map((pin) => Number(pin.number));
   if (numbers.some((value) => !Number.isInteger(value) || value < 1)) return false;
   const distinct = new Set(numbers);
@@ -713,6 +816,93 @@ export function citeRenderedPage(
   };
 }
 
+/**
+ * A CENTRE SPAN THAT IS ACTUALLY THE INNER GAP, corrected from the drawing's own
+ * arithmetic.
+ *
+ * ## The reading being corrected
+ *
+ * Vendors dimension a recommended footprint three ways, and the prompt says so
+ * in the field's own description: some print the centre-to-centre distance
+ * between two opposing rows of lands, some print the INNER GAP between them, and
+ * some the OUTER extent across them. The description also names the failure -
+ * "reporting the inner gap unchanged is the most common error on this field, and
+ * it is always exactly one land length smaller than the right answer" - and the
+ * model makes it anyway.
+ *
+ * ## How the two are told apart, without guessing
+ *
+ * A gullwing lead leaves the body, bends down and out, and its foot sits BEYOND
+ * the body edge. So the lands under two opposing rows are further apart than the
+ * body is wide. That is a fact about the package rather than a tolerance, and it
+ * separates the two readings cleanly: a centre span is always greater than the
+ * body, an inner gap on these drawings is always smaller.
+ *
+ * Checked against every hand-read footprint in `DIMENSION_ORACLE` on 2026-08-25:
+ * 22 of 22 gullwing patterns have a centre span greater than the body width, and
+ * the only patterns that do not are `nolead`, where the terminals are on the
+ * underside and the lands are SUPPOSED to sit within the body outline. Hence the
+ * restriction to gullwing, which is not a hedge but the whole physical basis.
+ *
+ * ## Why correct rather than refuse
+ *
+ * The corrected value is not an estimate. The drawing prints the gap and it
+ * prints one land's length, and the centre span is their sum - the arithmetic an
+ * engineer does when reading such a page, and the arithmetic the prompt already
+ * describes. Measured over the tuned corpus, four parts were reading the gap and
+ * the correction lands on the hand-read value EXACTLY on all four:
+ *
+ *     DRV8825   4.30 + 1.50 = 5.80     ISO7741   7.30 + 2.00 = 9.30
+ *     TPS54360  3.85 + 1.55 = 5.40     UCC27524  3.85 + 1.55 = 5.40
+ *
+ * Corrected on the RECORD rather than in the generator, so the number a reviewer
+ * sees is the number that places the copper. Correcting at export would leave
+ * the record saying one thing and the board another, which is the split
+ * `bench:copper` exists to catch.
+ *
+ * Every downstream check still runs on the result: `printedLand` refuses a
+ * pattern whose rows meet, whose lands touch their neighbours, or which falls
+ * outside the IPC-7351B band for the leads this same drawing states.
+ */
+function correctInnerGapSpans(record: PartRecord, dimensions: Partial<PartRecord["dimensions"]>, modelName: string, label: string): void {
+  const held = (field: keyof PartRecord["dimensions"]): number | null => {
+    const value = (dimensions[field] ?? record.dimensions[field]) as { value?: unknown } | undefined;
+    return typeof value?.value === "number" && Number.isFinite(value.value) && value.value > 0 ? value.value : null;
+  };
+  const leadForm = (dimensions.leadForm ?? record.dimensions.leadForm)?.value;
+  if (leadForm !== "gullwing") return;
+
+  const padLengthMm = held("landPadLengthMm");
+  if (padLengthMm === null) return;
+
+  // `landSpanMm` separates the rows that run parallel to the body's LENGTH, so
+  // it is compared against the body's WIDTH, and the cross span against the
+  // length. The axes are stated because this codebase has paid three times for
+  // a convention held in one module. See `landSpanMm` in `dimension-oracle.ts`.
+  for (const [field, against] of [
+    ["landSpanMm", "bodyWidthMm"],
+    ["landSpanCrossMm", "bodyLengthMm"]
+  ] as const) {
+    const span = held(field);
+    const body = held(against);
+    if (span === null || body === null || span > body) continue;
+    const corrected = span + padLengthMm;
+    // The correction has to actually resolve the contradiction. If the sum still
+    // does not clear the body then the reading is wrong in some other way and
+    // this is not the fix; leave it for the checks that refuse.
+    if (corrected <= body) continue;
+    const target = dimensions[field] !== undefined ? dimensions : record.dimensions;
+    const existing = target[field] as { value: unknown; confidence: unknown; method: unknown; citation: unknown };
+    (target as Record<string, unknown>)[field] = { ...existing, value: corrected };
+    record.notes.push(
+      `${modelName} read ${span} mm for ${label}${field}, which is less than the ${body} mm body it has to reach ` +
+        `past: a gull-wing package's lands sit under feet that project beyond the body. That is the INNER GAP ` +
+        `between the two rows, which this drawing dimensions instead of the centre span, so the centre span is ` +
+        `the gap plus one ${padLengthMm} mm land: ${corrected} mm.`
+    );
+  }
+}
+
 export interface MergeOutcome {
   part: PartRecord;
   /** Fields the model filled that the deterministic pass had left unknown. */
@@ -868,6 +1058,17 @@ export function mergeModelValues(
       const normalized = normalizeModelPins(claimed.value);
       if (!normalized.ok) {
         rejected.push({ field, reason: normalized.reason });
+        // RECORDED ON THE PART, not just in the merge's return value.
+        //
+        // "We read a pinout and refused it" and "this datasheet has no pinout"
+        // are different facts that need different words and point at different
+        // layers. The screen said "not enough was read" for both, so every
+        // encounter with a discard was filed as the model failing. That is how
+        // a code defect survived from 2026-08-10 to 2026-08-25 while being
+        // reported as a bad read. See `bench:discards`.
+        merged.notes.push(
+          `${modelName} returned a pin table that was discarded rather than recorded: ${normalized.reason}.`
+        );
         continue;
       }
       if (!isGapFreeSequence(normalized.pins)) {
@@ -991,6 +1192,9 @@ export function mergeModelValues(
     // it told a reader that a review signal exists which does not. Deleted
     // rather than softened, per the rule this file already follows twice.
   }
+
+  // THE INNER GAP READ AS THE CENTRE SPAN. See `correctInnerGapSpans`.
+  correctInnerGapSpans(merged, merged.dimensions, modelName, "");
 
   if (filled.length > 0) {
     merged.notes = [
@@ -1213,6 +1417,10 @@ export function mergeModelValues(
       }
 
       const dimensions = packageDimensions(doc, table.dimensions, renderedPages);
+      // The same correction, on the numbers that actually build a family
+      // datasheet's copper. A rule applied to the flat block alone is a rule
+      // that does not run on most of this corpus.
+      if (dimensions) correctInnerGapSpans(merged, dimensions, modelName, `${table.packageType}'s `);
       if (pins === undefined && dimensions === undefined) continue;
       usable.push({
         packageType: table.packageType,

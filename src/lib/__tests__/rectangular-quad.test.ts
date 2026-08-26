@@ -130,6 +130,30 @@ test("landSpanMm separates the rows across the body's WIDTH, not its length", ()
  * whole of the defect above. A wording change that drops the tie is a change to
  * what the model is asked, so it belongs in a test rather than in a comment.
  */
+/**
+ * The land fields must exclude the THERMAL land, in words.
+ *
+ * ST's DFN recommended-footprint figure prints four numbers around one small
+ * drawing and one of them dimensions the large central land under the exposed
+ * pad. TSV911 and TSZ121 both took it as a lead land's length and both then
+ * derived the span from it correctly, so both records were self-consistent and
+ * no downstream check could see anything wrong. Both ship; TSV911's pads overlap
+ * their terminals by 0.05 mm where the drawing wants 0.35.
+ */
+test("the prompt tells the model a thermal land is not a lead land", () => {
+  assert.match(FIELD_GUIDE["dimensions.landPadLengthMm"], /LEAD LAND/);
+  assert.match(FIELD_GUIDE["dimensions.landPadLengthMm"], /exposed thermal pad/);
+});
+
+/**
+ * Lead WIDTH is dimension b, not the thickness c beside it. LTC3105 returned
+ * 0.22-0.38, its lead thickness, where the top view states b as 0.406 +/- 0.076,
+ * and the computed pads came out about 0.1 mm narrow.
+ */
+test("the prompt separates lead width from lead thickness", () => {
+  assert.match(FIELD_GUIDE["dimensions.leadWidthMm"], /NOT the lead's THICKNESS/);
+});
+
 test("the prompt ties each span field to the body axis the generator uses", () => {
   assert.match(FIELD_GUIDE["dimensions.landSpanMm"], /bodyWidthMm/);
   assert.match(FIELD_GUIDE["dimensions.landSpanCrossMm"], /bodyLengthMm/);
@@ -147,7 +171,19 @@ test("the prompt ties each span field to the body axis the generator uses", () =
 test("the prompt asks for pin names exactly as printed", () => {
   assert.match(FIELD_GUIDE.pins, /EXACTLY as the document prints it/);
   assert.match(FIELD_GUIDE.pins, /SAME name/);
-  assert.match(FIELD_GUIDE.pins, /D11\(MSB\)/);
+  // THE PARENTHETICAL CLAUSE IS GONE, and its absence is asserted.
+  //
+  // "Do NOT drop any part of a printed name, including a parenthesised one"
+  // was added and measured on 2026-08-22. It fixed the two parts it was aimed
+  // at, RHF1201's D11(MSB) and D0(LSB), and broke two others: RHF310A returned
+  // NC(1), taking a FOOTNOTE MARKER into the name, and STM32F407VG returned
+  // PA14 (JTCK/SWCLK), taking an alternate-function annotation. 16/18 before and
+  // 16/18 after. The clause cannot tell a name from a note beside one.
+  //
+  // The other half - do not invent a suffix - stays: it fixed LTC6563 with no
+  // measured cost. Asserted as an absence so it does not get re-added by
+  // someone reading only the RHF1201 case.
+  assert.doesNotMatch(FIELD_GUIDE.pins, /parenthesised/);
 });
 
 test("a square four-sided package still states one distance", () => {

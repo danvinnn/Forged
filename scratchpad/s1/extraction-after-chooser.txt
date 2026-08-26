@@ -1,0 +1,145 @@
+
+> forged@0.1.0 bench:extraction
+> tsx src/lib/__bench__/extraction.ts --model --offline
+
+
+Extraction coverage: 80 parts
+Cache: /Users/anthonytang/Desktop/Forged/Forged/.bench-cache (57 PDFs)
+Model cache: /Users/anthonytang/Desktop/Forged/Forged/.model-cache (2293 responses), mode offline [no spend]
+
+category              pdf    ident  pkg    geom   rad    cited  fields ships
+----------------------------------------------------------------------------
+radhard-major         9/9    100%    44%    28%    72%    37%    44%   100%
+radhard-specialist    6/6    100%    72%    52%    79%    57%    50%    50%
+analog                23/23  100%    39%    24%     0%    24%    43%   100%
+mcu                   5/11   100%    73%    60%     0%    47%    60%   100%
+power-discrete        8/12   100%    67%    59%     0%    46%    75%    88%
+logic-interface       5/8    100%    33%    20%     0%    21%    40%   100%
+connector             1/6    100%    67%    63%     0%    47%     0%     0%
+memory-fpga           0/5      n/a    n/a    n/a    n/a    n/a    n/a    n/a
+----------------------------------------------------------------------------
+TOTAL                 57/80  100%    50%    36%    20%    35%    49%    91%
+
+Parse latency over 57 parts: p50 758ms, p95 1694ms, max 1766ms
+Slowest: MSP430F5529 1766ms/145p, LM358 1745ms/68p, TLV9061 1694ms/99p
+
+Fields complete:  28/57 parsed parts (49%)
+SHIPS UNAIDED:    45/57 parsed parts (79%)   <- upload, press export, done
+SHIPS A BUNDLE:   52/57 parsed parts (91%)   <- after choosing a package and answering
+57/80 of the corpus had a datasheet at all.
+
+VERIFIED:         47/52 shipping parts (90%) have their drawing hand-read in DIMENSION_ORACLE
+  shipping parts, and the outline drawing each was measured from:
+    LMP7704-SP         HBH0014A                           checked
+    RHF310A            as ceramic Flat-8                  checked
+    RHF1201            as Ceramic SO48                    checked
+    RHFL4913           as TO-257                          checked
+    RHFL4913A          as Flat-16P                        checked
+    TPS7A4501-SP       as 10-pin CFP                      checked
+    LM139AQML-SP       NAJ0020A                           UNCHECKED
+    ADC128S102QML-SP   NAC0016A                           checked
+    AD590              H-03-1                             UNCHECKED
+    VA10820            CQZ12805                           UNCHECKED
+    UT54LVDS217        as 48-lead flatpack                checked
+    ISL71001M          Q64.10x10J                         checked
+    LM358              DGK0008A                           checked
+    OPA333             DBV0005A                           checked
+    ADXL345            CC-14-1                            checked
+    LT1013             05-08-1610                         checked
+    INA240             D0008A                             checked
+    TS922              as SO8                             checked
+    TSZ121             as SC70                            checked
+    ADS1115            DGS0010A                           checked
+    LIS3DH             7983231_13                         checked
+    STM32G071RB        5W_LQFP64_ME_V1                    UNCHECKED
+    ADS8688            DBT0038A                           checked
+    TLV9061            DBV0005A                           checked
+    OPA2189            D0008A                             checked
+    REF5025            HKJ                                checked
+    AD8628             UJ-5                               checked
+    ADG5412            RU-16                              checked
+    ADR4525            R-8                                checked
+    TSV911             as DFN8                            checked
+    TSV321             as SOT23-5                         checked
+    OPA2277            DRM0008A                           checked
+    AD8232             CP-20-8                            checked
+    MAX232             NS0016A                            checked
+    LTC3105            05-08-1668                         checked
+    LTC6563            05-08-1795                         checked
+    STM32F407VG        1L_LQFP100_ME_V3                   checked
+    STM32F103C8        A0B9                               UNCHECKED
+    STM32H743ZI        1A                                 checked
+    MSP430F5529        PN0080A                            checked
+    TPS7A4700          RGW0020A                           checked
+    UCC27524           D0008A                             checked
+    TPS54360           DDA0008B                           checked
+    DRV8825            PWP0028C                           checked
+    LD1117             0016023_Rev_G                      checked
+    NCP1200            CASE 751-07                        checked
+    MC33063A           D0008A                             checked
+    SN74LVC1G08        DBV0005A                           checked
+    SN65HVD230         D0008A                             checked
+    ISO7741            DW0016B                            checked
+    TXB0104            D0014A                             checked
+    PCF8574            DW0016A                            checked
+
+PIN NAMES:        20/21 parts match the hand-read oracle (38 parts have an entry)
+  STM32F407VG        pin 12  got "PH0/OSC_IN (PH0)" want "PH0"
+  STM32F407VG        pin 49  got "VSS" want "VCAP_1"
+  STM32F407VG        pin 76  got "PA14 (JTCK/SWCLK)" want "PA14"
+PACKAGE FAMILY:   28/28 designators name a package the datasheet describes (28 parts have an entry)
+  CERAMIC LOST   RHFL4913 read "TO-257"
+
+Blocked by:
+   24  missing pinCount,pins: RHFL4913, RHFL4913A, LM139AQML-SP, ADC128S102QML-SP, AD590, RTAX2000S, LM358, OPA333, LT1013, INA240, TS922, TSZ121, TLV9061, AD8628, ADG5412, ADR4525, TSV911, OPA2277, LTC3105, LD1117, L7805, SN74LVC1G08, TXB0104, PCF8574
+    5  missing pins: VA41630, UT32M0R500, STM32G071RB, STM32F103C8, DF13-4P-1.25DSA
+
+Model cache:
+  cache hits      113
+  live calls      0
+  CHARGED TOTAL   ~$54.51 over 2326 billed call(s), all runs ever (includes failures and retries)
+  tokens saved    2,993,548 in, 896,912 out (~$3.14)
+
+Model pass: filled at least one field on 57/57 parts.
+   57  manufacturer
+   33  pinCount
+   28  pins
+   26  dimensions.leadCount
+   25  packageType
+   25  dimensions.bodyLengthMm
+   25  dimensions.bodyWidthMm
+   25  dimensions.bodyHeightMm
+   25  dimensions.pitchMm
+   25  dimensions.leadWidthMm
+   25  dimensions.leadSides
+   25  dimensions.leadForm
+   24  dimensions.mounting
+   19  packageOutlineCode
+   18  dimensions.leadContactMm
+   17  dimensions.leadSpanMm
+   14  radiation.tid
+   13  dimensions.landPadLengthMm
+   13  dimensions.landPadWidthMm
+   13  dimensions.landSpanMm
+   12  radiation.sel
+   11  radiation.qmlClass
+    8  dimensions.thermalPadLengthMm
+    8  dimensions.thermalPadWidthMm
+    8  radiation.see
+    8  dimensions.leadSpanCrossMm
+    7  dimensions.leadLengthMm
+    7  dimensions.landSpanCrossMm
+    7  dimensions.solderMaskDefined
+    7  dimensions.solderMaskExpansionMm
+    7  jedecOutline
+    4  dimensions.thermalViaDiameterMm
+    4  dimensions.thermalViaPitchMm
+    4  dimensions.leadsPerSide
+    1  dimensions.vacantLeadSlot
+    1  dimensions.leadDiameterMm
+
+Model answers DISCARDED as untrustworthy (1 parts):
+  UT32M0R500         pins
+
+Some parts are not cached. Run with --fetch to populate the cache.
+

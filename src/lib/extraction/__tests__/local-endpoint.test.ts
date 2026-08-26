@@ -91,6 +91,31 @@ test("a non-http scheme is refused", async () => {
 
 // --- Factory gating ---------------------------------------------------------
 
+/**
+ * EVERY variable `makeExtractionModel` consults, cleared as a set.
+ *
+ * A test that says "no model configured" has to mean it, and it can only mean
+ * it by naming every door into the factory. This list was `GOOGLE_GEMINI_API_KEY`
+ * and `FORGE_LOCAL_MODEL_URL`, correct when it was written. Vertex was added
+ * later, `factory.ts` grew a branch on `GOOGLE_APPLICATION_CREDENTIALS` plus
+ * `FORGE_VERTEX_PROJECT`, and this list did not grow with it.
+ *
+ * The result was a suite whose answer depended on whose machine it ran on.
+ * `LEARNINGS.md` tells people to `set -a && . ./.env.local` before a bench, and
+ * doing that then made three tests fail on a developer with real credentials
+ * while CI stayed green. Found 2026-08-24 by running the suite both ways.
+ *
+ * Spread into each `withEnv` call rather than applied inside it, because two of
+ * these tests deliberately set one of these variables and must still override.
+ */
+const NO_MODEL_CONFIGURED: Record<string, string | undefined> = {
+  GOOGLE_GEMINI_API_KEY: undefined,
+  FORGE_LOCAL_MODEL_URL: undefined,
+  GOOGLE_APPLICATION_CREDENTIALS: undefined,
+  FORGE_VERTEX_PROJECT: undefined,
+  FORGE_VERTEX_LOCATION: undefined
+};
+
 function withEnv(vars: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
   const prev: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(vars)) {
@@ -129,13 +154,13 @@ test("air-gapped mode selects the local model when one is configured", async () 
 });
 
 test("commercial mode with no model configured returns null", async () => {
-  await withEnv({ GOOGLE_GEMINI_API_KEY: undefined, FORGE_LOCAL_MODEL_URL: undefined }, async () => {
+  await withEnv({ ...NO_MODEL_CONFIGURED }, async () => {
     assert.equal(await makeExtractionModel("commercial"), null);
   });
 });
 
 test("commercial mode selects the cloud model when a key is present", async () => {
-  await withEnv({ GOOGLE_GEMINI_API_KEY: "key", FORGE_LOCAL_MODEL_URL: undefined }, async () => {
+  await withEnv({ ...NO_MODEL_CONFIGURED, GOOGLE_GEMINI_API_KEY: "key" }, async () => {
     const model = await makeExtractionModel("commercial");
     assert.ok(model);
     assert.equal(model!.name, "gemini");

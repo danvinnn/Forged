@@ -1,0 +1,505 @@
+
+> forged@0.1.0 bench:dimensions
+> tsx src/lib/__bench__/dimensions.ts
+
+Warning: filter "Crypt" not supported yet
+Warning: filter "Crypt" not supported yet
+
+Checked 57 cached parts against 51 hand-read drawings.
+
+  ok    AD8232         CP-20-8    leadWidthMm       read 0.18-0.3     expected 0.18-0.3
+  ok    AD8232         CP-20-8    leadContactMm     read 0.3-0.5      expected 0.3-0.5
+  ok    AD8232         CP-20-8    pitchMm           read 0.5          expected 0.5
+  ok    AD8232         CP-20-8    leadSides         read 4            expected 4
+  ok    AD8232         CP-20-8    leadForm          read nolead       expected nolead
+  ok    AD8232         CP-20-8    bodyLengthMm      read 4            expected 3.9-4.1
+  ok    AD8232         CP-20-8    bodyWidthMm       read 4            expected 3.9-4.1
+  ok    AD8232         CP-20-8    bodyHeightMm      read 0.8          expected 0.7-0.8
+  ok    AD8232         CP-20-8    thermalPadLengthMm read 2.6          expected 2.35-2.75
+  ok    AD8232         CP-20-8    thermalPadWidthMm read 2.6          expected 2.35-2.75
+  ok    AD8628         UJ-5       leadSpanMm        read 2.8-2.8      expected 2.8-2.8
+  ok    AD8628         UJ-5       leadWidthMm       read 0.3-0.5      expected 0.3-0.5
+  ok    AD8628         UJ-5       leadContactMm     read 0.3-0.6      expected 0.3-0.6
+  ok    AD8628         UJ-5       pitchMm           read 0.95         expected 0.95
+  ok    AD8628         UJ-5       leadSides         read 2            expected 2
+  ok    AD8628         UJ-5       leadForm          read gullwing     expected gullwing
+  ok    AD8628         UJ-5       bodyLengthMm      read 2.9          expected 2.9-2.9
+  ok    AD8628         UJ-5       bodyWidthMm       read 1.6          expected 1.6-1.6
+  ok    AD8628         UJ-5       bodyHeightMm      read 1            expected 1
+  ok    ADC128S102QML-SP NAC0016A   leadSpanMm        read 10.16-10.668 expected 10.16-10.668
+  ok    ADC128S102QML-SP NAC0016A   leadWidthMm       read 0.381-0.4826 expected 0.381-0.4826
+  ok    ADC128S102QML-SP NAC0016A   leadContactMm     read 0.9398-1.0922 expected 0.9398-1.0922
+  ok    ADC128S102QML-SP NAC0016A   pitchMm           read 1.27         expected 1.27
+  ok    ADC128S102QML-SP NAC0016A   leadSides         read 2            expected 2
+  ok    ADC128S102QML-SP NAC0016A   leadForm          read gullwing     expected gullwing
+  ok    ADC128S102QML-SP NAC0016A   bodyLengthMm      read 9.83         expected 9.754-9.906
+  ok    ADC128S102QML-SP NAC0016A   bodyWidthMm       read 6.35         expected 6.223-6.858
+  ok    ADC128S102QML-SP NAC0016A   bodyHeightMm      read 2.33         expected 2.33
+  ok    ADC128S102QML-SP NAC0016A   landPadLengthMm   read 2.29         expected 2.29
+  ok    ADC128S102QML-SP NAC0016A   landPadWidthMm    read 0.69         expected 0.69
+  ok    ADC128S102QML-SP NAC0016A   landSpanMm        read 9.4          expected 9.4
+  ok    ADG5412        RU-16      leadSpanMm        read 6.4-6.4      expected 6.4-6.4
+  ok    ADG5412        RU-16      leadWidthMm       read 0.19-0.3     expected 0.19-0.3
+  ok    ADG5412        RU-16      leadContactMm     read 0.45-0.75    expected 0.45-0.75
+  ok    ADG5412        RU-16      pitchMm           read 0.65         expected 0.65
+  ok    ADG5412        RU-16      leadSides         read 2            expected 2
+  ok    ADG5412        RU-16      leadForm          read gullwing     expected gullwing
+  ok    ADG5412        RU-16      bodyLengthMm      read 5            expected 4.9-5.1
+  ok    ADG5412        RU-16      bodyWidthMm       read 4.4          expected 4.3-4.5
+  ok    ADG5412        RU-16      bodyHeightMm      read 1.2          expected 1.2
+  ok    ADR4525        R-8        leadSpanMm        read 5.8-6.2      expected 5.8-6.2
+  ok    ADR4525        R-8        leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    ADR4525        R-8        leadContactMm     read 0.4-1.27     expected 0.4-1.27
+  ok    ADR4525        R-8        pitchMm           read 1.27         expected 1.27
+  ok    ADR4525        R-8        leadSides         read 2            expected 2
+  ok    ADR4525        R-8        leadForm          read gullwing     expected gullwing
+  ok    ADR4525        R-8        bodyLengthMm      read 4.9          expected 4.8-5
+  ok    ADR4525        R-8        bodyWidthMm       read 3.9          expected 3.8-4
+  ok    ADR4525        R-8        bodyHeightMm      read 1.75         expected 1.35-1.75
+  ok    ADS1115        DGS0010A   leadSpanMm        read 4.75-5.05    expected 4.75-5.05
+  ok    ADS1115        DGS0010A   leadWidthMm       read 0.17-0.27    expected 0.17-0.27
+  ok    ADS1115        DGS0010A   leadContactMm     read 0.4-0.7      expected 0.4-0.7
+  ok    ADS1115        DGS0010A   pitchMm           read 0.5          expected 0.5
+  ok    ADS1115        DGS0010A   leadSides         read 2            expected 2
+  ok    ADS1115        DGS0010A   leadForm          read gullwing     expected gullwing
+  ok    ADS1115        DGS0010A   bodyLengthMm      read 3            expected 2.9-3.1
+  ok    ADS1115        DGS0010A   bodyWidthMm       read 3            expected 2.9-3.1
+  ok    ADS1115        DGS0010A   bodyHeightMm      read 1.1          expected 1.1
+  ok    ADS8688        DBT0038A   leadSpanMm        read 6.25-6.55    expected 6.25-6.55
+  ok    ADS8688        DBT0038A   leadWidthMm       read 0.17-0.23    expected 0.17-0.23
+  ok    ADS8688        DBT0038A   leadContactMm     read 0.5-0.75     expected 0.5-0.75
+  ok    ADS8688        DBT0038A   pitchMm           read 0.5          expected 0.5
+  ok    ADS8688        DBT0038A   leadSides         read 2            expected 2
+  ok    ADS8688        DBT0038A   leadForm          read gullwing     expected gullwing
+  ok    ADS8688        DBT0038A   bodyLengthMm      read 9.7          expected 9.65-9.75
+  ok    ADS8688        DBT0038A   bodyWidthMm       read 4.4          expected 4.35-4.45
+  ok    ADS8688        DBT0038A   bodyHeightMm      read 1.2          expected 1.2
+  ok    ADS8688        DBT0038A   landPadLengthMm   read 1.5          expected 1.5
+  ok    ADS8688        DBT0038A   landPadWidthMm    read 0.3          expected 0.3
+  ok    ADS8688        DBT0038A   landSpanMm        read 5.8          expected 5.8
+  ok    ADXL345        CC-14-1    leadWidthMm       read 0.5-0.5      expected 0.5-0.5
+  ok    ADXL345        CC-14-1    pitchMm           read 0.8          expected 0.8
+  ok    ADXL345        CC-14-1    leadForm          read nolead       expected nolead
+  ok    ADXL345        CC-14-1    bodyLengthMm      read 5            expected 5-5
+  ok    ADXL345        CC-14-1    bodyWidthMm       read 3            expected 3-3
+  ok    ADXL345        CC-14-1    bodyHeightMm      read 1            expected 1
+  ok    ADXL345        CC-14-1    landPadLengthMm   read 1.145        expected 1.145
+  WRONG ADXL345        CC-14-1    landPadWidthMm    read 0.25         expected 0.55
+  ok    ADXL345        CC-14-1    landSpanMm        read 2.195        expected 2.195
+  WRONG ADXL345        CC-14-1    leadContactMm     read 0.813-0.813  expected the drawing prints none
+  ok    DRV8825        PWP0028C   leadSpanMm        read 6.2-6.6      expected 6.2-6.6
+  ok    DRV8825        PWP0028C   leadWidthMm       read 0.19-0.3     expected 0.19-0.3
+  ok    DRV8825        PWP0028C   leadContactMm     read 0.5-0.75     expected 0.5-0.75
+  ok    DRV8825        PWP0028C   pitchMm           read 0.65         expected 0.65
+  ok    DRV8825        PWP0028C   leadSides         read 2            expected 2
+  ok    DRV8825        PWP0028C   leadForm          read gullwing     expected gullwing
+  ok    DRV8825        PWP0028C   bodyLengthMm      read 9.7          expected 9.6-9.8
+  ok    DRV8825        PWP0028C   bodyWidthMm       read 4.4          expected 4.3-4.5
+  ok    DRV8825        PWP0028C   bodyHeightMm      read 1.2          expected 1.2
+  ok    DRV8825        PWP0028C   thermalPadLengthMm read 4.83         expected 4.48-5.18
+  ok    DRV8825        PWP0028C   thermalPadWidthMm read 2.75         expected 2.4-3.1
+  ok    DRV8825        PWP0028C   landPadLengthMm   read 1.5          expected 1.5
+  ok    DRV8825        PWP0028C   landPadWidthMm    read 0.45         expected 0.45
+  WRONG DRV8825        PWP0028C   landSpanMm        read 4.3          expected 5.8
+  ok    INA240         D0008A     leadSpanMm        read 5.8-6.19     expected 5.8-6.19
+  ok    INA240         D0008A     leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    INA240         D0008A     leadContactMm     read 0.41-1.27    expected 0.41-1.27
+  ok    INA240         D0008A     pitchMm           read 1.27         expected 1.27
+  ok    INA240         D0008A     leadSides         read 2            expected 2
+  ok    INA240         D0008A     leadForm          read gullwing     expected gullwing
+  ok    INA240         D0008A     bodyLengthMm      read 4.905        expected 4.81-5
+  ok    INA240         D0008A     bodyWidthMm       read 3.895        expected 3.81-3.98
+  ok    INA240         D0008A     bodyHeightMm      read 1.75         expected 1.75
+  ok    INA240         D0008A     landPadLengthMm   read 1.55         expected 1.55
+  ok    INA240         D0008A     landPadWidthMm    read 0.6          expected 0.6
+  ok    INA240         D0008A     landSpanMm        read 5.4          expected 5.4
+  ok    ISL71001M      Q64.10x10J leadSpanMm        read 11.9-12.1    expected 11.9-12.1
+  ok    ISL71001M      Q64.10x10J leadWidthMm       read 0.17-0.27    expected 0.17-0.27
+  ok    ISL71001M      Q64.10x10J leadContactMm     read 0.45-0.75    expected 0.45-0.75
+  ok    ISL71001M      Q64.10x10J pitchMm           read 0.5          expected 0.5
+  ok    ISL71001M      Q64.10x10J leadSides         read 4            expected 4
+  ok    ISL71001M      Q64.10x10J leadForm          read gullwing     expected gullwing
+  ok    ISL71001M      Q64.10x10J bodyLengthMm      read 10           expected 9.9-10.1
+  ok    ISL71001M      Q64.10x10J bodyWidthMm       read 10           expected 9.9-10.1
+  ok    ISL71001M      Q64.10x10J bodyHeightMm      read 1.2          expected 1.2
+  ok    ISL71001M      Q64.10x10J landPadLengthMm   read 1.2          expected 1.2
+  ok    ISL71001M      Q64.10x10J landPadWidthMm    read 0.3          expected 0.3
+  ok    ISL71001M      Q64.10x10J landSpanMm        read 11.4         expected 11.4
+  ok    ISO7741        DW0016B    leadSpanMm        read 9.97-10.63   expected 9.97-10.63
+  ok    ISO7741        DW0016B    leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    ISO7741        DW0016B    leadContactMm     read 0.4-1.27     expected 0.4-1.27
+  ok    ISO7741        DW0016B    pitchMm           read 1.27         expected 1.27
+  ok    ISO7741        DW0016B    leadSides         read 2            expected 2
+  ok    ISO7741        DW0016B    leadForm          read gullwing     expected gullwing
+  ok    ISO7741        DW0016B    bodyLengthMm      read 10.3         expected 10.1-10.5
+  ok    ISO7741        DW0016B    bodyWidthMm       read 7.5          expected 7.4-7.6
+  ok    ISO7741        DW0016B    bodyHeightMm      read 2.65         expected 2.65
+  ok    ISO7741        DW0016B    landPadLengthMm   read 2            expected 2
+  ok    ISO7741        DW0016B    landPadWidthMm    read 0.6          expected 0.6
+  WRONG ISO7741        DW0016B    landSpanMm        read 7.3          expected 9.3
+  ---   L7805          0015988_21_Type A leadWidthMm       read null         expected 0.61-0.88
+  ---   L7805          0015988_21_Type A leadSides         read null         expected 1
+  ---   L7805          0015988_21_Type A bodyLengthMm      read null         expected 15.25-15.75
+  ---   L7805          0015988_21_Type A bodyWidthMm       read null         expected 10-10.4
+  ok    LD1117         0016023_Rev_G leadSpanMm        read 5.8-6.2      expected 5.8-6.2
+  ok    LD1117         0016023_Rev_G leadWidthMm       read 0.28-0.48    expected 0.28-0.48
+  ok    LD1117         0016023_Rev_G leadContactMm     read 0.4-1.27     expected 0.4-1.27
+  ok    LD1117         0016023_Rev_G pitchMm           read 1.27         expected 1.27
+  ok    LD1117         0016023_Rev_G leadSides         read 2            expected 2
+  ok    LD1117         0016023_Rev_G leadForm          read gullwing     expected gullwing
+  ok    LD1117         0016023_Rev_G bodyLengthMm      read 4.9          expected 4.8-5
+  ok    LD1117         0016023_Rev_G bodyWidthMm       read 3.9          expected 3.8-4
+  ok    LD1117         0016023_Rev_G bodyHeightMm      read 1.75         expected 1.75
+  ok    LIS3DH         7983231_13 leadWidthMm       read 0.21-0.29    expected 0.21-0.29
+  ok    LIS3DH         7983231_13 leadContactMm     read 0.31-0.39    expected 0.31-0.39
+  ok    LIS3DH         7983231_13 pitchMm           read 0.5          expected 0.5
+  ok    LIS3DH         7983231_13 leadSides         read 4            expected 4
+  ok    LIS3DH         7983231_13 leadForm          read nolead       expected nolead
+  ok    LIS3DH         7983231_13 bodyLengthMm      read 3            expected 2.85-3.15
+  ok    LIS3DH         7983231_13 bodyWidthMm       read 3            expected 2.85-3.15
+  ok    LIS3DH         7983231_13 bodyHeightMm      read 1            expected 1
+  ok    LM358          DGK0008A   leadSpanMm        read 4.75-5.05    expected 4.75-5.05
+  ok    LM358          DGK0008A   leadWidthMm       read 0.25-0.38    expected 0.25-0.38
+  ok    LM358          DGK0008A   leadContactMm     read 0.4-0.7      expected 0.4-0.7
+  ok    LM358          DGK0008A   pitchMm           read 0.65         expected 0.65
+  ok    LM358          DGK0008A   leadSides         read 2            expected 2
+  ok    LM358          DGK0008A   leadForm          read gullwing     expected gullwing
+  ok    LM358          DGK0008A   bodyLengthMm      read 3            expected 2.9-3.1
+  ok    LM358          DGK0008A   bodyWidthMm       read 3            expected 2.9-3.1
+  ok    LM358          DGK0008A   bodyHeightMm      read 1.1          expected 1.1
+  ok    LM358          DGK0008A   landPadLengthMm   read 1.4          expected 1.4
+  ok    LM358          DGK0008A   landPadWidthMm    read 0.45         expected 0.45
+  ok    LM358          DGK0008A   landSpanMm        read 4.4          expected 4.4
+  ok    LMP7704-SP     HBH0014A   leadSpanMm        read 21-25        expected 21-25
+  ok    LMP7704-SP     HBH0014A   leadWidthMm       read 0.382-0.482  expected 0.382-0.482
+  ok    LMP7704-SP     HBH0014A   pitchMm           read 1.27         expected 1.27
+  ok    LMP7704-SP     HBH0014A   leadSides         read 2            expected 2
+  ok    LMP7704-SP     HBH0014A   leadForm          read straight     expected straight
+  ok    LMP7704-SP     HBH0014A   bodyLengthMm      read 9.73         expected 9.55-9.91
+  ok    LMP7704-SP     HBH0014A   bodyWidthMm       read 6.475        expected 6.3-6.65
+  ok    LMP7704-SP     HBH0014A   bodyHeightMm      read 2.861        expected 2.861
+  ok    LT1013         05-08-1610 leadSpanMm        read 5.791-6.197  expected 5.791-6.197
+  ok    LT1013         05-08-1610 leadWidthMm       read 0.355-0.483  expected 0.355-0.483
+  ok    LT1013         05-08-1610 leadContactMm     read 0.406-1.27   expected 0.406-1.27
+  ok    LT1013         05-08-1610 pitchMm           read 1.27         expected 1.27
+  ok    LT1013         05-08-1610 leadSides         read 2            expected 2
+  ok    LT1013         05-08-1610 leadForm          read gullwing     expected gullwing
+  ok    LT1013         05-08-1610 bodyLengthMm      read 4.9025       expected 4.801-5.004
+  ok    LT1013         05-08-1610 bodyWidthMm       read 3.899        expected 3.81-3.988
+  ok    LT1013         05-08-1610 bodyHeightMm      read 1.549        expected 1.346-1.752
+  ok    LTC3105        05-08-1668 Rev A leadSpanMm        read 4.748-5.052  expected 4.748-5.052
+  WRONG LTC3105        05-08-1668 Rev A leadWidthMm       read 0.22-0.38    expected 0.33-0.482
+  ok    LTC3105        05-08-1668 Rev A leadContactMm     read 0.378-0.682  expected 0.378-0.682
+  ok    LTC3105        05-08-1668 Rev A pitchMm           read 0.65         expected 0.65
+  ok    LTC3105        05-08-1668 Rev A leadSides         read 2            expected 2
+  ok    LTC3105        05-08-1668 Rev A leadForm          read gullwing     expected gullwing
+  ok    LTC3105        05-08-1668 Rev A bodyLengthMm      read 4.039        expected 3.937-4.141
+  ok    LTC3105        05-08-1668 Rev A bodyWidthMm       read 3            expected 2.898-3.102
+  ok    LTC3105        05-08-1668 Rev A bodyHeightMm      read 1.1          expected 1.1
+  ok    LTC6563        05-08-1795 leadWidthMm       read 0.2-0.3      expected 0.2-0.3
+  ok    LTC6563        05-08-1795 leadContactMm     read 0.3-0.5      expected 0.3-0.5
+  ok    LTC6563        05-08-1795 pitchMm           read 0.5          expected 0.5
+  ok    LTC6563        05-08-1795 leadSides         read 4            expected 4
+  ok    LTC6563        05-08-1795 leadForm          read nolead       expected nolead
+  ok    LTC6563        05-08-1795 bodyLengthMm      read 5            expected 4.9-5.1
+  ok    LTC6563        05-08-1795 bodyWidthMm       read 3            expected 2.9-3.1
+  ok    LTC6563        05-08-1795 bodyHeightMm      read 0.75         expected 0.7-0.8
+  ok    LTC6563        05-08-1795 thermalPadLengthMm read 3.65         expected 3.55-3.75
+  ok    LTC6563        05-08-1795 thermalPadWidthMm read 1.65         expected 1.55-1.75
+  ok    LTC6563        05-08-1795 landPadLengthMm   read 0.7          expected 0.7
+  ok    LTC6563        05-08-1795 landPadWidthMm    read 0.25         expected 0.25
+  ok    LTC6563        05-08-1795 landSpanMm        read 2.8          expected 2.8
+  ok    LTC6563        05-08-1795 landSpanCrossMm   read 4.8          expected 4.8
+  ---   MAX232         NS0016A    leadSpanMm        read null         expected 7.4-8.2
+  ok    MAX232         NS0016A    leadWidthMm       read 0.35-0.51    expected 0.35-0.51
+  ok    MAX232         NS0016A    leadContactMm     read 0.55-1.05    expected 0.55-1.05
+  ok    MAX232         NS0016A    pitchMm           read 1.27         expected 1.27
+  ok    MAX232         NS0016A    leadSides         read 2            expected 2
+  ok    MAX232         NS0016A    leadForm          read gullwing     expected gullwing
+  ok    MAX232         NS0016A    bodyLengthMm      read 10.2         expected 10-10.4
+  ok    MAX232         NS0016A    bodyWidthMm       read 5.3          expected 5.2-5.4
+  ok    MAX232         NS0016A    bodyHeightMm      read 2            expected 2
+  ok    MAX232         NS0016A    landPadLengthMm   read 1.85         expected 1.85
+  ok    MAX232         NS0016A    landPadWidthMm    read 0.6          expected 0.6
+  ok    MAX232         NS0016A    landSpanMm        read 7            expected 7
+  ok    MC33063A       D0008A     leadSpanMm        read 5.8-6.19     expected 5.8-6.19
+  ok    MC33063A       D0008A     leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    MC33063A       D0008A     leadContactMm     read 0.41-1.27    expected 0.41-1.27
+  ok    MC33063A       D0008A     pitchMm           read 1.27         expected 1.27
+  ok    MC33063A       D0008A     leadSides         read 2            expected 2
+  ok    MC33063A       D0008A     leadForm          read gullwing     expected gullwing
+  ok    MC33063A       D0008A     bodyLengthMm      read 4.905        expected 4.81-5
+  ok    MC33063A       D0008A     bodyWidthMm       read 3.895        expected 3.81-3.98
+  ok    MC33063A       D0008A     bodyHeightMm      read 1.75         expected 1.75
+  ok    MC33063A       D0008A     landPadLengthMm   read 1.55         expected 1.55
+  ok    MC33063A       D0008A     landPadWidthMm    read 0.6          expected 0.6
+  ok    MC33063A       D0008A     landSpanMm        read 5.4          expected 5.4
+  ok    MSP430F5529    PN0080A    leadSpanMm        read 13.8-14.2    expected 13.8-14.2
+  ok    MSP430F5529    PN0080A    leadWidthMm       read 0.17-0.27    expected 0.17-0.27
+  ok    MSP430F5529    PN0080A    leadContactMm     read 0.45-0.75    expected 0.45-0.75
+  ok    MSP430F5529    PN0080A    pitchMm           read 0.5          expected 0.5
+  ok    MSP430F5529    PN0080A    leadSides         read 4            expected 4
+  ok    MSP430F5529    PN0080A    leadForm          read gullwing     expected gullwing
+  ok    MSP430F5529    PN0080A    bodyLengthMm      read 12           expected 11.8-12.2
+  ok    MSP430F5529    PN0080A    bodyWidthMm       read 12           expected 11.8-12.2
+  ok    MSP430F5529    PN0080A    bodyHeightMm      read 1.6          expected 1.6
+  ok    MSP430F5529    PN0080A    landPadLengthMm   read 1.5          expected 1.5
+  ok    MSP430F5529    PN0080A    landPadWidthMm    read 0.3          expected 0.3
+  ok    MSP430F5529    PN0080A    landSpanMm        read 13.4         expected 13.4
+  ok    NCP1200        751-07     leadSpanMm        read 5.8-6.2      expected 5.8-6.2
+  ok    NCP1200        751-07     leadWidthMm       read 0.33-0.51    expected 0.33-0.51
+  ok    NCP1200        751-07     leadContactMm     read 0.4-1.27     expected 0.4-1.27
+  ok    NCP1200        751-07     pitchMm           read 1.27         expected 1.27
+  ok    NCP1200        751-07     leadSides         read 2            expected 2
+  ok    NCP1200        751-07     leadForm          read gullwing     expected gullwing
+  ok    NCP1200        751-07     bodyLengthMm      read 4.9          expected 4.8-5
+  ok    NCP1200        751-07     bodyWidthMm       read 3.9          expected 3.8-4
+  WRONG NCP1200        751-07     bodyHeightMm      read 1.55         expected 1.75
+  ok    NCP1200        751-07     landPadLengthMm   read 1.52         expected 1.52
+  ok    NCP1200        751-07     landPadWidthMm    read 0.6          expected 0.6
+  ok    NCP1200        751-07     landSpanMm        read 5.5          expected 5.5
+  ok    OPA2189        D0008A     leadSpanMm        read 5.8-6.19     expected 5.8-6.19
+  ok    OPA2189        D0008A     leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    OPA2189        D0008A     leadContactMm     read 0.41-1.27    expected 0.41-1.27
+  ok    OPA2189        D0008A     pitchMm           read 1.27         expected 1.27
+  ok    OPA2189        D0008A     leadSides         read 2            expected 2
+  ok    OPA2189        D0008A     leadForm          read gullwing     expected gullwing
+  ok    OPA2189        D0008A     bodyLengthMm      read 4.905        expected 4.81-5
+  ok    OPA2189        D0008A     bodyWidthMm       read 3.895        expected 3.81-3.98
+  ok    OPA2189        D0008A     bodyHeightMm      read 1.75         expected 1.75
+  ok    OPA2189        D0008A     landPadLengthMm   read 1.55         expected 1.55
+  ok    OPA2189        D0008A     landPadWidthMm    read 0.6          expected 0.6
+  ok    OPA2189        D0008A     landSpanMm        read 5.4          expected 5.4
+  ok    OPA2277        DRM0008A   leadWidthMm       read 0.23-0.38    expected 0.23-0.38
+  ok    OPA2277        DRM0008A   leadContactMm     read 0.3-0.5      expected 0.3-0.5
+  ok    OPA2277        DRM0008A   pitchMm           read 0.8          expected 0.8
+  ok    OPA2277        DRM0008A   leadSides         read 2            expected 2
+  ok    OPA2277        DRM0008A   leadForm          read nolead       expected nolead
+  ok    OPA2277        DRM0008A   bodyLengthMm      read 4            expected 3.9-4.1
+  ok    OPA2277        DRM0008A   bodyWidthMm       read 4            expected 3.9-4.1
+  ok    OPA2277        DRM0008A   bodyHeightMm      read 1            expected 0.8-1
+  ok    OPA2277        DRM0008A   thermalPadLengthMm read 3.38         expected 3.28-3.48
+  ok    OPA2277        DRM0008A   thermalPadWidthMm read 2.45         expected 2.35-2.55
+  ok    OPA2277        DRM0008A   landPadLengthMm   read 0.6          expected 0.6
+  ok    OPA2277        DRM0008A   landPadWidthMm    read 0.3          expected 0.3
+  ok    OPA2277        DRM0008A   landSpanMm        read 3.8          expected 3.8
+  ok    OPA333         DBV0005A   leadSpanMm        read 2.6-3        expected 2.6-3
+  ok    OPA333         DBV0005A   leadWidthMm       read 0.3-0.5      expected 0.3-0.5
+  ok    OPA333         DBV0005A   leadContactMm     read 0.3-0.6      expected 0.3-0.6
+  ok    OPA333         DBV0005A   pitchMm           read 0.95         expected 0.95
+  ok    OPA333         DBV0005A   leadSides         read 2            expected 2
+  ok    OPA333         DBV0005A   leadForm          read gullwing     expected gullwing
+  ok    OPA333         DBV0005A   bodyLengthMm      read 2.9          expected 2.75-3.05
+  ok    OPA333         DBV0005A   bodyWidthMm       read 1.6          expected 1.45-1.75
+  ok    OPA333         DBV0005A   bodyHeightMm      read 1.45         expected 0.9-1.45
+  ok    OPA333         DBV0005A   landPadLengthMm   read 1.1          expected 1.1
+  ok    OPA333         DBV0005A   landPadWidthMm    read 0.6          expected 0.6
+  ok    OPA333         DBV0005A   landSpanMm        read 2.6          expected 2.6
+  ok    PCF8574        DW0016A    leadSpanMm        read 9.97-10.63   expected 9.97-10.63
+  ok    PCF8574        DW0016A    leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    PCF8574        DW0016A    leadContactMm     read 0.4-1.27     expected 0.4-1.27
+  ok    PCF8574        DW0016A    pitchMm           read 1.27         expected 1.27
+  ok    PCF8574        DW0016A    leadSides         read 2            expected 2
+  ok    PCF8574        DW0016A    leadForm          read gullwing     expected gullwing
+  ok    PCF8574        DW0016A    bodyLengthMm      read 10.3         expected 10.1-10.5
+  ok    PCF8574        DW0016A    bodyWidthMm       read 7.5          expected 7.4-7.6
+  ok    PCF8574        DW0016A    bodyHeightMm      read 2.65         expected 2.65
+  ok    PCF8574        DW0016A    landPadLengthMm   read 2            expected 2
+  ok    PCF8574        DW0016A    landPadWidthMm    read 0.6          expected 0.6
+  ok    PCF8574        DW0016A    landSpanMm        read 9.3          expected 9.3
+  ---   REF5025        HKJ        leadSpanMm        read null         expected 6.35-9.4
+  ok    REF5025        HKJ        leadWidthMm       read 0.38-0.53    expected 0.38-0.53
+  ok    REF5025        HKJ        pitchMm           read 1.27         expected 1.27
+  ok    REF5025        HKJ        leadSides         read 2            expected 2
+  ok    REF5025        HKJ        leadForm          read straight     expected straight
+  ok    REF5025        HKJ        bodyLengthMm      read 7.035        expected 6.73-7.34
+  ok    REF5025        HKJ        bodyWidthMm       read 5.75         expected 5.61-5.89
+  ok    REF5025        HKJ        bodyHeightMm      read 1.98         expected 1.98
+  ok    RHF1201        ST-CERAMIC-SO48-DocID012585 leadSpanMm        read 12.28-12.88  expected 12.28-12.88
+  ok    RHF1201        ST-CERAMIC-SO48-DocID012585 leadWidthMm       read 0.2-0.3      expected 0.2-0.3
+  ok    RHF1201        ST-CERAMIC-SO48-DocID012585 pitchMm           read 0.635        expected 0.635
+  ok    RHF1201        ST-CERAMIC-SO48-DocID012585 leadSides         read 2            expected 2
+  ok    RHF1201        ST-CERAMIC-SO48-DocID012585 leadForm          read straight     expected straight
+  ok    RHF1201        ST-CERAMIC-SO48-DocID012585 bodyLengthMm      read 15.75        expected 15.57-15.92
+  ok    RHF1201        ST-CERAMIC-SO48-DocID012585 bodyWidthMm       read 9.65         expected 9.52-9.78
+  WRONG RHF1201        ST-CERAMIC-SO48-DocID012585 bodyHeightMm      read 2.47         expected 2.72
+  ok    RHF310A        Ceramic Flat-8 (ST) leadWidthMm       read 0.38-0.48    expected 0.38-0.48
+  ok    RHF310A        Ceramic Flat-8 (ST) pitchMm           read 1.27         expected 1.27
+  ok    RHF310A        Ceramic Flat-8 (ST) leadSides         read 2            expected 2
+  ok    RHF310A        Ceramic Flat-8 (ST) leadForm          read straight     expected straight
+  ok    RHF310A        Ceramic Flat-8 (ST) bodyLengthMm      read 6.48         expected 6.35-6.61
+  ok    RHF310A        Ceramic Flat-8 (ST) bodyWidthMm       read 6.48         expected 6.35-6.61
+  ok    RHF310A        Ceramic Flat-8 (ST) bodyHeightMm      read 2.64         expected 2.24-2.64
+  WRONG RHF310A        Ceramic Flat-8 (ST) leadContactMm     read 6.51-7.38    expected the drawing prints none
+  ok    RHFL4913       TO-257 (ST) pitchMm           read 2.54         expected 2.54
+  ok    RHFL4913       TO-257 (ST) leadSides         read 1            expected 1
+  WRONG RHFL4913       TO-257 (ST) bodyLengthMm      read 10.54        expected 16.64-16.64
+  ok    RHFL4913       TO-257 (ST) bodyWidthMm       read 10.54        expected 10.54-10.54
+  ok    RHFL4913A      Flat-16P (ST) leadWidthMm       read 0.38-0.48    expected 0.38-0.48
+  ok    RHFL4913A      Flat-16P (ST) pitchMm           read 1.27         expected 1.27
+  ok    RHFL4913A      Flat-16P (ST) leadSides         read 2            expected 2
+  ok    RHFL4913A      Flat-16P (ST) leadForm          read straight     expected straight
+  ok    RHFL4913A      Flat-16P (ST) bodyLengthMm      read 9.91         expected 9.71-10.11
+  ok    RHFL4913A      Flat-16P (ST) bodyWidthMm       read 6.91         expected 6.71-7.11
+  ok    RHFL4913A      Flat-16P (ST) bodyHeightMm      read 2.88         expected 2.42-2.88
+  ok    SN65HVD230     D0008A     leadSpanMm        read 5.8-6.19     expected 5.8-6.19
+  ok    SN65HVD230     D0008A     leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    SN65HVD230     D0008A     leadContactMm     read 0.41-1.27    expected 0.41-1.27
+  ok    SN65HVD230     D0008A     pitchMm           read 1.27         expected 1.27
+  ok    SN65HVD230     D0008A     leadSides         read 2            expected 2
+  ok    SN65HVD230     D0008A     leadForm          read gullwing     expected gullwing
+  ok    SN65HVD230     D0008A     bodyLengthMm      read 4.905        expected 4.81-5
+  ok    SN65HVD230     D0008A     bodyWidthMm       read 3.895        expected 3.81-3.98
+  ok    SN65HVD230     D0008A     bodyHeightMm      read 1.75         expected 1.75
+  ok    SN65HVD230     D0008A     landPadLengthMm   read 1.55         expected 1.55
+  ok    SN65HVD230     D0008A     landPadWidthMm    read 0.6          expected 0.6
+  ok    SN65HVD230     D0008A     landSpanMm        read 5.4          expected 5.4
+  ok    SN74LVC1G08    DBV0005A   leadSpanMm        read 2.6-3        expected 2.6-3
+  ok    SN74LVC1G08    DBV0005A   leadWidthMm       read 0.3-0.5      expected 0.3-0.5
+  ok    SN74LVC1G08    DBV0005A   leadContactMm     read 0.3-0.6      expected 0.3-0.6
+  ok    SN74LVC1G08    DBV0005A   pitchMm           read 0.95         expected 0.95
+  ok    SN74LVC1G08    DBV0005A   leadSides         read 2            expected 2
+  ok    SN74LVC1G08    DBV0005A   leadForm          read gullwing     expected gullwing
+  ok    SN74LVC1G08    DBV0005A   bodyLengthMm      read 2.9          expected 2.75-3.05
+  ok    SN74LVC1G08    DBV0005A   bodyWidthMm       read 1.6          expected 1.45-1.75
+  ok    SN74LVC1G08    DBV0005A   bodyHeightMm      read 1.45         expected 0.9-1.45
+  ok    SN74LVC1G08    DBV0005A   landPadLengthMm   read 1.1          expected 1.1
+  ok    SN74LVC1G08    DBV0005A   landPadWidthMm    read 0.6          expected 0.6
+  ok    SN74LVC1G08    DBV0005A   landSpanMm        read 2.6          expected 2.6
+  ok    STM32F407VG    1L         leadSpanMm        read 16-16        expected 16-16
+  ok    STM32F407VG    1L         leadWidthMm       read 0.17-0.27    expected 0.17-0.27
+  ok    STM32F407VG    1L         leadContactMm     read 0.45-0.75    expected 0.45-0.75
+  ok    STM32F407VG    1L         pitchMm           read 0.5          expected 0.5
+  ok    STM32F407VG    1L         leadSides         read 4            expected 4
+  ok    STM32F407VG    1L         leadForm          read gullwing     expected gullwing
+  ok    STM32F407VG    1L         bodyLengthMm      read 14           expected 14-14
+  ok    STM32F407VG    1L         bodyWidthMm       read 14           expected 14-14
+  ok    STM32F407VG    1L         bodyHeightMm      read 1.6          expected 1.6
+  ok    STM32F407VG    1L         landPadLengthMm   read 1.2          expected 1.2
+  ok    STM32F407VG    1L         landPadWidthMm    read 0.3          expected 0.3
+  ok    STM32F407VG    1L         landSpanMm        read 15.5         expected 15.5
+  ok    STM32H743ZI    1A         leadSpanMm        read 22-22        expected 22-22
+  ok    STM32H743ZI    1A         leadWidthMm       read 0.17-0.27    expected 0.17-0.27
+  ok    STM32H743ZI    1A         leadContactMm     read 0.45-0.75    expected 0.45-0.75
+  ok    STM32H743ZI    1A         pitchMm           read 0.5          expected 0.5
+  ok    STM32H743ZI    1A         leadSides         read 4            expected 4
+  ok    STM32H743ZI    1A         leadForm          read gullwing     expected gullwing
+  ok    STM32H743ZI    1A         bodyLengthMm      read 20           expected 20-20
+  ok    STM32H743ZI    1A         bodyWidthMm       read 20           expected 20-20
+  ok    STM32H743ZI    1A         bodyHeightMm      read 1.6          expected 1.6
+  ok    STM32H743ZI    1A         landPadLengthMm   read 1.35         expected 1.35
+  ok    STM32H743ZI    1A         landPadWidthMm    read 0.35         expected 0.35
+  ok    STM32H743ZI    1A         landSpanMm        read 21.25        expected 21.25
+  WRONG TLV9061        DBV0005A   leadSpanMm        read 2.75-3.05    expected 2.6-3
+  ok    TLV9061        DBV0005A   leadWidthMm       read 0.3-0.5      expected 0.3-0.5
+  ok    TLV9061        DBV0005A   leadContactMm     read 0.3-0.6      expected 0.3-0.6
+  ok    TLV9061        DBV0005A   pitchMm           read 0.95         expected 0.95
+  ok    TLV9061        DBV0005A   leadSides         read 2            expected 2
+  ok    TLV9061        DBV0005A   leadForm          read gullwing     expected gullwing
+  ok    TLV9061        DBV0005A   bodyLengthMm      read 2.8          expected 2.75-3.05
+  ok    TLV9061        DBV0005A   bodyWidthMm       read 1.6          expected 1.45-1.75
+  ok    TLV9061        DBV0005A   bodyHeightMm      read 1.45         expected 0.9-1.45
+  ok    TLV9061        DBV0005A   landPadLengthMm   read 1.1          expected 1.1
+  ok    TLV9061        DBV0005A   landPadWidthMm    read 0.6          expected 0.6
+  ok    TLV9061        DBV0005A   landSpanMm        read 2.6          expected 2.6
+  ok    TPS54360       DDA0008B   leadSpanMm        read 5.8-6.2      expected 5.8-6.2
+  ok    TPS54360       DDA0008B   leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    TPS54360       DDA0008B   leadContactMm     read 0.4-1.27     expected 0.4-1.27
+  ok    TPS54360       DDA0008B   pitchMm           read 1.27         expected 1.27
+  ok    TPS54360       DDA0008B   leadSides         read 2            expected 2
+  ok    TPS54360       DDA0008B   leadForm          read gullwing     expected gullwing
+  ok    TPS54360       DDA0008B   bodyLengthMm      read 4.9          expected 4.8-5
+  ok    TPS54360       DDA0008B   bodyWidthMm       read 3.9          expected 3.8-4
+  ok    TPS54360       DDA0008B   bodyHeightMm      read 1.7          expected 1.7
+  ok    TPS54360       DDA0008B   thermalPadLengthMm read 3.1          expected 2.8-3.4
+  ok    TPS54360       DDA0008B   thermalPadWidthMm read 2.41         expected 2.11-2.71
+  ok    TPS54360       DDA0008B   landPadLengthMm   read 1.55         expected 1.55
+  ok    TPS54360       DDA0008B   landPadWidthMm    read 0.6          expected 0.6
+  WRONG TPS54360       DDA0008B   landSpanMm        read 3.85         expected 5.4
+  ok    TPS7A4501-SP   HKU0010A   leadWidthMm       read 0.38-0.48    expected 0.38-0.48
+  ok    TPS7A4501-SP   HKU0010A   pitchMm           read 1.27         expected 1.27
+  ok    TPS7A4501-SP   HKU0010A   leadSides         read 2            expected 2
+  ok    TPS7A4501-SP   HKU0010A   leadForm          read straight     expected straight
+  ok    TPS7A4501-SP   HKU0010A   bodyHeightMm      read 2.62         expected 2.62-2.63
+  ok    TPS7A4700      RGW0020A   leadWidthMm       read 0.26-0.36    expected 0.26-0.36
+  ok    TPS7A4700      RGW0020A   leadContactMm     read 0.45-0.65    expected 0.45-0.65
+  ok    TPS7A4700      RGW0020A   pitchMm           read 0.65         expected 0.65
+  ok    TPS7A4700      RGW0020A   leadSides         read 4            expected 4
+  ok    TPS7A4700      RGW0020A   leadForm          read nolead       expected nolead
+  ok    TPS7A4700      RGW0020A   bodyLengthMm      read 5            expected 4.9-5.1
+  ok    TPS7A4700      RGW0020A   bodyWidthMm       read 5            expected 4.9-5.1
+  ok    TPS7A4700      RGW0020A   bodyHeightMm      read 1            expected 1
+  ok    TPS7A4700      RGW0020A   thermalPadLengthMm read 3.15         expected 3.05-3.25
+  ok    TPS7A4700      RGW0020A   thermalPadWidthMm read 3.15         expected 3.05-3.25
+  ok    TPS7A4700      RGW0020A   landPadLengthMm   read 0.75         expected 0.75
+  ok    TPS7A4700      RGW0020A   landPadWidthMm    read 0.31         expected 0.31
+  ok    TPS7A4700      RGW0020A   landSpanMm        read 4.65         expected 4.65
+  ok    TS922          0016023_Rev_G leadSpanMm        read 5.8-6.2      expected 5.8-6.2
+  ok    TS922          0016023_Rev_G leadWidthMm       read 0.28-0.48    expected 0.28-0.48
+  ok    TS922          0016023_Rev_G leadContactMm     read 0.4-1.27     expected 0.4-1.27
+  ok    TS922          0016023_Rev_G pitchMm           read 1.27         expected 1.27
+  ok    TS922          0016023_Rev_G leadSides         read 2            expected 2
+  ok    TS922          0016023_Rev_G leadForm          read gullwing     expected gullwing
+  ok    TS922          0016023_Rev_G bodyLengthMm      read 4.9          expected 4.8-5
+  ok    TS922          0016023_Rev_G bodyWidthMm       read 3.9          expected 3.8-4
+  ok    TS922          0016023_Rev_G bodyHeightMm      read 1.75         expected 1.75
+  ok    TSV321         ST-SOT23-5-DS4381 leadSpanMm        read 2.6-3        expected 2.6-3
+  ok    TSV321         ST-SOT23-5-DS4381 leadWidthMm       read 0.35-0.5     expected 0.35-0.5
+  ok    TSV321         ST-SOT23-5-DS4381 leadContactMm     read 0.35-0.55    expected 0.35-0.55
+  ok    TSV321         ST-SOT23-5-DS4381 pitchMm           read 0.95         expected 0.95
+  ok    TSV321         ST-SOT23-5-DS4381 leadSides         read 2            expected 2
+  ok    TSV321         ST-SOT23-5-DS4381 leadForm          read gullwing     expected gullwing
+  ok    TSV321         ST-SOT23-5-DS4381 bodyLengthMm      read 2.9          expected 2.8-3
+  ok    TSV321         ST-SOT23-5-DS4381 bodyWidthMm       read 1.625        expected 1.5-1.75
+  ok    TSV321         ST-SOT23-5-DS4381 bodyHeightMm      read 1.45         expected 0.9-1.45
+  ok    TSV911         DFN8 2 x 2 (ST) leadWidthMm       read 0.18-0.3     expected 0.18-0.3
+  ---   TSV911         DFN8 2 x 2 (ST) leadContactMm     read null         expected 0.425
+  ok    TSV911         DFN8 2 x 2 (ST) pitchMm           read 0.5          expected 0.5
+  ok    TSV911         DFN8 2 x 2 (ST) leadSides         read 2            expected 2
+  ok    TSV911         DFN8 2 x 2 (ST) leadForm          read nolead       expected nolead
+  ok    TSV911         DFN8 2 x 2 (ST) bodyLengthMm      read 2            expected 1.85-2.15
+  ok    TSV911         DFN8 2 x 2 (ST) bodyWidthMm       read 2            expected 1.85-2.15
+  ok    TSV911         DFN8 2 x 2 (ST) bodyHeightMm      read 0.6          expected 0.51-0.6
+  ok    TSV911         DFN8 2 x 2 (ST) thermalPadLengthMm read 1.6          expected 1.45-1.7
+  ok    TSV911         DFN8 2 x 2 (ST) thermalPadWidthMm read 0.9          expected 0.75-1
+  WRONG TSV911         DFN8 2 x 2 (ST) landPadLengthMm   read 0.45         expected 0.75
+  ok    TSV911         DFN8 2 x 2 (ST) landPadWidthMm    read 0.3          expected 0.3
+  WRONG TSV911         DFN8 2 x 2 (ST) landSpanMm        read 2.35         expected 2.05
+  ok    TXB0104        D0014A     leadSpanMm        read 5.8-6.2      expected 5.8-6.2
+  ok    TXB0104        D0014A     leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    TXB0104        D0014A     leadContactMm     read 0.4-1.27     expected 0.4-1.27
+  ok    TXB0104        D0014A     pitchMm           read 1.27         expected 1.27
+  ok    TXB0104        D0014A     leadSides         read 2            expected 2
+  ok    TXB0104        D0014A     leadForm          read gullwing     expected gullwing
+  ok    TXB0104        D0014A     bodyLengthMm      read 8.65         expected 8.55-8.75
+  ok    TXB0104        D0014A     bodyWidthMm       read 3.9          expected 3.8-4
+  ok    TXB0104        D0014A     bodyHeightMm      read 1.75         expected 1.75
+  ok    TXB0104        D0014A     landPadLengthMm   read 1.55         expected 1.55
+  ok    TXB0104        D0014A     landPadWidthMm    read 0.6          expected 0.6
+  ok    TXB0104        D0014A     landSpanMm        read 5.4          expected 5.4
+  ok    UCC27524       D0008A     leadSpanMm        read 5.8-6.19     expected 5.8-6.19
+  ok    UCC27524       D0008A     leadWidthMm       read 0.31-0.51    expected 0.31-0.51
+  ok    UCC27524       D0008A     leadContactMm     read 0.41-1.27    expected 0.41-1.27
+  ok    UCC27524       D0008A     pitchMm           read 1.27         expected 1.27
+  ok    UCC27524       D0008A     leadSides         read 2            expected 2
+  ok    UCC27524       D0008A     leadForm          read gullwing     expected gullwing
+  ok    UCC27524       D0008A     bodyLengthMm      read 4.905        expected 4.81-5
+  ok    UCC27524       D0008A     bodyWidthMm       read 3.895        expected 3.81-3.98
+  ok    UCC27524       D0008A     bodyHeightMm      read 1.75         expected 1.75
+  ok    UCC27524       D0008A     landPadLengthMm   read 1.55         expected 1.55
+  ok    UCC27524       D0008A     landPadWidthMm    read 0.6          expected 0.6
+  WRONG UCC27524       D0008A     landSpanMm        read 3.85         expected 5.4
+  ok    UT54LVDS217    48-Lead Flatpack (CAES) leadWidthMm       read 0.1524-0.254 expected 0.1524-0.254
+  ok    UT54LVDS217    48-Lead Flatpack (CAES) pitchMm           read 0.635        expected 0.635
+  ok    UT54LVDS217    48-Lead Flatpack (CAES) leadSides         read 2            expected 2
+  ok    UT54LVDS217    48-Lead Flatpack (CAES) leadForm          read straight     expected straight
+  WRONG UT54LVDS217    48-Lead Flatpack (CAES) bodyLengthMm      read 16.002       expected 8.509-8.509
+  WRONG UT54LVDS217    48-Lead Flatpack (CAES) bodyWidthMm       read 9.652        expected 8.509-8.509
+  ok    UT54LVDS217    48-Lead Flatpack (CAES) bodyHeightMm      read 2.921        expected 2.3622-2.921
+
+  CORRECT 466   WRONG 16   NOT READ 7
+  10 cached parts have no oracle entry, so nothing about them is checked.
+    AD590 [H-03-1], DF13-4P-1.25DSA, LM139AQML-SP [NAJ0020A], RTAX2000S, STM32F103C8 [ZR], STM32G071RB [5W_LQFP64_ME_V1]
+    TSZ121, UT32M0R500, VA10820 [CQZ12805], VA41630
+
+  Every WRONG above is a number that would have placed copper.

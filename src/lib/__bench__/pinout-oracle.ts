@@ -32,6 +32,8 @@
  * would receive.
  */
 
+import { PACKAGE_FAMILY_PATTERN } from "../packagevariants";
+
 export interface PinoutOracleEntry {
   /** Package the pinout belongs to, where the document describes several. */
   packageType?: string;
@@ -562,6 +564,162 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
       "22": "STEP", "23": "NC", "24": "MODE0", "25": "MODE1", "26": "MODE2",
       "27": "nHOME", "28": "GND"
     }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Read 2026-08-25, off the rendered pages, to close the fourteen SHIPPING
+  // parts whose pin assignment nothing could contradict.
+  //
+  // A wrong pin name is a wrong netlist under a real part number, which is the
+  // one defect this product can least afford and the one no geometric check can
+  // see. Thirteen of the fourteen read correctly. The fourteenth had every pin
+  // wrong.
+  // ---------------------------------------------------------------------------
+
+  // THE ONE THAT WAS WRONG, AND IT WAS WRONG ON EVERY PIN.
+  //
+  // LT1013 ships as the S8, and its page carries three 8-pin figures side by
+  // side: the S8 plastic SO, the N8 PDIP and the H 8-lead TO-5 can. The product
+  // emitted the N8's assignment under the S8's package.
+  //
+  // The document warns about exactly this, in a note printed inside the S8 box:
+  // "THIS PIN CONFIGURATION DIFFERS FROM THE STANDARD 8-PIN DUAL-IN-LINE
+  // CONFIGURATION". Every pin differs, so nothing about the resulting symbol
+  // looks odd - the names are all real names for this device, on the wrong
+  // terminals.
+  LT1013: {
+    packageType: "S8, 8-lead plastic SO",
+    source:
+      "LT1013 datasheet 10134fe, page 2, PIN CONFIGURATION, the LEFT of the three LT1013 figures, headed 'S8 PACKAGE 8-LEAD PLASTIC SO'. The MIDDLE figure is the N8 PDIP and carries a different assignment.",
+    pins: {
+      "1": "+INA",
+      "2": "V-",
+      "3": "+INB",
+      "4": "-INB",
+      "5": "OUTB",
+      "6": "V+",
+      "7": "OUTA",
+      "8": "-INA"
+    }
+  },
+
+  // SO-8. The right-hand column runs 8 down to 5, so pins 5 and 8 are the NCs
+  // and pins 6 and 7 are the second pair of VOUT ties.
+  LD1117: {
+    packageType: "SO-8",
+    source: "LD1117 datasheet DocID2572 Rev 38, page 6, Figure 2 Pin connections (top view), SO-8 figure",
+    pins: {
+      "1": "ADJ/GND", "2": "VOUT", "3": "VOUT", "4": "VIN",
+      "5": "NC", "6": "VOUT", "7": "VOUT", "8": "NC"
+    }
+  },
+
+  // 12-lead MSOP. The datasheet draws the 10-lead DFN beside it with a DIFFERENT
+  // assignment - the DFN has one GND on an exposed pad numbered 11, the MSOP has
+  // two, on pins 6 and 7 - so the two are not interchangeable.
+  //
+  // Pin 4 is printed with an overbar to mark it active low. The record has no
+  // representation for an overbar, so it is recorded here as the bare name.
+  LTC3105: {
+    packageType: "MS, 12-lead plastic MSOP",
+    source: "LTC3105 datasheet 3105fb, page 2, PIN CONFIGURATION, the RIGHT figure headed 'MS PACKAGE 12-LEAD PLASTIC MSOP'",
+    pins: {
+      "1": "FB", "2": "LDO", "3": "FBLDO", "4": "SHDN", "5": "MPPC", "6": "GND",
+      "7": "GND", "8": "VIN", "9": "SW", "10": "PGOOD", "11": "VOUT", "12": "AUX"
+    }
+  },
+
+  MAX232: {
+    packageType: "D, DW, N or NS",
+    source: "MAX232 datasheet, page 3, Figure 4-1 'MAX232: D, DW, N or NS Package (Top View)', cross-checked against Table 4-1 Pin Functions",
+    pins: {
+      "1": "C1+", "2": "VS+", "3": "C1-", "4": "C2+", "5": "C2-", "6": "VS-",
+      "7": "T2OUT", "8": "R2IN", "9": "R2OUT", "10": "T2IN", "11": "T1IN",
+      "12": "R1OUT", "13": "R1IN", "14": "T1OUT", "15": "GND", "16": "VCC"
+    }
+  },
+
+  // The pin numbers come off the TYPICAL APPLICATION schematic, which is unusual
+  // and is fine here: this figure draws the part as a numbered 8-pin block with
+  // a name in each position, which is a pinout however the section is titled.
+  NCP1200: {
+    packageType: "SOIC-8",
+    source: "NCP1200 datasheet, page 2, Figure 1 Typical Application, the numbered device block",
+    pins: {
+      "1": "Adj", "2": "FB", "3": "CS", "4": "GND",
+      "5": "Drv", "6": "VCC", "7": "NC", "8": "HV"
+    }
+  },
+
+  // SOT23-5. `VDD` on pin 2 is the NEGATIVE rail and `VCC` on pin 5 the
+  // positive, which reads backwards and is what the document prints. Recorded
+  // because the pairing looks like a misread and is not one.
+  TSV321: {
+    packageType: "SOT23-5",
+    source: "TSV321 datasheet, page 1, Pin connections (top view), SOT23-5 figure",
+    pins: {
+      "1": "Output", "2": "VDD", "3": "Non-inverting input",
+      "4": "Inverting input", "5": "VCC"
+    }
+  },
+
+  // The 16-pin figure. Its caption reads "DW or N Package, 20 Pins, Top View"
+  // while the figure numbers 1 to 16, which is the document contradicting
+  // itself; the 20-pin variants are drawn separately beside it and carry NC pins
+  // this one does not. Recorded against the FIGURE, which is unambiguous, and
+  // the caption discrepancy is written down here rather than resolved silently.
+  PCF8574: {
+    packageType: "DW or N",
+    source:
+      "PCF8574 datasheet SCPS068K, page 3, section 4 Pin Configuration and Functions, the 16-pin figure captioned Figure 4-4",
+    pins: {
+      "1": "A0", "2": "A1", "3": "A2", "4": "P0", "5": "P1", "6": "P2",
+      "7": "P3", "8": "GND", "9": "P4", "10": "P5", "11": "P6", "12": "P7",
+      "13": "INT", "14": "SCL", "15": "SDA", "16": "VCC"
+    }
+  },
+
+  // Pin 9 is the PowerPAD and is drawn inside the body rather than as a lead, so
+  // it is not part of the numbered eight and is not recorded here.
+  TPS54360: {
+    packageType: "DDA, 8-pin HSOIC",
+    source: "TPS54360 datasheet SLVSBB4G, page 4, section 5 Pin Configuration and Functions, DDA Package 8-Pin HSOIC (Top View)",
+    pins: {
+      "1": "BOOT", "2": "VIN", "3": "EN", "4": "RT/CLK",
+      "5": "FB", "6": "COMP", "7": "GND", "8": "SW"
+    }
+  },
+
+  TS922: {
+    packageType: "SO8 and TSSOP8",
+    source: "TS922 datasheet, page 2, section 1 Pin diagrams, Figure 2 Pin connections for SO8 and TSSOP8 (top view)",
+    pins: {
+      "1": "Output 1", "2": "Inverting input 1", "3": "Non-inverting input 1", "4": "VCC-",
+      "5": "Non-inverting input 2", "6": "Inverting input 2", "7": "Output 2", "8": "VCC+"
+    }
+  },
+
+  // The DFN8 2x2 figure, which this family datasheet captions "MiniSO8, SO8,
+  // DFN8 2x2 (dual)" - one drawing for three packages that share an assignment.
+  //
+  // Worth a second look by somebody: the document is the TSV91x family, TSV911
+  // is the SINGLE and the DFN8 carries the DUAL pinout. The pinout recorded here
+  // is what the page prints for that package and the product emits it correctly,
+  // but whether a TSV911 is ORDERABLE in a DFN8 is an ordering-table question
+  // this file does not answer.
+  TSV911: {
+    packageType: "MiniSO8, SO8, DFN8 2x2 (dual)",
+    source: "TSV911 datasheet DS4899 Rev 13, page 2, Figure 1 Pin connections for each package (top view), the DFN8 2x2 figure",
+    pins: {
+      "1": "Out1", "2": "In1-", "3": "In1+", "4": "VCC-",
+      "5": "In2+", "6": "In2-", "7": "Out2", "8": "VCC+"
+    }
+  },
+
+  TSZ121: {
+    packageType: "SC70-5",
+    source: "TSZ121 datasheet, page 2, section 1 Package pin connections, Figure 1, the SC70-5 figure",
+    pins: { "1": "IN+", "2": "VCC-", "3": "IN-", "4": "OUT", "5": "VCC+" }
   }
 };
 
@@ -580,6 +738,65 @@ export interface NameMismatch {
 }
 
 /** Every oracle pin whose extracted name disagrees. */
+/**
+ * IS THIS ENTRY EVEN ABOUT THE PACKAGE THAT SHIPPED?
+ *
+ * ## Why this gate has to exist
+ *
+ * An entry is keyed by PART, and a part sold in several packages settles on one
+ * of them at export time. `packageType` on the entry was documentation - a note
+ * for the next person - and nothing acted on it, so a part that settled
+ * somewhere else was scored against a pinout that is not its own.
+ *
+ * That produced five false failures the moment the check could see per-package
+ * pinouts on 2026-08-25, and every one of them read as a serious defect:
+ *
+ *     AD590         ships a 3-pin TO-52   scored against an 8-lead SOIC
+ *     RHFL4913      ships a 3-pin TO-257  scored against a 16-lead flatpack
+ *     LM139AQML-SP  ships a 20-pin LCC    scored against a GDIP-14
+ *     OPA333        ships a 5-pin SOT-23  scored against an 8-pin entry
+ *     SN74LVC1G08   ships a 5-pin SOT-23  scored against a 6-pin entry
+ *
+ * Identical in shape to the `designators` gate `DIMENSION_ORACLE` needed, and
+ * for the identical reason: TSZ121 offers seven packages, settled on the SC70,
+ * and its SC70 reading was reported as six WRONG values that were all correct
+ * readings of a different package. **A bench that scores the wrong package does
+ * not report a defect, it manufactures one.**
+ *
+ * ## The two tests, and why both
+ *
+ * By NAME where the entry states one, because that is the strongest thing an
+ * entry says about itself. Compared on family and stated lead count rather than
+ * spelling, so `S8, 8-lead plastic SO` meets `8-LEAD PLASTIC SO`.
+ *
+ * By PIN NUMBER always, because most entries name no package and a partial entry
+ * is normal: an entry claiming a pin the shipped package does not have is about
+ * a different package whatever it is called.
+ */
+export function entryDescribes(entry: PinoutOracleEntry, designator: string | null, pinCount: number): boolean {
+  // A pin this package does not have. An entry may be PARTIAL - covering some of
+  // a hundred pins - but it may never reach past the end.
+  const highest = Math.max(...Object.keys(entry.pins).map((number) => Number(number)));
+  if (!Number.isFinite(highest) || highest > pinCount) return false;
+
+  if (!entry.packageType || designator === null) return true;
+  const family = (value: string) => {
+    const found = [...value.toUpperCase().matchAll(new RegExp(PACKAGE_FAMILY_PATTERN, "gi"))].map((m) => m[0]);
+    return found.length > 0 ? found[found.length - 1].toUpperCase() : null;
+  };
+  const stated = (value: string) => {
+    const match = /(\d{1,3})\s*[-\s]?\s*(?:lead|pin|ld)s?\b/i.exec(value);
+    return match ? Number(match[1]) : null;
+  };
+  const mine = family(entry.packageType);
+  const theirs = family(designator);
+  if (mine !== null && theirs !== null && mine !== theirs) return false;
+  const myLeads = stated(entry.packageType);
+  const theirLeads = stated(designator);
+  if (myLeads !== null && theirLeads !== null && myLeads !== theirLeads) return false;
+  return true;
+}
+
 export function checkPinNames(
   entry: PinoutOracleEntry,
   pins: { number: string; name: string }[]

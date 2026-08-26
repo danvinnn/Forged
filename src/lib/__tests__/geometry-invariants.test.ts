@@ -347,20 +347,17 @@ test("an UNEQUAL quad is not refused just because its long side is long", async 
   assert.ok(bundle.buffer.byteLength > 0, "the short side keeps the corners clear");
 });
 
-test("a single-row through-hole package builds one line of pins", async () => {
-  // TO-220, TO-92 and SIP were permanently unbuildable until 2026-08-17, and not
-  // because they were hard to read. `leadSides` was typed `2 | 4`, so a single
-  // line of pins could not be REPRESENTED: the schema rejected a 1 and the
-  // prompt told the model to answer null. Null was then the exact state that
-  // once fell through to two rows and shipped a 3-lead regulator as two columns
-  // 5 mm apart.
-  //
-  // Same shape as the `leadForm` gap and the flat pack's missing foot: the
-  // product could not express the true answer, so it never got one.
-  const { createExportZip } = await import("../exporters");
-  const JSZip = (await import("jszip")).default;
-
-  const to220 = {
+/**
+ * A real single-row through-hole package: L7805 in TO-220, three leads at
+ * 2.54 mm out of a body 10 mm along the row and 4.6 mm across it.
+ *
+ * Built fresh per call, and RECTANGULAR on purpose. Every single-row part in
+ * the corpus reads a square body - AD590's TO-52 at 5.31 x 5.31, LT1013's TO-5
+ * at 8.95 x 8.95 - so a square fixture cannot tell a correct axis mapping from a
+ * transposed one, and for months nothing did.
+ */
+function to220() {
+  return {
     id: "t", partNumber: "L7805", manufacturer: "ST", packageType: "TO-220 (3)",
     packageOutlineCode: null, jedecOutline: null, vendorLandPattern: null, pinCount: 3,
     pins: [
@@ -380,9 +377,23 @@ test("a single-row through-hole package builds one line of pins", async () => {
     },
     radiation: { tid: null, see: null, sel: null, qmlClass: null },
     sourceFileName: "l7805.pdf", notes: []
-  } as never;
+  } as never as import("../types").ResolvedPart;
+}
 
-  const bundle = await createExportZip(to220, "kicad", {});
+test("a single-row through-hole package builds one line of pins", async () => {
+  // TO-220, TO-92 and SIP were permanently unbuildable until 2026-08-17, and not
+  // because they were hard to read. `leadSides` was typed `2 | 4`, so a single
+  // line of pins could not be REPRESENTED: the schema rejected a 1 and the
+  // prompt told the model to answer null. Null was then the exact state that
+  // once fell through to two rows and shipped a 3-lead regulator as two columns
+  // 5 mm apart.
+  //
+  // Same shape as the `leadForm` gap and the flat pack's missing foot: the
+  // product could not express the true answer, so it never got one.
+  const { createExportZip } = await import("../exporters");
+  const JSZip = (await import("jszip")).default;
+
+  const bundle = await createExportZip(to220(), "kicad", {});
   const zip = await JSZip.loadAsync(bundle.buffer);
   const mod = await zip.files[Object.keys(zip.files).find((f) => f.endsWith(".kicad_mod"))!].async("string");
 
@@ -400,6 +411,107 @@ test("a single-row through-hole package builds one line of pins", async () => {
     [-2.54, 0, 2.54],
     "spaced at the pitch, pin 1 first, centred on the origin"
   );
+});
+
+test("a single row is drawn on the axis its pins are on, not across it", async () => {
+  // `bodyLengthMm` is drawing dimension D and it runs ALONG the leads. A single
+  // row is stepped along X, so D is the X extent - the TRANSPOSE of the dual
+  // case, where the rows run down the page.
+  //
+  // `assemble` used the dual mapping for all three arrangements, so this TO-220
+  // came out 4.6 mm wide and 10 mm tall with its 5.08 mm row of pins emerging
+  // from the 4.6 mm side. A fabrication outline ninety degrees from its own
+  // copper, and every single-row part in the corpus reads a SQUARE body, so
+  // nothing could see it.
+  const { buildFootprintGeometry } = await import("../exporters");
+  const geometry = buildFootprintGeometry(to220(), "B");
+
+  assert.equal(geometry.body.halfWidthMm, 5, "D (10 mm) is the extent along the row, which is X");
+  assert.equal(geometry.body.halfHeightMm, 2.3, "E (4.6 mm) is the extent across it");
+  const rowHalfMm = Math.max(...geometry.pads.map((pad) => Math.abs(pad.centre.xMm)));
+  assert.ok(rowHalfMm <= geometry.body.halfWidthMm, "and the pins sit on the face they come out of");
+});
+
+test("a single row longer than its own body is refused, not shipped", async () => {
+  // LIVE ON LT1013 until 2026-08-25. Its 8-lead TO-5 metal can built EIGHT PADS
+  // IN A 35.56 MM LINE on a body 8.95 mm across and shipped, under two names in
+  // the package chooser. 5.08 mm on a metal can drawing is the LEAD CIRCLE
+  // diameter, this generator has no circular arrangement, and it was read as a
+  // linear pitch.
+  //
+  // Refused rather than corrected because on a single row there is no printed
+  // land pattern and no lead span: the body is the only independent measurement
+  // of the package, so the contradiction convicts the pad placement. On a dual
+  // or a quad the copper IS independently measured and the body is grown to fit
+  // instead; see `assemble`.
+  const { buildFootprintGeometry } = await import("../exporters");
+  const { geometryViolations } = await import("../confidence");
+
+  // LT1013'S OWN NUMBERS. Eight leads, the 5.08 mm lead CIRCLE read as a pitch,
+  // an 8.95 mm can: a 35.56 mm row against a bound of 8.95 + 5.08.
+  //
+  // The bound is `body + pitch` and not `body`, because a lead frame brazed to a
+  // ceramic body overhangs it - CQZ12805 prints a 12.40 mm row on a 12.00 mm
+  // body. So this fixture is the real defect rather than a marginal one: a
+  // three-pin fixture at the same pitch sits inside the slack and proves
+  // nothing.
+  const can = to220();
+  can.pinCount = 8;
+  can.pins = Array.from({ length: 8 }, (_, index) => ({
+    number: String(index + 1),
+    name: `P${index + 1}`,
+    electricalType: "passive" as const
+  }));
+  can.dimensions.pitchMm = 5.08;
+  can.dimensions.bodyLengthMm = 8.9535;
+  const geometry = buildFootprintGeometry(can, "B");
+
+  const violations = geometryViolations(geometry, can);
+  assert.ok(
+    violations.some((problem) => problem.includes("single row")),
+    `a 10.16 mm row on a 5.31 mm body must be refused, got: ${violations.join("; ")}`
+  );
+
+  // AND THE SAME PACKAGE INSIDE ITS BODY IS NOT REFUSED. Without this the test
+  // passes on a check that refuses everything, which is the mistake the copper
+  // bench made with a pad number that was never emitted.
+  const fits = to220();
+  assert.deepEqual(geometryViolations(buildFootprintGeometry(fits, "B"), fits), []);
+});
+
+test("a gapped pin table cannot ship a footprint with more lands than the symbol has pins", async () => {
+  // THE HOLE THAT HAD NO CHECK. The pads are numbered from `pinCount`, so a
+  // table missing pin 2 still gets three lands; `buildSymbolGeometry` looks each
+  // number up and SKIPS the miss, so the symbol gets two pins. Every check in
+  // this file passed: the footprint's lands satisfy `pinCount` exactly and every
+  // pin the table DOES list has one.
+  //
+  // `types.ts` has carried a note about this since 2026-08-16 saying
+  // `validateGeometry` cannot catch it. It could not, because it was only ever
+  // shown the footprint.
+  const { buildFootprintGeometry, createExportZip, FootprintUnavailableError } = await import("../exporters");
+  const { geometryViolations } = await import("../confidence");
+
+  const gapped = to220();
+  gapped.pins = [
+    { number: "1", name: "IN", electricalType: "power" },
+    { number: "3", name: "OUT", electricalType: "power" }
+  ];
+
+  // The footprint alone still says nothing, which is the point of checking the
+  // other half rather than tightening this one.
+  assert.deepEqual(geometryViolations(buildFootprintGeometry(gapped, "B"), gapped), []);
+
+  await assert.rejects(
+    () => createExportZip(gapped, "kicad", {}),
+    (error: Error) =>
+      !(error instanceof FootprintUnavailableError) && /land for pin 2, which the pin table does not list, and the symbol draws it 0 times/.test(error.message),
+    "a pin the schematic does not draw is a connection that does not exist"
+  );
+
+  // And an ungapped table of the same shape exports, so this is not a check that
+  // refuses everything.
+  await createExportZip(to220(), "kicad", {});
 });
 
 test("a through-hole package whose row count was never read still refuses", async () => {

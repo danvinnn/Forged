@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { densityOf, parseSettings } from "../../../lib/settings";
 import {
+  AltiumEmitError,
   asPackage,
   createExportZip,
   FootprintUnavailableError,
   GeneratorUnavailableError,
+  MILLIMETRE_INPUT_FIELDS,
   recordForPackage,
   type SuppliedDimensions
 } from "../../../lib/exporters";
@@ -164,23 +166,15 @@ export async function POST(request: Request) {
   // Validated exactly as strictly as the span above: these become copper. A
   // millimetre figure outside this range is a units mistake or a typo, and
   // either would be built faithfully by the generator.
+  // TAKEN FROM THE CATALOGUE, not repeated here.
+  //
+  // This list was written out by hand and fell behind the generator twice: a
+  // field the exporter asks for and the route will not receive is a refusal with
+  // extra words, and the user is told exactly which number would fix it before
+  // that number is rejected as unknown. `MILLIMETRE_INPUT_FIELDS` is the same
+  // list the questions are built from, so the two can no longer disagree.
   const suppliedNumbers: Record<string, unknown> = {};
-  for (const field of [
-    "bodyLengthMm",
-    "bodyWidthMm",
-    "bodyHeightMm",
-    "landPadLengthMm",
-    "landPadWidthMm",
-    "landSpanMm",
-    // The cross-axis span. The generator asks for it on a four-sided package and
-    // this list is what makes the ask answerable; a field the exporter requests
-    // and the route rejects is a refusal with extra words.
-    "landSpanCrossMm",
-    "leadDiameterMm",
-    "pitchMm",
-    "thermalPadLengthMm",
-    "thermalPadWidthMm"
-  ] as const) {
+  for (const field of MILLIMETRE_INPUT_FIELDS) {
     const value = (payload as Record<string, unknown>)[field];
     if (value === undefined) continue;
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 200) {
@@ -327,6 +321,33 @@ export async function POST(request: Request) {
           needs: error.needs,
           packageType: part.packageType,
           pinCount: resolved.part.pinCount
+        },
+        { status: 422 }
+      );
+    }
+    // A NAME THE TARGET FORMAT CANNOT WRITE, which is a refusal and not a crash.
+    //
+    // The same shape as `FootprintInvalidError` directly above, found the same
+    // way and one report later: the emitter refused correctly, nothing caught
+    // it, Next answered 500 and the screen showed the bare words "Export
+    // failed." Reported 2026-08-24 against an LMP7704-SP, whose pin names carry
+    // a U+2013 en dash.
+    //
+    // That particular character turned out to be a bug in the encoder rather
+    // than a real limit, and is fixed. This handler is not about that character:
+    // any datasheet can print a name outside Windows-1252, and when one does the
+    // user is owed the reason and the offending value rather than a 500.
+    //
+    // 422 because the request is well formed and the answer is that no honest
+    // Altium file can carry that string. `availableFormats` names KiCad, which
+    // writes UTF-8 and has no such limit, so there IS somewhere to go.
+    if (error instanceof AltiumEmitError) {
+      return NextResponse.json(
+        {
+          error: `Cannot generate an Altium library: ${error.message}`,
+          code: "FORMAT_CANNOT_ENCODE",
+          format,
+          availableFormats: ["kicad"]
         },
         { status: 422 }
       );

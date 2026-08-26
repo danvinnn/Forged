@@ -54,3 +54,8 @@ yarn-error.log*
 
 gcp-key.json
 .mutation-journal.json
+.bench-browser.log
+.bench-browser-server.log
+
+# One-off inspection scripts. Never part of the product.
+.scratch

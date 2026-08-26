@@ -38,7 +38,7 @@ export const FIELD_GUIDE: Record<ExtractionField, string> = {
   // rather than as the two cases, so it covers any document that repeats a name
   // or parenthesises part of one.
   pins:
-    "the full pin table as an array of {number, name, electricalType, description}. Give each name EXACTLY as the document prints it in the pin table's name cell or beside the pin on the pinout figure, character for character. Do NOT invent a suffix or a number to tell two pins apart: a package routinely has several pins with the SAME name (four pins all called GND, three all called IN) and repeating the name is the correct answer. Do NOT drop any part of a printed name, including a parenthesised one: if the cell reads 'D11(MSB)' the name is 'D11(MSB)', not 'D11'. Where the pin table and the pinout figure print different names for the same pin, prefer the pin table's name column.",
+    "the full pin table as an array of {number, name, electricalType, description}. Give each name EXACTLY as the document prints it in the pin table's name cell or beside the pin on the pinout figure, character for character. Do NOT invent a suffix or a number to tell two pins apart: a package routinely has several pins with the SAME name (four pins all called GND, three all called IN) and repeating the name is the correct answer. Where the pin table and the pinout figure print different names for the same pin, prefer the pin table's name column.",
   "dimensions.bodyLengthMm": "package body length in millimetres, as a number",
   "dimensions.bodyWidthMm": "package body width in millimetres, as a number",
   // THE SEATED ENVELOPE, not the ceramic. Corrected 2026-08-18 after the
@@ -61,8 +61,12 @@ export const FIELD_GUIDE: Record<ExtractionField, string> = {
   "dimensions.pitchMm": "lead pitch in millimetres, as a number",
   "dimensions.leadLengthMm": "lead length in millimetres, as a number",
   "dimensions.leadCount": "number of leads, as an integer",
+  // WIDTH, NOT THICKNESS. Drawings letter these b and c and print them beside
+  // each other, and LTC3105 came back with c: 0.22-0.38 where its top view
+  // states b as 0.406 +/- 0.076. The land pattern is computed from this field,
+  // so the pads came out about 0.1 mm narrow on a 0.65 mm pitch.
   "dimensions.leadWidthMm":
-    "lead width in millimetres as printed on the package drawing, as {\"minMm\": <number>, \"maxMm\": <number>}",
+    "lead width in millimetres as printed on the package drawing, as {\"minMm\": <number>, \"maxMm\": <number>}. This is the lead measured ACROSS the row, the direction in which neighbouring leads are separated by the pitch, and it is drawing dimension b. It is NOT the lead's THICKNESS, dimension c, which is measured through the metal on the side view and is usually the smaller of the two; the two are printed beside each other on most drawings. Where the drawing letters them, take b.",
   "dimensions.leadContactMm":
     "lead contact length in millimetres, drawing dimension L, the length of the foot that sits on the pad (NOT the whole lead), as {\"minMm\": <number>, \"maxMm\": <number>}",
   "dimensions.leadSpanMm":
@@ -93,7 +97,7 @@ export const FIELD_GUIDE: Record<ExtractionField, string> = {
   // inner gap and the outer extent), so the guide asks for the three numbers a
   // footprint needs rather than for a particular vendor's callouts.
   "dimensions.landPadLengthMm":
-    "from the datasheet's OWN RECOMMENDED FOOTPRINT / LAND PATTERN drawing (a separate page from the package outline, captioned e.g. 'LAND PATTERN EXAMPLE', 'RECOMMENDED FOOTPRINT', 'EXAMPLE BOARD LAYOUT' or 'Footprint example'): the length of ONE land, in millimetres, measured OUTWARD from the centre of the package, i.e. along the row's short axis and perpendicular to the pitch. This is the direction a lead points on a gull-wing package, and the direction a terminal extends from the body edge on a no-lead one. Report ONE land, never the row or the whole pattern. Null if the datasheet prints no such drawing.",
+    "from the datasheet's OWN RECOMMENDED FOOTPRINT / LAND PATTERN drawing (a separate page from the package outline, captioned e.g. 'LAND PATTERN EXAMPLE', 'RECOMMENDED FOOTPRINT', 'EXAMPLE BOARD LAYOUT' or 'Footprint example'): the length of ONE LEAD LAND, in millimetres, measured OUTWARD from the centre of the package, i.e. along the row's short axis and perpendicular to the pitch. This is the direction a lead points on a gull-wing package, and the direction a terminal extends from the body edge on a no-lead one. Report ONE land, never the row or the whole pattern. A LEAD LAND is one of the small lands in a row, sitting under one numbered lead or terminal. Some footprints ALSO draw a single large land in the MIDDLE of the pattern, under the package's exposed thermal pad; that one is NOT a lead land and none of the land fields describe it, so never take its size or its position for any of them. It is usually the biggest shape on the figure and it is the only one with no neighbours a pitch away. Null if the datasheet prints no such drawing.",
   "dimensions.landPadWidthMm":
     "from the same RECOMMENDED FOOTPRINT drawing: the width of ONE land, in millimetres, measured ACROSS the row, i.e. the direction in which neighbouring lands are separated by the pitch. It is always smaller than the pitch, because neighbouring lands do not touch. On a gull-wing package (SOIC, TSSOP, QFP) it is the smaller of the two land dimensions; on a no-lead package (QFN, DFN, SON) the two can be close to equal, so use the direction rather than the size to tell them apart. Null if the datasheet prints no such drawing.",
   // THE AXIS, on this and on landSpanCrossMm, for the same reason it is stated

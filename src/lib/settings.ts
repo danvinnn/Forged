@@ -86,7 +86,23 @@ export interface SettingsField {
   standard: string | null;
   unit: "mm" | null;
   why: string;
+  /**
+   * The largest value `/api/export` will accept for this field, where it is a
+   * number.
+   *
+   * Carried on the field rather than kept private so the SCREEN can state it.
+   * `parseSettings` drops anything above it, which is correct, but a screen that
+   * does not know the bound cannot say why the value it just took disappeared:
+   * the box still showed 8, the gate still said one field was needed, and
+   * nothing connected the two. The user is then stuck on a required field they
+   * have already answered.
+   */
+  max?: number;
 }
+
+/** Largest values the export route accepts, mirrored so the screen refuses first. */
+const MAX_SPAN_MM = 200;
+const MAX_CONTACT_MM = 5;
 
 /**
  * The screen, in order. Written as data so the UI, the first-run gate and the
@@ -112,20 +128,39 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     label: "Formed lead span, toe to toe",
     standard: null,
     unit: "mm",
-    why: "Ceramic flat packs ship with straight leads and your line forms them, so only you know the seated span."
+    why: "Ceramic flat packs ship with straight leads and your line forms them, so only you know the seated span.",
+    max: MAX_SPAN_MM
   },
   {
     key: "formedLeadContactMm",
     label: "Formed foot length",
     standard: null,
     unit: "mm",
-    why: "The foot the land is sized around is made by your forming die, so no datasheet prints it."
+    why: "The foot the land is sized around is made by your forming die, so no datasheet prints it.",
+    max: MAX_CONTACT_MM
   }
 ];
 
-/** Largest values the export route accepts, mirrored so the screen refuses first. */
-const MAX_SPAN_MM = 200;
-const MAX_CONTACT_MM = 5;
+/**
+ * The fields the user typed a number into that `parseSettings` will throw away.
+ *
+ * Reported so the screen can say so. A value silently dropped for being out of
+ * range is indistinguishable from one never entered, and the two need different
+ * things from the user: one is "answer this", the other is "that answer is
+ * outside what the export accepts, here is the limit".
+ *
+ * Only fields that were actually SUPPLIED are listed. A blank field is not a
+ * rejection, it is the standard's answer or an unanswered requirement, and both
+ * are already reported elsewhere.
+ */
+export function outOfRange(input: Record<string, unknown>): SettingsField[] {
+  return SETTINGS_FIELDS.filter((field) => {
+    if (field.max === undefined) return false;
+    const raw = input[field.key];
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return false;
+    return raw <= 0 || raw > field.max;
+  });
+}
 
 /**
  * What is still unanswered and has no standard to fall back on.

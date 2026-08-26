@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { packageOptions } from "../exporters";
+import { pinTableFor } from "../packagevariants";
 import type { Extracted, PartRecord, PinRecord } from "../types";
 
 // The package chooser used to offer packages that produced nothing when pressed.
@@ -511,8 +512,19 @@ test("when no harvested name matches, the document's own package names are offer
   );
 });
 
-// NARROW ON PURPOSE: a chooser that already works must not gain extra options.
-test("a part whose harvested name already matches gains no extra options", () => {
+// A PACKAGE THE DOCUMENT DESCRIBES IS OFFERED, WHATEVER THE ORDERING TABLE SAID.
+//
+// This used to assert the opposite - that a chooser whose harvested name already
+// resolved gained nothing - and the concern behind it was real but narrower than
+// the assertion: the whole-list FALLBACK must not fire and replace a working
+// list. Adding the tables nothing reached is a different act, and it keeps the
+// harvested option in place and first.
+//
+// The old behaviour was measured on 2026-08-25 over the tuned corpus: eighteen
+// of fifty-seven parts held a complete, located pin table for a package the user
+// could not pick, thirty-four packages in all. The ordering table is one of the
+// two places a datasheet names its packages and it is the one that goes stale.
+test("a package the document describes is offered even when another name already resolved", () => {
   const table = (name: string) => ({
     packageType: name,
     pins: pins(8),
@@ -529,9 +541,55 @@ test("a part whose harvested name already matches gains no extra options", () =>
 
   assert.equal(choice.ok, true);
   if (!choice.ok) return;
+  const named = choice.options.map((option) => option.designator);
+  assert.equal(named[0], "SOIC-8", "the harvested designator keeps its place at the front");
   assert.deepEqual(
-    choice.options.map((option) => option.designator),
-    ["SOIC-8"],
-    "one harvested designator resolved, so the fallback stays out of the way"
+    [...named].sort(),
+    ["SOIC-8", "VSSOP (DGK)"],
+    "and the package only the document names is offered beside it"
   );
+  assert.equal(new Set(named).size, named.length, "no package is offered twice");
+});
+
+// AND NOTHING IS OFFERED THAT CANNOT BE RESOLVED BACK. An option is a promise
+// that picking it builds that package, and the pick is resolved by looking the
+// label up again. A table whose caption resolves to nothing - because another
+// caption contains it, or because two are identical - is offered under its
+// drawing code or not at all.
+test("an offered label always resolves back to the table it was made from", () => {
+  const table = (name: string, outlineCode?: string) => ({
+    packageType: name,
+    ...(outlineCode ? { outlineCode } : {}),
+    pins: pins(8),
+    citation: { page: 3, snippet: name, region: null }
+  });
+  const choice = packageOptions(
+    record({
+      pins: nothing<PinRecord[]>(),
+      pinCount: nothing<number>(),
+      packageVariants: [variant("SOIC-8", "SOIC", 8)],
+      // `HVSSOP (DGN)` contains `VSSOP (DGN)`, so neither plain caption picks
+      // out one table on its own.
+      packagesInThisDocument: [
+        table("SOIC-8"),
+        table("VSSOP (DGN)", "DGN0008H"),
+        table("HVSSOP (DGN)", "DGN0008G")
+      ]
+    })
+  );
+
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  for (const option of choice.options) {
+    const found = pinTableFor(
+      [
+        { packageType: "SOIC-8", pins: pins(8) },
+        { packageType: "VSSOP (DGN)", outlineCode: "DGN0008H", pins: pins(8) },
+        { packageType: "HVSSOP (DGN)", outlineCode: "DGN0008G", pins: pins(8) }
+      ],
+      option.designator
+    );
+    assert.ok(found, `picking "${option.designator}" must find a table, or it is a dead option`);
+  }
+  assert.equal(choice.options.length, 3, "all three packages the document describes");
 });

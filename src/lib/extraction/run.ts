@@ -142,6 +142,11 @@ export interface ExtractionRun extends MergeOutcome {
  * agrees and the CODE disagrees, so the whole match fails on the disagreement
  * rather than passing on the agreement.
  */
+/** A caption folded to its letters and digits, so punctuation cannot split one. */
+function key(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 function sameDesignator(
   entry: NonNullable<ExtractionResult["packagesInThisDocument"]>[number],
   held: Map<string, NonNullable<ExtractionResult["packagesInThisDocument"]>[number]>,
@@ -204,18 +209,54 @@ function sameDesignator(
     // in the wrong place. Two pin tables that the proof calls one package are
     // the same terminals read twice, and the precedence rule below already
     // keeps pass 1's.
-    const has = (value: unknown) => Array.isArray(value) ? value.length > 0 : value !== undefined && Object.keys(value as object).length > 0;
-    if (has(entry.dimensions) && has(other.dimensions)) continue;
-    // A pin table may only meet another when both state a lead count and agree
-    // on it. Without that this would be judging two pinouts on the name alone.
-    if (has(entry.pins) && has(other.pins)) {
-      const oneCount = featuresOf(entry).leads;
-      const otherCount = featuresOf(other).leads;
-      if (oneCount === null || otherCount === null || oneCount !== otherCount) continue;
-    }
     if (namesSeveralPackages(other.packageType)) continue;
     if (!isThisPart(other.packageType, partNumber)) continue;
     const theirs = featuresOf(other);
+    // THE DRAWING CODE IS DECIDED FIRST, because the guards below are about what
+    // to do when the entries have no code to compare. It used to be read after
+    // them, so a pair the code identifies as ONE drawing could still be refused
+    // by a rule written for pairs whose codes nobody had.
+    const outlineAgrees = mine.outline !== null && theirs.outline !== null && sameOutlineCode(mine.outline, theirs.outline);
+    const outlineContradicts = mine.outline !== null && theirs.outline !== null && !outlineAgrees;
+    if (outlineContradicts) continue;
+
+    // THE SAME CAPTION IS AN IDENTITY TOO, and it was the one thing this could
+    // not see.
+    //
+    // Every rule here exists to join two entries whose captions DISAGREE,
+    // because the pin-table pass and the drawing pass name a package after the
+    // section they read. In covering that, the plainest evidence there is went
+    // missing: two entries the document itself calls by the same name.
+    //
+    // It cost a package. RHFL4913A returns `SMD5C` from both passes; pass 2 also
+    // reads the drawing code, which sends it to a different key, and neither the
+    // code, the family nor a bare lead count could then establish identity. So
+    // READING MORE SPLIT THE ENTRY - the pinout in one half, the measurements in
+    // the other, and a part that could have been built from either.
+    //
+    // Safe because it is an agreement and not a bypass: a contradicting drawing
+    // code has already vetoed above, a lead-count disagreement still contradicts
+    // below, and a caption naming several packages never reaches here.
+    const captionAgrees =
+      key(entry.packageType) === key(other.packageType) && key(entry.packageType).length > 0;
+
+    const has = (value: unknown) => Array.isArray(value) ? value.length > 0 : value !== undefined && Object.keys(value as object).length > 0;
+    // TWO MEASURED ENTRIES ARE TWO BODIES - UNLESS THE DRAWING SAYS OTHERWISE.
+    //
+    // The reason recorded for this guard is that the proof cannot separate a
+    // `SOIC (D)` from a `SOIC (DW)` whose codes the model did not report, and a
+    // wrong body is copper in the wrong place. That reasoning is about entries
+    // with NO code. Where both print the same code they are the same drawing,
+    // which is the one piece of evidence stronger than the caption, and refusing
+    // them splits one package into two half-built entries.
+    if (!outlineAgrees && !captionAgrees && has(entry.dimensions) && has(other.dimensions)) continue;
+    // A pin table may only meet another when both state a lead count and agree
+    // on it. Without that this would be judging two pinouts on the name alone.
+    if (has(entry.pins) && has(other.pins)) {
+      const oneCount = mine.leads;
+      const otherCount = theirs.leads;
+      if (oneCount === null || otherCount === null || oneCount !== otherCount) continue;
+    }
     // A LEAD COUNT IS NOT AN IDENTITY.
     //
     // Agreement had to come from any one of the three, and "both have 8 leads"
@@ -247,11 +288,7 @@ function sameDesignator(
     // `SOIC (DW)` case the dimensions guard above exists to avoid: a wrong body
     // is copper in the wrong place. THS3491 really did answer `DDA0008B` on one
     // run and `RGT0016C` on another.
-    const outlineAgrees = mine.outline !== null && theirs.outline !== null && sameOutlineCode(mine.outline, theirs.outline);
-    const outlineContradicts = mine.outline !== null && theirs.outline !== null && !outlineAgrees;
-    if (outlineContradicts) continue;
-
-    let agreedOnIdentity = outlineAgrees;
+    let agreedOnIdentity = outlineAgrees || captionAgrees;
     let contradicted = false;
     for (const part of ["code", "family", "leads"] as const) {
       const a = mine[part];
@@ -259,7 +296,27 @@ function sameDesignator(
       if (a === null || b === null) continue;
       if (a === b) {
         if (part !== "leads") agreedOnIdentity = true;
-      } else contradicted = true;
+        continue;
+      }
+      // AN AGREEING DRAWING CODE OUTRANKS A DISAGREEING CAPTION, AND ONLY A
+      // CAPTION.
+      //
+      // `code` and `family` are both inferred from the words the model wrote,
+      // and the two passes disagreeing about those words is the entire reason
+      // this function exists: one reads the pinout section and the other reads
+      // the outline drawing, and they name the same package differently. TI
+      // prints `DGN0008H` on one drawing and a run called it `HVSSOP (DGN)` from
+      // the pin table and `VSSOP (DGN)` from the drawing.
+      //
+      // A drawing code is ink on the page rather than an inference, so where it
+      // agrees it settles what the captions were only guessing at.
+      //
+      // The LEAD COUNT is not a caption. A pin table proves it by its own rows
+      // and a drawing states it, so a disagreement there is two packages however
+      // the code reads - which matters, because a model can report one code for
+      // two drawings, and merging on that alone destroys a package.
+      if (outlineAgrees && part !== "leads") continue;
+      contradicted = true;
     }
     if (agreedOnIdentity && !contradicted) hits.push(otherKey);
   }
@@ -332,13 +389,107 @@ function featuresOf(entry: NonNullable<ExtractionResult["packagesInThisDocument"
 }
 
 
+/**
+ * Do two entries COUNT different numbers of leads?
+ *
+ * The one contradiction that can overturn a matching key. Everything a key is
+ * built from - the caption, the drawing code - is read by the model off the
+ * page, and a model that reports one code for two drawings merges two packages
+ * into one. A lead count is not read the same way: a pin table proves it by its
+ * own numbered rows and an outline entry states it as a measurement, so where
+ * the two disagree there are two packages whatever they are keyed under.
+ *
+ * Null on either side is not a disagreement. Most entries state no count at all
+ * and refusing them would undo the join this whole function exists to make.
+ */
+function countsDisagree(
+  left: NonNullable<ExtractionResult["packagesInThisDocument"]>[number],
+  right: NonNullable<ExtractionResult["packagesInThisDocument"]>[number]
+): boolean {
+  const mine = featuresOf(left).leads;
+  const theirs = featuresOf(right).leads;
+  return mine !== null && theirs !== null && mine !== theirs;
+}
+
+/**
+ * How many packages THIS pass hands this same pin list to.
+ *
+ * A pin list shared across several packages is the document's most common way of
+ * publishing a pinout and is usually right - a `D` and a `DW` really do share an
+ * assignment. The number is not a defect signal on its own; it is a measure of
+ * how SPECIFICALLY that pass read this particular package.
+ */
+function packagesSharingList(
+  list: NonNullable<ExtractionResult["packagesInThisDocument"]>[number]["pins"],
+  within: ExtractionResult["packagesInThisDocument"]
+): number {
+  if (!list || !within) return 1;
+  const shape = (pins: NonNullable<ExtractionResult["packagesInThisDocument"]>[number]["pins"]) =>
+    JSON.stringify((pins ?? []).map((pin) => [String(pin.number), pin.name]));
+  const wanted = shape(list);
+  return within.filter((table) => shape(table.pins) === wanted).length;
+}
+
+/**
+ * WHICH PASS'S PIN TABLE DESCRIBES THIS PACKAGE.
+ *
+ * ## Why this is not simply pass 1
+ *
+ * It was, on the stated ground that pass 1 sees the whole document while pass 2
+ * sees a handful of rendered pages and cannot know it is looking at a partial
+ * table. That rule has three measured parts behind it for the FLAT `pins` field.
+ * It was never measured for per-package tables, and the measurement, taken
+ * 2026-08-25 over every cached part against the hand-read pinouts, is 1-1:
+ *
+ *     pass 1 right, pass 2 wrong    1    OPA2189's VSSOP
+ *     pass 2 right, pass 1 wrong    1    LT1013's 8-lead plastic SO
+ *
+ * One to one is no basis for either preference, and the cost of the wrong pick
+ * is a wrong netlist under a real part number. LT1013 shipped one: the N8 PDIP's
+ * assignment on an S8 SO package, all eight pins, on a document whose own note
+ * says those two configurations differ.
+ *
+ * ## What separates them
+ *
+ * Pass 1 handed ONE list to four LT1013 packages - the SO, the PDIP, the CERDIP
+ * and the TO-5 metal can - which the document draws as three different figures.
+ * Pass 2 gave the SO a list of its own. On OPA2189, where pass 1 is the right
+ * one, both passes share each list with exactly one other package.
+ *
+ * So the rule is about specificity, not about which pass: **a pass that gives
+ * this package its own reading looked at this package; a pass that gave the same
+ * list to more packages generalised.** Where they generalise equally, nothing
+ * has been learned and pass 1 keeps its precedence, so the measured OPA2189 case
+ * is unaffected and no part that agrees today can change.
+ *
+ * Sharing counts are not evidence of error by themselves - 23 groups of shared
+ * lists appear in pass 1 across this corpus and most are correct, because
+ * publishing one pinout for several packages is what datasheets do. This only
+ * ever fires where the two passes ALREADY disagree, which is the case where
+ * something has to break the tie.
+ */
+function pinsForPackage(
+  fromFirst: NonNullable<ExtractionResult["packagesInThisDocument"]>[number],
+  fromSecond: NonNullable<ExtractionResult["packagesInThisDocument"]>[number],
+  first: ExtractionResult["packagesInThisDocument"],
+  second: ExtractionResult["packagesInThisDocument"]
+): NonNullable<ExtractionResult["packagesInThisDocument"]>[number]["pins"] {
+  if (!fromFirst.pins) return fromSecond.pins;
+  if (!fromSecond.pins) return fromFirst.pins;
+  const shape = (pins: NonNullable<ExtractionResult["packagesInThisDocument"]>[number]["pins"]) =>
+    JSON.stringify((pins ?? []).map((pin) => [String(pin.number), pin.name]));
+  if (shape(fromFirst.pins) === shape(fromSecond.pins)) return fromFirst.pins;
+  const sharedByFirst = packagesSharingList(fromFirst.pins, first);
+  const sharedBySecond = packagesSharingList(fromSecond.pins, second);
+  return sharedByFirst > sharedBySecond ? fromSecond.pins : fromFirst.pins;
+}
+
 function mergePackageEntries(
   first: ExtractionResult["packagesInThisDocument"],
   second: ExtractionResult["packagesInThisDocument"],
   partNumber?: string
 ): ExtractionResult["packagesInThisDocument"] {
   if (!first && !second) return undefined;
-  const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
   const byKey = new Map<string, NonNullable<ExtractionResult["packagesInThisDocument"]>[number]>();
   for (const entry of [...(first ?? []), ...(second ?? [])]) {
     // THE SAME PACKAGE UNDER TWO NAMES.
@@ -373,9 +524,49 @@ function mergePackageEntries(
     // same letters.
     const code = normalizeOutlineCode(entry.outlineCode);
     const merged = code ? `outline:${key(code)}` : key(entry.packageType);
-    const existing = byKey.get(merged) ? merged : sameDesignator(entry, byKey, partNumber);
+    // A CODE MATCH IS EVIDENCE, NOT A LICENCE TO SKIP THE PROOF.
+    //
+    // This read `byKey.get(merged)` first and joined on it outright, which meant
+    // a shared key merged two entries with no check of any kind - the exact
+    // disagreements `sameDesignator` exists to catch, bypassed whenever the
+    // strongest-looking evidence was present.
+    //
+    // A drawing code is read by the model, and a model that reports one code for
+    // two drawings collapses two packages into one. LT1013 is offered in seven,
+    // and its 8-lead and 14-lead PDIPs came back under a single code, as did its
+    // two CERDIPs: five entries reached the record and two whole packages, pin
+    // tables and all, were destroyed by the merge that was supposed to join
+    // halves of one.
+    //
+    // So the proof runs on every pair, and an agreeing code is one of the things
+    // it weighs. A lead-count contradiction now refuses the join, which is the
+    // answer the same evidence gives everywhere else in this function.
+    // A KEY MATCH JOINS, UNLESS THE TWO ENTRIES COUNT DIFFERENT LEADS.
+    //
+    // The fast path is load-bearing and stays: a drawing code identifies a
+    // drawing even where the caption names several packages at once, which is a
+    // case `sameDesignator` refuses outright and has to.
+    //
+    // What it could not do was disagree. It joined on the key alone, with no
+    // check of any kind, so a code the model reported for two different drawings
+    // collapsed two packages into one and the second entry then overwrote the
+    // first's slot. LT1013 is offered in seven packages and reached the record
+    // with five: its 8-lead and 14-lead PDIPs came back under one code, as did
+    // its two CERDIPs, and two whole packages - pin tables, measurements and all
+    // - were destroyed by the merge meant to join halves of one.
+    const keyed = byKey.get(merged);
+    const existing =
+      keyed && !countsDisagree(entry, keyed) ? merged : sameDesignator(entry, byKey, partNumber);
     if (existing === null) {
-      byKey.set(merged, { ...entry });
+      // A KEY ALREADY TAKEN BY AN ENTRY THE PROOF REFUSED IS A COLLISION.
+      //
+      // Storing over it is how the two LT1013 packages disappeared: the second
+      // entry claimed the first one's slot. They are different packages by the
+      // proof's own finding, so they are stored beside each other and the
+      // chooser offers both, which is what the document does.
+      let slot = merged;
+      for (let n = 2; byKey.has(slot); n += 1) slot = `${merged}#${n}`;
+      byKey.set(slot, { ...entry });
       continue;
     }
     const held = byKey.get(existing)!;
@@ -401,7 +592,7 @@ function mergePackageEntries(
     const entryIsFromFirst = (first ?? []).includes(entry);
     const fromFirst = entryIsFromFirst ? entry : held;
     const fromSecond = entryIsFromFirst ? held : entry;
-    const pins = fromFirst.pins ?? fromSecond.pins;
+    const pins = pinsForPackage(fromFirst, fromSecond, first, second);
     const dimensions = { ...(fromFirst.dimensions ?? {}), ...(fromSecond.dimensions ?? {}) };
     byKey.set(existing, {
       // The name the CONSUMER will look this up by.
@@ -561,17 +752,45 @@ function isThisPart(label: string, partNumber?: string): boolean {
  * A device token is letters then digits, at least two of each side by side, and
  * never a package family or a lead-count phrase. `ADM3202`, `ADA4522-1` and
  * `OPA2192` are devices; `SOIC_N`, `16-lead` and `SOT-23` are not.
+ *
+ * ## A DEVICE IS NAMED BESIDE A PACKAGE, NEVER INSTEAD OF ONE
+ *
+ * That shape test cannot tell a device number from a package name, because
+ * plenty of package names are also letters then digits. `SMD5C` is one, and it
+ * is a hermetic power package rather than a part: read as a sibling device, the
+ * whole entry was discarded as belonging to another part, and RHFL4913A's
+ * pinout and its measurements were left in two entries that never met.
+ *
+ * The distinguishing fact is not the token, it is what surrounds it. Every case
+ * this guard exists for names a package AND a device - `20-lead SSOP
+ * (ADM1385)`, `D (OPA1612)` - because a pin table's caption is always about a
+ * package first. A label that is nothing BUT a device-shaped token is therefore
+ * naming its own package, since a caption naming a device and no package would
+ * describe nothing at all.
+ *
+ * So a token only counts as a device when something else in the label does not.
+ * The two cases this was written for both survive that: each leaves `20-lead
+ * SSOP` or `D` behind.
  */
 function devicesNamed(label: string): string[] {
   const withoutFamilies = (label ?? "").replace(new RegExp(PACKAGE_FAMILY_PATTERN, "gi"), " ");
   const found: string[] = [];
+  let other = 0;
   for (const token of withoutFamilies.split(/[^A-Za-z0-9-]+/)) {
     const trimmed = token.replace(/^-+|-+$/g, "");
-    if (!/^[A-Za-z]{2,}\d/.test(trimmed)) continue;
-    if (trimmed.replace(/[^A-Za-z0-9]/g, "").length < 5) continue;
-    found.push(trimmed.replace(/[^A-Za-z0-9]/g, "").toUpperCase());
+    const bare = trimmed.replace(/[^A-Za-z0-9]/g, "");
+    if (bare.length === 0) continue;
+    if (!/^[A-Za-z]{2,}\d/.test(trimmed) || bare.length < 5) {
+      other += 1;
+      continue;
+    }
+    found.push(bare.toUpperCase());
   }
-  return found;
+  // A family word counts as something else: it was stripped above precisely
+  // because it names a package, and its removal must not make the remainder
+  // look like a label with nothing but a device in it.
+  if (new RegExp(PACKAGE_FAMILY_PATTERN, "i").test(label ?? "")) other += 1;
+  return other > 0 ? found : [];
 }
 
 /** One label split into the package names it lists. */
@@ -600,6 +819,15 @@ function nameFromTheDrawing(
 }
 
 /** Exported for the tests that pin the two-pass join. */
+/**
+ * The device-name reader, exposed so its boundary can be pinned directly.
+ *
+ * Its failure is invisible from outside: a caption misread as a sibling device
+ * makes `sameDesignator` return null, which looks exactly like two packages that
+ * genuinely did not match.
+ */
+export const devicesNamedForTest = devicesNamed;
+
 export const combineForTest = (first: ExtractionResult, second: ExtractionResult, partNumber?: string): ExtractionResult =>
   combine(first, second, partNumber);
 

@@ -333,6 +333,7 @@ test("a footprint with no model given carries no body and no model store", () =>
       padLengthMm: 1.55,
       centreToCentreMm: 5.4,
       pitchMm: 1.27,
+      arrangement: "dual" as const,
       discards: []
     }
   };
@@ -373,6 +374,7 @@ test("a footprint written without a terminator byte is what a strict reader requ
       padLengthMm: 1.55,
       centreToCentreMm: 5.4,
       pitchMm: 1.27,
+      arrangement: "dual" as const,
       discards: []
     }
   };

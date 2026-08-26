@@ -40,9 +40,10 @@ import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
 import { extractPartRecord } from "../datasheet";
 import { makeExtractionModel, runExtraction } from "../extraction";
 import { resolveForExport, type Extracted, type PartRecord } from "../types";
-import { packageOptions } from "../exporters";
+import { packageOptions, recordForPackage } from "../exporters";
 import {
   PINOUT_ORACLE,
+  entryDescribes,
   PACKAGE_ORACLE,
   checkPinNames,
   checkPackageFamily,
@@ -206,12 +207,35 @@ interface Row {
    * product by more than 2x for the whole life of this benchmark.
    */
   ships: boolean;
+  /**
+   * A bundle with NOTHING asked: no package picked, no question answered.
+   *
+   * This was computed and then discarded for the life of this benchmark, which
+   * left one headline standing for two very different experiences. `ships`
+   * counts a part that needed a package chosen and three numbers typed, and
+   * reporting only that reads as "91% of datasheets just work". A user
+   * uploading a PDF and pressing export sees THIS number, and on 2026-08-24 a
+   * user asked why the product kept failing when the bench said 91%. The
+   * distance between the two figures is the answer, so both are printed.
+   */
+  shipsUnaided: boolean;
   /** Fields the model filled that the parser could not. Empty unless --model. */
   modelFilled: string[];
   /** Fields the model answered in a shape that could not be trusted. */
   modelRejected: string[];
   /** Why no bundle came out, when the fields were all present. */
   refusedBy: string;
+  /**
+   * The part was asked a question, the answer was supplied, and it STILL did not
+   * export - with the reason it gave.
+   *
+   * `shipOutcome` has computed this since the answered figure existed and
+   * nothing printed it, so the one outcome the input model cannot tolerate was
+   * the one outcome no run reported. A question that is answered and changes
+   * nothing is a refusal wearing the form of a question, and it costs the user
+   * more than a plain refusal because they typed first.
+   */
+  brokeWhenAnswered: string | null;
   blockedBy: string;
   /**
    * Packages this datasheet names which WOULD produce a bundle if the caller
@@ -303,11 +327,45 @@ async function oneClickCheck(
  */
 function checkNames(
   partNumber: string,
-  record: PartRecord
+  record: PartRecord,
+  /**
+   * The package the bundle was actually built under, where that is not the one
+   * the flat record describes.
+   *
+   * ## Why this argument had to exist
+   *
+   * This read `record.pins` and nothing else. On a family datasheet that field
+   * is empty by design - a part sold in seven packages has no one pinout - and
+   * the pins that build the symbol live in `packagesInThisDocument`. So for
+   * every such part the check found no pins, reported `namesChecked: false`, and
+   * said nothing at all.
+   *
+   * It said nothing SILENTLY, which is the part that matters: the headline read
+   * "23/24 parts match the hand-read oracle" while twenty of the forty-four
+   * entries were never compared to anything. A hand-read pin table nobody checks
+   * against is a comment.
+   *
+   * Found 2026-08-25 the moment an LT1013 entry was added. That part ships as
+   * the S8 and the product was emitting the N8 PDIP's assignment - every pin
+   * wrong, on a package that ships - and this check could not see it.
+   *
+   * Exactly the defect `bench:dimensions` had until 2026-08-22, on the same
+   * cause: the instrument was reading the flat block while the product built
+   * from the per-package table. Fixed the same way, through the product's own
+   * `recordForPackage`.
+   */
+  shippedAs: string | null
 ): { nameMismatches: NameMismatch[]; namesChecked: boolean } {
   const entry = PINOUT_ORACLE[partNumber];
-  const pins = record.pins.value ?? [];
-  if (!entry || pins.length === 0) return { nameMismatches: [], namesChecked: false };
+  if (!entry) return { nameMismatches: [], namesChecked: false };
+  const built = shippedAs !== null ? recordForPackage(record, shippedAs) : record;
+  const pins = built.pins.value ?? record.pins.value ?? [];
+  if (pins.length === 0) return { nameMismatches: [], namesChecked: false };
+  // AND ONLY WHERE THE ENTRY IS ABOUT THE PACKAGE THAT SHIPPED. See
+  // `entryDescribes`: scoring the wrong package manufactures defects rather than
+  // finding them, which is how five false failures appeared the moment this
+  // check could see per-package pinouts at all.
+  if (!entryDescribes(entry, shippedAs, pins.length)) return { nameMismatches: [], namesChecked: false };
   return { nameMismatches: checkPinNames(entry, pins), namesChecked: true };
 }
 
@@ -358,9 +416,11 @@ async function scoreRow(part: BenchPart): Promise<Row> {
       pins: 0,
       exportable: false,
       ships: false,
+      shipsUnaided: false,
       modelFilled: [],
       modelRejected: [],
       refusedBy: "",
+      brokeWhenAnswered: null,
       blockedBy: "no datasheet",
       oneClickPackages: [],
       oneClickPlusInput: [],
@@ -462,7 +522,12 @@ async function scoreRow(part: BenchPart): Promise<Row> {
     const outcome = await shipOutcome(record, BENCH_SETTINGS);
     // `ships` is the zero-friction figure and `shipsAnswered` is what a customer
     // experiences. The headline follows the hold-out and reports the second.
-    const shipped = { ships: outcome.shipsAnswered, refusedBy: outcome.why };
+    const shipped = {
+      ships: outcome.shipsAnswered,
+      shipsUnaided: outcome.ships,
+      refusedBy: outcome.why,
+      brokeWhenAnswered: outcome.brokeWhenAnswered
+    };
     return {
       part,
       status: "ok",
@@ -490,7 +555,7 @@ async function scoreRow(part: BenchPart): Promise<Row> {
       ...(shipped.ships
         ? { oneClickPackages: [], oneClickPlusInput: [] }
         : await oneClickCheck(record)),
-      ...checkNames(part.partNumber, record),
+      ...checkNames(part.partNumber, record, outcome.shippedAs?.designator ?? null),
       blockedBy: resolved.ok
         ? ""
         : resolved.missing.length > 0
@@ -510,9 +575,11 @@ async function scoreRow(part: BenchPart): Promise<Row> {
       pins: 0,
       exportable: false,
       ships: false,
+      shipsUnaided: false,
       modelFilled: [],
       modelRejected: [],
       refusedBy: "",
+      brokeWhenAnswered: null,
       blockedBy: "parse error",
       oneClickPackages: [],
       oneClickPlusInput: [],
@@ -673,11 +740,17 @@ async function main() {
   // carries. Reporting only the first overstated the product by more than 2x.
   const exportable = allOk.filter((r) => r.exportable).length;
   const ships = allOk.filter((r) => r.ships).length;
+  const unaided = allOk.filter((r) => r.shipsUnaided).length;
   console.log(
     `Fields complete:  ${exportable}/${allOk.length} parsed parts (${pct(exportable, allOk.length).trim()})`
   );
+  // BOTH, because they are two different experiences and one headline was
+  // standing for both. See `shipsUnaided`.
   console.log(
-    `SHIPS A BUNDLE:   ${ships}/${allOk.length} parsed parts (${pct(ships, allOk.length).trim()})   <- the product` +
+    `SHIPS UNAIDED:    ${unaided}/${allOk.length} parsed parts (${pct(unaided, allOk.length).trim()})   <- upload, press export, done`
+  );
+  console.log(
+    `SHIPS A BUNDLE:   ${ships}/${allOk.length} parsed parts (${pct(ships, allOk.length).trim()})   <- after choosing a package and answering` +
       `\n${allOk.length}/${rows.length} of the corpus had a datasheet at all.\n`
   );
 
@@ -842,6 +915,20 @@ async function main() {
   // assembler chooses the trim, so nobody can read the seated span off the page.
   // A part whose EXTRACTED package already refuses answerably is counted there and
   // not again under its variants, which describe the same need by another name.
+  // ANSWERED AND STILL REFUSED. The one outcome the input model cannot tolerate,
+  // computed by `shipOutcome` since the answered figure existed and printed by
+  // nothing until 2026-08-25. A question the user answers and that changes
+  // nothing costs them more than a plain refusal.
+  const brokeAnswered = allOk.filter((r) => r.brokeWhenAnswered !== null);
+  if (brokeAnswered.length > 0) {
+    console.log(`\nANSWERED AND STILL REFUSED (${brokeAnswered.length}):`);
+    for (const row of brokeAnswered) {
+      console.log(`  ${row.part.partNumber.padEnd(18)} asked ${row.refusedBy}`);
+      console.log(`  ${" ".repeat(18)} then ${row.brokeWhenAnswered}`);
+    }
+    console.log("  A question the user answers must either build the part or stop being asked.");
+  }
+
   const alreadyAnswerable = allOk.filter((r) => !r.ships && r.refusedBy.startsWith("needs "));
   const plusInput = allOk.filter(
     (r) =>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { isUntraceable } from "../lib/provenance";
+import { isUntraceable, userEdited } from "../lib/provenance";
 import type { Extracted, ExportFormat, LeadWidth, PartRecord, PinRecord } from "../lib/types";
 // Runtime import, and safe in the browser bundle: `packagevariants.ts` imports
 // nothing at all and is pure string work over designators.
@@ -14,11 +14,12 @@ import type { PackageChoice, PackageOption, RequiredInput } from "../lib/exporte
 import {
   SETTINGS_FIELDS,
   missingRequired,
+  outOfRange,
   parseSettings,
   settingsComplete,
   type ForgeSettings
 } from "../lib/settings";
-import type { ReviewItem } from "../lib/review";
+import { labelForField, type ReviewItem } from "../lib/review";
 import type { ConfidenceCheck } from "../lib/confidence";
 // Type-only: `pagerender.ts` dynamically imports mupdf, which must not follow
 // the review panel into the browser bundle.
@@ -237,7 +238,9 @@ function PageImage({
       <div className="page-missing">
         {page
           ? `${caption}, page ${page}. Could not be rendered.`
-          : "No page of this datasheet answers this, so there is nothing to show."}
+          : // NOT "no page of this datasheet answers this". What is known is that
+            // the value carries no citation, which is a fact about the reading.
+            "This value was not located on any page, so there is no page to show."}
       </div>
     );
   }
@@ -262,8 +265,11 @@ function updatePin(part: PartRecord, index: number, field: keyof PinRecord, valu
   if (!pins || !pin) return next;
   if (field === "electricalType") pin.electricalType = value as PinRecord["electricalType"];
   else if (field === "number" || field === "name") pin[field] = value;
-  // The table was edited by hand, so the array's provenance changes with it.
-  next.pins = { value: pins, confidence: 1, method: "user", citation: next.pins.citation };
+  // The table was edited by hand, so the array's provenance changes with it,
+  // INCLUDING the citation. This used to pass `next.pins.citation` through, so
+  // a pin table a person had retyped went on claiming it was read from the page
+  // the model found it on. See `userEdited`.
+  next.pins = userEdited(pins);
   return next;
 }
 
@@ -294,7 +300,10 @@ function describeChoice(record: PartRecord, designator: string): string {
   const pins = record.pins.value?.length ?? 0;
   if (pins > 0 && record.pinCount.value !== null) return `Read ${pins} pins for ${designator}.`;
   if (pins > 0) return `Found ${pins} pins for ${designator}, but nothing confirms the count.`;
-  return `This datasheet draws no pinout for ${designator}.`;
+  // NOT "this datasheet draws no pinout for it". Reading it again and finding
+  // nothing is not proof the document draws nothing; it is proof of what this
+  // read returned.
+  return `Reading this datasheet again for ${designator} found no pinout.`;
 }
 
 export default function HomePage() {
@@ -343,6 +352,24 @@ export default function HomePage() {
 
   // Values the export asked for. Empty unless the last attempt came back 422.
   const [pendingNeeds, setPendingNeeds] = useState<RequiredInput[]>([]);
+  /**
+   * The export's refusal, when it named the values it could not resolve.
+   *
+   * `/api/export` answers a record it cannot build from with 422 and the exact
+   * field paths, under `missing` for values nothing read and `untraceable` for
+   * values a model produced but could not point at a page for. THE SCREEN THREW
+   * BOTH LISTS AWAY. It handled only `INPUT_REQUIRED`, and everything else fell
+   * through to a generic error, so the user read "required values were not
+   * extracted from the datasheet. Fill them in before exporting." and was told
+   * to fill in something the sentence would not name.
+   *
+   * Reported here in full, because the two cases need opposite things from a
+   * person: an untraceable value is on the record and needs checking against
+   * the page it claims, and a missing one was never read at all.
+   */
+  const [exportBlocked, setExportBlocked] = useState<
+    { kind: "missing" | "untraceable"; fields: string[] } | null
+  >(null);
   // One box per question. Sharing one made a part needing three numbers
   // unanswerable in principle.
   const [needValues, setNeedValues] = useState<Record<string, string>>({});
@@ -366,6 +393,24 @@ export default function HomePage() {
   //
   // `settingsReady` starts false so the gate cannot flash open on first paint
   // and let a datasheet through before the store has been read.
+  /**
+   * The datasheet the settings gate turned away, kept so it can be run once the
+   * gate opens.
+   *
+   * ## The dead end this closes
+   *
+   * A first-time user's first action is to choose a datasheet. The gate refuses
+   * it, correctly, and asks for the two forming-die numbers. They answer, save,
+   * and nothing happens: the file they chose is still named in the drop target,
+   * which invites "click to replace", and choosing THE SAME FILE again fires no
+   * `change` event at all, because the input's value has not changed. The screen
+   * then sits on the refusal message with no way forward but a page reload.
+   *
+   * Running it here is not an assumption about what they want. They already
+   * asked for this file; the only reason it did not run is a question that has
+   * now been answered.
+   */
+  const [heldByGate, setHeldByGate] = useState<{ file: File; packageType?: string } | null>(null);
   const [settings, setSettings] = useState<ForgeSettings>({});
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -407,6 +452,19 @@ export default function HomePage() {
   /** Persist and apply. Called only from the settings screen's Save. */
   function saveSettings(next: ForgeSettings) {
     const clean = parseSettings(next);
+    // WHAT WAS THROWN AWAY, AND WHY. `parseSettings` drops an out-of-range
+    // number, which is right, and used to do it in silence: the box still
+    // showed the value, the gate still said the field was needed, and the two
+    // messages never met. Said here rather than inside `parseSettings`, which
+    // is shared with the server and has no screen to talk to.
+    const rejected = outOfRange(next as Record<string, unknown>);
+    if (rejected.length > 0) {
+      setStatus(
+        rejected
+          .map((field) => `${field.label} must be between 0 and ${field.max} mm.`)
+          .join(" ")
+      );
+    }
     setSettings(clean);
     try {
       window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean));
@@ -423,7 +481,18 @@ export default function HomePage() {
       ...(clean.formedLeadSpanMm !== undefined ? { formedLeadSpanMm: clean.formedLeadSpanMm } : {}),
       ...(clean.formedLeadContactMm !== undefined ? { formedLeadContactMm: clean.formedLeadContactMm } : {})
     }));
-    if (settingsComplete(clean)) setSettingsOpen(false);
+    if (!settingsComplete(clean)) return;
+    setSettingsOpen(false);
+
+    // The gate is open, so run whatever it turned away. `clean` is passed
+    // explicitly for the same reason `handleExport` passes its answers: the
+    // state set above is not visible to a handler queued from this one, and
+    // `handleFile` would read the settings it had before the Save.
+    const held = heldByGate;
+    if (held && rejected.length === 0) {
+      setHeldByGate(null);
+      void handleFile(held.file, held.packageType, clean);
+    }
   }
 
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("kicad");
@@ -486,12 +555,186 @@ export default function HomePage() {
 
   const shownNeeds = pendingNeeds.length > 0 ? pendingNeeds : knownNeeds;
 
+  /**
+   * The outstanding questions, gathered under the page each is answered from.
+   *
+   * Grouped rather than listed because the drawing is the expensive part of the
+   * row and it is shared: every dimension a package outline is missing is read
+   * off that one outline. See the note at the render site for what this cost.
+   */
+  const needsByPage = useMemo(() => {
+    const groups = new Map<string, { page: number | null; needs: RequiredInput[] }>();
+    for (const need of shownNeeds) {
+      const page = need.page ?? (need.field === "formedLeadSpanMm" ? null : drawingPage);
+      const key = String(page ?? "none");
+      const existing = groups.get(key);
+      if (existing) existing.needs.push(need);
+      else groups.set(key, { page, needs: [need] });
+    }
+    return [...groups.entries()].map(
+      ([key, group]) => [key, group.page, group.needs] as [string, number | null, RequiredInput[]]
+    );
+  }, [shownNeeds, drawingPage]);
+
+  /**
+   * Whether clicking a package will RE-READ the datasheet, which costs real time
+   * and a real model call.
+   *
+   * `handlePackageChoice` takes one of three routes, and two of them are free:
+   * the document already tabulates that package's pinout, or the record's
+   * pinout is complete and does not contradict the designator. The third
+   * re-reads the whole document for the named package, which is upward of a
+   * minute and is charged.
+   *
+   * Which route a given card takes depends on whether the document happened to
+   * print a per-package pin table for it, and the user cannot see that. So a
+   * card reading "cannot build" invited a click that felt like asking a
+   * question and was actually the most expensive action on the screen. Found
+   * 2026-08-24 sweeping the chooser: on an AD8628, TSOT-23 and SOT-23 are both
+   * labelled "cannot build", and one is free while the other re-reads.
+   *
+   * Mirrors that function deliberately. If the two ever disagree the label lies
+   * about what the button does, so they are written to be read side by side.
+   */
+  const willReRead = (designator: string): boolean => {
+    if (pinTableFor(part.packagesInThisDocument, designator)?.pins) return false;
+    const held = part.pins.value ?? [];
+    const complete = held.length > 0 && part.pinCount.value !== null;
+    const declared = declaredLeadCount(designator);
+    const contradicts = complete && declared !== null && declared !== part.pinCount.value;
+    if (complete && !contradicts) return false;
+    return origin !== null;
+  };
+
   const failedChecks = checks.filter((check) => check.state === "fail");
   const openChecks = checks.filter((check) => check.state !== "pass");
   const blockingReview = review.filter((item) => item.blocking);
   const sourceUrl = formatSourceUrl(part.sourceUrl);
   const pins = part.pins.value ?? [];
-  const exportStep = offeredVariants.length > 1 ? 5 : 4;
+  /**
+   * THE ONE THING THE SCREEN HAS TO SAY AFTER A READ.
+   *
+   * ## What this replaces
+   *
+   * A finished read used to produce five numbered steps at once: what was read,
+   * worth a look, package, export, and the record. On an LMP7704-SP that is a
+   * thirteen-item review list and a wall of dimensions, presented as a form to
+   * work through. Reported 2026-08-24 by the first person to use it: "I don't
+   * know what I'm looking at."
+   *
+   * The screen owes a person three answers, in this order: what part is this,
+   * can I have my library, and what do I do next. Everything else is detail
+   * they may want and should not have to wade through.
+   *
+   * ## Why the order is what it is
+   *
+   * The states are ranked by what BLOCKS the build, hardest first, because only
+   * the first one is actionable. Offering someone a package chooser and eight
+   * questions and a review list at once is three next-actions, which is none.
+   *
+   * The package choice leads because it is the only one the product genuinely
+   * cannot make for the user: a footprint is per package, and this document
+   * describes several. Questions come next because they have answers. The
+   * review list comes last because it blocks nothing until the export says so.
+   */
+  const verdict = useMemo((): {
+    tone: "ready" | "choose" | "ask" | "check";
+    headline: string;
+    detail: string;
+    /** The thing the detail line is telling them to do, where there is one. */
+    action?: "re-read";
+  } => {
+    // THE RECORD ITSELF CANNOT BUILD, whatever is chosen. `packageChoice.ok`
+    // is false when the reading is short of something no package selection can
+    // supply, and `blockedBy` names it.
+    //
+    // Checked FIRST, and it is the reason this state exists. Without it the
+    // card said "Ready to build" on an LMP7704-SP whose pinout had not been
+    // read, and the export then refused with "this datasheet is missing values
+    // the footprint needs". A verdict that contradicts the button beneath it is
+    // worse than no verdict: it spends the user's trust and then their time.
+    // Caught by `bench:browser` on 2026-08-25, one run after the card was added.
+    if (packageChoice && !packageChoice.ok) {
+      const named = packageChoice.blockedBy.map(labelForField);
+      // BLAME THE RIGHT LAYER.
+      //
+      // "This datasheet has no pinout" and "we read one and refused it" are
+      // different facts. The card said the first for both, so every encounter
+      // with a discard was filed as the model failing, and a code defect
+      // survived from 2026-08-10 to 2026-08-25 being reported as a bad read.
+      // The reader writes the discard onto the record; this reads it back.
+      const discarded = part.notes.find((note) => /pin table that was discarded/.test(note));
+      if (discarded && packageChoice.blockedBy.includes("pins")) {
+        return {
+          tone: "check",
+          headline: "A pinout was read and then refused, so nothing can be built yet.",
+          detail: `${discarded} Reading again often returns a table that passes.`,
+          action: "re-read" as const
+        };
+      }
+      return {
+        tone: "check",
+        headline: `Not enough was read to build anything: ${named.join(" and ")}.`,
+        detail:
+          offeredVariants.length > 1
+            ? "Choosing the exact package below re-reads the datasheet for it, which usually finds them."
+            : "A read varies: the same document can give up its pinout on a second pass. Failing that, a different revision often does.",
+        // TOLD WHAT TO DO, AND GIVEN THE MEANS.
+        //
+        // This said "reading the datasheet again sometimes finds them" and put
+        // nothing on the screen to do it with, so the only route was to scroll
+        // back, re-pick the same file, and press Read. Reported 2026-08-25:
+        // "what am I supposed to do with this?" Advice a screen will not act on
+        // is the dead end the settings gate already was.
+        ...(offeredVariants.length > 1 ? {} : { action: "re-read" as const })
+      };
+    }
+    if (offeredVariants.length > 1 && chosenPackage === null && part.packageType.value === null) {
+      return {
+        tone: "choose",
+        // COUNTS WHAT WAS READ. "This datasheet describes N" asserts the list is
+        // complete, and it is the list this run produced.
+        headline: `Which package? ${offeredVariants.length} were read from this datasheet.`,
+        detail:
+          "A footprint is a manufacturing instruction for one package, so this is the one choice nothing can make for you."
+      };
+    }
+    if (shownNeeds.length > 0) {
+      return {
+        tone: "ask",
+        headline:
+          shownNeeds.length === 1
+            ? "One number is needed before this can be built."
+            : `${shownNeeds.length} numbers are needed before this can be built.`,
+        // NOT "the datasheet does not print them". We do not know that; we know
+        // we did not read them. See `askForLandPattern` in `exporters.ts`.
+        detail: "They were not read from this datasheet, so they are asked rather than invented."
+      };
+    }
+    if (blockingReview.length > 0) {
+      return {
+        tone: "check",
+        headline: `${blockingReview.length} ${blockingReview.length === 1 ? "value needs" : "values need"} checking first.`,
+        detail: "These were read but could not be located on a page, so they cannot be signed off unchecked."
+      };
+    }
+    return {
+      tone: "ready",
+      headline: "Ready to build.",
+      detail:
+        review.length > 0
+          ? `${review.length} ${review.length === 1 ? "value is" : "values are"} worth a look first, but nothing is blocking.`
+          : "Everything the footprint needs was read from the datasheet."
+    };
+  }, [
+    packageChoice,
+    offeredVariants.length,
+    chosenPackage,
+    part.packageType.value,
+    shownNeeds.length,
+    blockingReview.length,
+    review.length
+  ]);
 
   // ---------------------------------------------------------------------------
   // Handlers. Behaviour is carried over unchanged; only the presentation around
@@ -555,7 +798,7 @@ export default function HomePage() {
     }
   }
 
-  async function handleFile(file: File | null, packageType?: string) {
+  async function handleFile(file: File | null, packageType?: string, using: ForgeSettings = settings) {
     setSelectedFile(file);
     if (!file) return;
 
@@ -565,11 +808,14 @@ export default function HomePage() {
     // paste and a lookup all reach this function, and a rule written on one of
     // three doors is not a rule. Fields a published standard answers are not
     // part of this; only the ones nothing else can answer.
-    if (!settingsComplete(settings)) {
+    if (!settingsComplete(using)) {
       setSettingsOpen(true);
-      setStatus("Set up your assembly line first. These cannot be read from any datasheet.");
+      // HELD, not dropped. See `heldByGate`.
+      setHeldByGate({ file, packageType });
+      setStatus("Set up your assembly line first, then this datasheet runs on its own.");
       return;
     }
+    setHeldByGate(null);
 
     setBusy(true);
     setRetry(null);
@@ -738,9 +984,33 @@ export default function HomePage() {
           );
           return;
         }
+        // THE OTHER TWO REFUSALS NAME THEIR FIELDS TOO. See `exportBlocked`.
+        if (payload?.code === "UNTRACEABLE_EXTRACTION" && Array.isArray(payload.untraceable)) {
+          setExportBlocked({ kind: "untraceable", fields: payload.untraceable as string[] });
+          setStatus("Some values could not be located in the datasheet.");
+          return;
+        }
+        if (payload?.code === "INCOMPLETE_EXTRACTION" && Array.isArray(payload.missing)) {
+          setExportBlocked({ kind: "missing", fields: payload.missing as string[] });
+          setStatus("This datasheet is missing values the footprint needs.");
+          return;
+        }
+        // A NAME THE CHOSEN FORMAT CANNOT WRITE. Not a fault in the record, and
+        // not something to answer: another format has no such limit, so the one
+        // useful thing to say is which one.
+        if (payload?.code === "FORMAT_CANNOT_ENCODE") {
+          const alternative = (payload.availableFormats as string[] | undefined)?.[0];
+          setStatus(
+            alternative
+              ? `${payload.error} Try ${alternative.toUpperCase()}, which has no such limit.`
+              : payload.error
+          );
+          return;
+        }
         throw new Error(payload?.error || "Export failed.");
       }
 
+      setExportBlocked(null);
       setPendingNeeds([]);
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
@@ -816,7 +1086,10 @@ export default function HomePage() {
       }
       value = item.field === "pinCount" ? Math.round(parsed) : parsed;
     }
-    setPart((record) => withField(record, item.field, { value, confidence: 1, method: "user" }));
+    // `userEdited` rather than a patch of value/confidence/method: `withField`
+    // MERGES, so a patch that does not mention the citation keeps the model's,
+    // and the corrected number then cites the page the wrong number came from.
+    setPart((record) => withField(record, item.field, userEdited(value)));
     settle(item.field);
     setStatus(`Set ${item.label.toLowerCase()} to ${text}.`);
   }
@@ -902,9 +1175,10 @@ export default function HomePage() {
             corpus were blocked on the two forming-die numbers alone. */}
         {settingsReady && settingsOpen && (
           <section className="step" aria-labelledby="settings-title">
-            <h2 className="step-title" id="settings-title">
-              <span className="step-n">0</span> Your assembly line
-            </h2>
+            <div className="step-head">
+              <span className="step-eyebrow">First</span>
+              <h2 className="step-title" id="settings-title">Your assembly line</h2>
+            </div>
             <p className="hint">
               {settingsComplete(settings)
                 ? "These apply to every part you build."
@@ -945,8 +1219,11 @@ export default function HomePage() {
                         type="number"
                         step="0.01"
                         min="0"
+                        // The same bound the export route enforces, so the box
+                        // refuses before the Save does.
+                        max={field.max}
                         inputMode="decimal"
-                        placeholder="mm"
+                        placeholder={field.max === undefined ? "mm" : `mm, up to ${field.max}`}
                         value={current}
                         onChange={(event) => setSettingsDraft({ ...settingsDraft, [field.key]: event.target.value })}
                       />
@@ -1000,17 +1277,37 @@ export default function HomePage() {
 
         {/* 1. SOURCE --------------------------------------------------------- */}
         <section className="step">
-          <h2 className="step-title">
-            <span className="step-n">1</span> Datasheet
-          </h2>
+          <div className="step-head">
+            <span className="step-eyebrow">Start</span>
+            <h2 className="step-title">Datasheet</h2>
+          </div>
 
           <div className="source">
+            <div className="source-file">
             <label className="drop" htmlFor="datasheet-upload">
               <input
                 id="datasheet-upload"
                 type="file"
                 accept="application/pdf"
-                onChange={(event) => handleFile(event.target.files?.[0] ?? null)}
+                onChange={(event) => {
+                  const chosen = event.target.files?.[0] ?? null;
+                  // CHOOSING A FILE NO LONGER STARTS THE READ. See the button
+                  // below: reading takes over a minute and costs a model call,
+                  // so it is begun deliberately rather than by the side effect
+                  // of picking a file.
+                  // CLEARED, so the SAME file can be chosen twice.
+                  //
+                  // A file input fires `change` only when its value changes, so
+                  // re-picking the file already in it is silent. That is not a
+                  // corner case here: anything that ends a run without a record
+                  // (the settings gate, a parse that failed, a datasheet read as
+                  // the wrong package) leaves the user looking at "Click to
+                  // replace" above the file they want to try again, and the
+                  // click does nothing. Clearing the input costs nothing,
+                  // because `selectedFile` is what the screen actually reads.
+                  event.target.value = "";
+                  setSelectedFile(chosen);
+                }}
                 disabled={busy}
               />
               <span className="drop-main">{selectedFile ? selectedFile.name : "Choose a PDF"}</span>
@@ -1022,6 +1319,29 @@ export default function HomePage() {
                     : "The file never leaves this machine"}
               </span>
             </label>
+
+            {/* THE READ IS STARTED ON PURPOSE.
+                Picking a file used to begin it immediately. That is the wrong
+                shape for this operation twice over: it takes upward of a
+                minute, and it spends a real model call, so a mis-click costs
+                both. It also left nothing to press, which is what a person
+                looks for after choosing a file. */}
+            {selectedFile && (
+              <div className="drop-go">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-lg"
+                  disabled={busy}
+                  onClick={() => void handleFile(selectedFile)}
+                >
+                  {busy ? "Reading…" : "Read this datasheet"}
+                </button>
+                <span className="drop-go-note">
+                  Takes about a minute and a half. The datasheet is read by a model, page by page.
+                </span>
+              </div>
+            )}
+            </div>
 
             {config?.lookupEnabled && (
               <form
@@ -1059,16 +1379,37 @@ export default function HomePage() {
           </div>
         </section>
 
-        {loaded && (
-          <>
-            {/* 2. WHAT WAS READ ---------------------------------------------- */}
-            <section className="step">
-              <h2 className="step-title">
-                <span className="step-n">2</span> What was read
-              </h2>
+        {/* WHAT IS HAPPENING, WHERE THE ANSWER WILL APPEAR.
+            A read takes upward of a minute, and while it ran the screen was an
+            empty page with a 13px line at the very bottom saying "Reading
+            AD8628.pdf". Nothing moved. The honest reading of that screen is
+            that the app has hung, and the only recourse a person has is to
+            press the button again, which spends a second model call.
 
-              <div className="identity">
-                <div className="identity-main">
+            This says the same thing the status bar says, in the place the eye
+            is already looking and at a size that can be seen. */}
+        {busy && (
+          <section className="working" aria-live="polite">
+            <span className="working-bar" aria-hidden="true" />
+            <div>
+              <p className="working-main">{status}</p>
+              <p className="working-sub">
+                The whole document goes to the model, then selected pages are rendered and read again.
+                A minute and a half is normal. Leave this tab open.
+              </p>
+            </div>
+          </section>
+        )}
+
+        {loaded && !busy && (
+          <>
+            {/* 2. THE ANSWER --------------------------------------------------
+                One card: what the part is, whether it can be built, and the one
+                thing to do next. See `verdict` for why this replaced four
+                numbered steps competing for attention. */}
+            <section className="step">
+              <div className="result">
+                <div className="result-id">
                   <span className="ident-part">{part.partNumber.value ?? "unknown part"}</span>
                   <span className="ident-sub">
                     {[part.manufacturer.value, activePackage].filter(Boolean).join(" · ") || "package not read"}
@@ -1077,7 +1418,19 @@ export default function HomePage() {
                 <dl className="identity-facts">
                   <div>
                     <dt>Pins</dt>
-                    <dd>{part.pinCount.value ?? "—"}</dd>
+                    {/* THE COUNT AND THE PINOUT ARE DIFFERENT READINGS.
+                        A package named "CFP (14)" states a count with no table
+                        behind it. Printing a bare "14" beside a verdict saying
+                        the pin names were never read, above a record disclosure
+                        reading "0 pins", is three numbers disagreeing on one
+                        screen. Reported 2026-08-25 from a screenshot. */}
+                    <dd>
+                      {part.pinCount.value === null
+                        ? "—"
+                        : (part.pins.value?.length ?? 0) === 0
+                          ? `${part.pinCount.value}, no pinout`
+                          : part.pinCount.value}
+                    </dd>
                   </div>
                   <div>
                     <dt>Outline</dt>
@@ -1100,15 +1453,50 @@ export default function HomePage() {
                     </dd>
                   </div>
                 </dl>
+                <p className={`result-verdict result-${verdict.tone}`}>
+                  <span className="result-mark" aria-hidden="true">
+                    {verdict.tone === "ready" ? "\u2713" : "\u2192"}
+                  </span>
+                  <span>
+                    <strong>{verdict.headline}</strong>
+                    <span className="result-detail">{verdict.detail}</span>
+                    {verdict.action === "re-read" && origin !== null && (
+                      <span className="result-action">
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          disabled={busy}
+                          onClick={() => {
+                            if (origin.kind === "upload") void handleFile(origin.file);
+                            else void handleLookup({ partNumber: origin.partNumber, manufacturer: origin.manufacturer });
+                          }}
+                        >
+                          Read it again
+                        </button>
+                        <span className="result-action-note">Another minute and a half, and another model call.</span>
+                      </span>
+                    )}
+                  </span>
+                </p>
               </div>
 
+
+              {/* FOLDED WHEN IT IS GOOD NEWS.
+                  Four checks with their reasoning, open, directly under the
+                  verdict. Every one of them passing is worth a line and not a
+                  list: the reader has just been told what to do next and this
+                  sat between them and doing it. A FAILED check is a different
+                  thing and opens itself. */}
               {checks.length > 0 && (
-                <div className={`checks${failedChecks.length > 0 ? " checks-bad" : ""}`}>
-                  <p className="checks-head">
+                <details
+                  className={`checks${failedChecks.length > 0 ? " checks-bad" : ""}`}
+                  open={failedChecks.length > 0}
+                >
+                  <summary className="checks-head">
                     {failedChecks.length > 0
                       ? `${failedChecks.length} consistency check${failedChecks.length === 1 ? "" : "s"} failed`
                       : `All ${checks.filter((c) => c.state === "pass").length} runnable consistency checks passed`}
-                  </p>
+                  </summary>
                   {openChecks.length > 0 && (
                     <ul>
                       {openChecks.map((check) => (
@@ -1120,21 +1508,28 @@ export default function HomePage() {
                       ))}
                     </ul>
                   )}
-                </div>
+                </details>
               )}
             </section>
 
-            {/* 3. REVIEW ------------------------------------------------------ */}
+            {/* 3. REVIEW, FOLDED UNLESS SOMETHING IS BLOCKING ------------------
+                Thirteen items on an LMP7704-SP and seventeen on a DRV8825, every
+                one a row to open and judge. Presented open, this WAS the screen
+                after a read, and none of it blocks an export unless the value is
+                untraceable. Open by default only when it does. See `verdict`. */}
             {review.length > 0 && (
-              <section className="step">
-                <h2 className="step-title">
-                  <span className="step-n">3</span> Worth a look
+              <details className="step reviews-fold" open={blockingReview.length > 0}>
+                <summary className="step-head">
+                  <span className="step-eyebrow">Worth a look</span>
+                  <h2 className="step-title">
+                    {review.length} {review.length === 1 ? "value" : "values"} read but not verified
+                  </h2>
                   {blockingReview.length > 0 && (
                     <span className="badge">{blockingReview.length} blocking export</span>
                   )}
-                </h2>
+                </summary>
                 <p className="step-note">
-                  Read, but not verified. Open one to see the page it came from, then confirm it or correct it.
+                  Open one to see the page it came from, then confirm it or correct it.
                 </p>
 
                 <ul className="reviews">
@@ -1194,18 +1589,19 @@ export default function HomePage() {
                     );
                   })}
                 </ul>
-              </section>
+              </details>
             )}
 
             {/* 4. PACKAGE ----------------------------------------------------- */}
             {offeredVariants.length > 1 && (
               <section className="step">
-                <h2 className="step-title">
-                  <span className="step-n">4</span> Package
-                </h2>
+                <div className="step-head">
+                  <span className="step-eyebrow">Choose</span>
+                  <h2 className="step-title">Which package</h2>
+                </div>
                 <p className="step-note">
-                  This datasheet describes {offeredVariants.length} packages, and a footprint is per package. Each one says
-                  what it would actually build.
+                  Each card says what it would actually build, so the choice is made on the outcome rather than on the
+                  name.
                 </p>
 
                 <ul className="packages">
@@ -1225,6 +1621,9 @@ export default function HomePage() {
                             {variant.family}
                             {variant.leadCount ? ` · ${variant.leadCount} leads` : ""}
                           </span>
+                          {willReRead(variant.designator) && (
+                            <span className="pkg-cost">re-reads the datasheet, about a minute</span>
+                          )}
                           {outcome && (
                             <span className={`pkg-status pkg-${outcome.status}`}>
                               {outcome.status === "ships"
@@ -1251,9 +1650,10 @@ export default function HomePage() {
 
             {/* 5. EXPORT ------------------------------------------------------ */}
             <section className="step">
-              <h2 className="step-title">
-                <span className="step-n">{exportStep}</span> Export
-              </h2>
+              <div className="step-head">
+                <span className="step-eyebrow">Build</span>
+                <h2 className="step-title">Your library</h2>
+              </div>
 
               <div className="formats">
                 {formatOptions.map((option) => (
@@ -1280,10 +1680,26 @@ export default function HomePage() {
                   type="button"
                   className="btn btn-primary btn-lg"
                   onClick={() => handleExport()}
-                  disabled={busy || !part.partNumber.value}
+                  /* NOT OFFERED WHEN IT CANNOT SUCCEED.
+                     `packageChoice.ok === false` means the reading is short of
+                     something no choice on this screen can supply, so pressing
+                     this can only produce a refusal. It sat directly under a
+                     card saying "Not enough was read to build anything" as the
+                     one big blue button on the page, which is the screen
+                     telling a person to do a thing it has just told them will
+                     not work. Reported 2026-08-25 from a screenshot. */
+                  disabled={busy || !part.partNumber.value || (packageChoice ? !packageChoice.ok : false)}
                 >
                   Build library
                 </button>
+                {/* Beside the button, not only in the card above it: a greyed
+                    primary action with no reason next to it reads as a broken
+                    screen rather than an honest one. */}
+                {packageChoice && !packageChoice.ok && (
+                  <span className="export-blocked-note">
+                    Nothing to build yet. See above.
+                  </span>
+                )}
                 {Object.entries(installAnswers).map(([field, value]) => (
                   <span className="remembered" key={field}>
                     {INSTALL_LABELS[field] ?? field} {value} mm, remembered.{" "}
@@ -1309,6 +1725,39 @@ export default function HomePage() {
                 ))}
               </div>
 
+              {/* WHAT THE EXPORT REFUSED, AND WHAT TO DO ABOUT IT.
+                  The two cases need opposite things from a person, so they are
+                  not merged into one sentence about "required values". */}
+              {exportBlocked && (
+                <div className={`blocked blocked-${exportBlocked.kind}`}>
+                  <p className="blocked-main">
+                    {exportBlocked.kind === "untraceable"
+                      ? "These were read, but could not be pointed at a page:"
+                      : "These were never read from this datasheet:"}
+                  </p>
+                  <ul className="blocked-fields">
+                    {exportBlocked.fields.map((field) => (
+                      <li key={field}>{labelForField(field)}</li>
+                    ))}
+                  </ul>
+                  <p className="blocked-why">
+                    {exportBlocked.kind === "untraceable" ? (
+                      <>
+                        A value nobody can locate cannot be signed off, so it is not built into copper. Open each one
+                        under <strong>Worth a look</strong> above, check it against the page it claims, and confirm it.
+                      </>
+                    ) : (
+                      <>
+                        A footprint is a manufacturing instruction, so these are not guessed.{" "}
+                        {offeredVariants.length > 1
+                          ? "Choosing the exact package above re-reads the datasheet for it, which usually finds them."
+                          : "Reading the datasheet again sometimes finds them, and a different revision of the document often does."}
+                      </>
+                    )}
+                  </p>
+                </div>
+              )}
+
               {/* Each question, beside the page its answer is printed on. */}
               {shownNeeds.length > 0 && pendingNeeds.length === 0 && (
                 <p className="step-note">
@@ -1318,59 +1767,74 @@ export default function HomePage() {
                   Answer them here and the build will go straight through.
                 </p>
               )}
-              {shownNeeds.map((need) => {
-                const page = need.page ?? (need.field === "formedLeadSpanMm" ? null : drawingPage);
-                return (
-                  <div key={need.field} className="ask">
-                    <div className="ask-left">
-                      <label className="ask-label" htmlFor={`need-${need.field}`}>
-                        {need.label}
-                        {need.unit === "mm" && <span className="unit"> mm</span>}
-                      </label>
-                      <p className="ask-why">{need.why}</p>
-                      <div className="ask-row">
-                        <input
-                          id={`need-${need.field}`}
-                          type={need.unit === "counts" ? "text" : "number"}
-                          min={need.unit === "mm" ? "0" : "1"}
-                          step={need.unit === "mm" ? "0.01" : "1"}
-                          {...(need.unit === "mm"
-                            ? { max: need.field === "formedLeadContactMm" ? MAX_FORMED_CONTACT_MM : MAX_LEAD_SPAN_MM }
-                            : {})}
-                          value={needValues[need.field] ?? ""}
-                          placeholder={need.unit === "counts" ? "6,6,6,5" : need.unit === "count" ? "2" : "1.55"}
-                          onChange={(event) =>
-                            setNeedValues((current) => ({ ...current, [need.field]: event.target.value }))
-                          }
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              event.preventDefault();
-                              void handleSupplyNeed(need, needValues[need.field] ?? "");
+              {/* ONE DRAWING PER GROUP, NOT ONE PER QUESTION.
+                  Every question here is answered off the same package outline,
+                  and each used to render its own copy of it. On an LMP7704-SP
+                  that is eight questions carrying eight identical 613px images:
+                  5764px of a 7118px page, the same drawing eight times. It read
+                  as an endless form and it was mostly one picture repeated. */}
+              {needsByPage.map(([pageKey, page, group]) => (
+                <div key={pageKey} className="ask-group">
+                  <div className="ask-list">
+                    {group.map((need, position) => (
+                      <div key={need.field} className="ask-row-full">
+                        <label className="ask-label" htmlFor={`need-${need.field}`}>
+                          {need.label}
+                          {need.unit === "mm" && <span className="unit"> mm</span>}
+                        </label>
+                        {/* Said ONCE per run of questions that share it. Three
+                            consecutive fields explaining themselves with the
+                            same paragraph is three times the height and no more
+                            information. */}
+                        {need.why !== group[position - 1]?.why && <p className="ask-why">{need.why}</p>}
+                        <div className="ask-row">
+                          <input
+                            id={`need-${need.field}`}
+                            type={need.unit === "counts" ? "text" : "number"}
+                            min={need.unit === "mm" ? "0" : "1"}
+                            step={need.unit === "mm" ? "0.01" : "1"}
+                            {...(need.unit === "mm"
+                              ? { max: need.field === "formedLeadContactMm" ? MAX_FORMED_CONTACT_MM : MAX_LEAD_SPAN_MM }
+                              : {})}
+                            value={needValues[need.field] ?? ""}
+                            placeholder={need.unit === "counts" ? "6,6,6,5" : need.unit === "count" ? "2" : "1.55"}
+                            onChange={(event) =>
+                              setNeedValues((current) => ({ ...current, [need.field]: event.target.value }))
                             }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          disabled={busy}
-                          onClick={() => handleSupplyNeed(need, needValues[need.field] ?? "")}
-                        >
-                          Use this
-                        </button>
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                void handleSupplyNeed(need, needValues[need.field] ?? "");
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            disabled={busy}
+                            onClick={() => handleSupplyNeed(need, needValues[need.field] ?? "")}
+                          >
+                            Use this
+                          </button>
+                        </div>
+                        {need.scope === "install" && (
+                          <p className="ask-scope">
+                            Asked once. This belongs to your assembly line rather than to this part, so it is
+                            remembered for every part after this one.
+                          </p>
+                        )}
                       </div>
-                      {need.scope === "install" && (
-                        <p className="ask-scope">
-                          Asked once. This belongs to your assembly line rather than to this part, so it is remembered for
-                          every part after this one.
-                        </p>
-                      )}
-                    </div>
-                    <div className="ask-right">
-                      <PageImage image={imageFor(page)} caption={need.pageLabel ?? "Package outline"} page={page} />
-                    </div>
+                    ))}
                   </div>
-                );
-              })}
+                  <div className="ask-page">
+                    <PageImage
+                      image={imageFor(page)}
+                      caption={group[0]?.pageLabel ?? "Package outline"}
+                      page={page}
+                    />
+                  </div>
+                </div>
+              ))}
             </section>
 
             {/* 6. THE RECORD --------------------------------------------------- */}
@@ -1479,12 +1943,26 @@ export default function HomePage() {
                 </div>
               )}
 
+              {/* FOLDED AWAY BY DEFAULT.
+                  These are the reader's own working notes, and they are written
+                  in field paths: "dimensions.landSpanCrossMm",
+                  "radiation.qmlClass", "vertex:gemini-3.6-flash looked for 35
+                  field(s)". On a part that read cleanly this was thirty lines of
+                  internal vocabulary under the export button, which is the bulk
+                  of what made this screen feel like it had too much on it. Kept,
+                  because they are the honest account of what the reader did and
+                  did not find, and one click away. */}
               {part.notes.length > 0 && (
-                <ul className="notes">
-                  {part.notes.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
+                <details className="notes-fold">
+                  <summary>
+                    What the reader reported <span className="count">{part.notes.length}</span>
+                  </summary>
+                  <ul className="notes">
+                    {part.notes.map((note) => (
+                      <li key={note}>{note}</li>
+                    ))}
+                  </ul>
+                </details>
               )}
             </section>
           </>

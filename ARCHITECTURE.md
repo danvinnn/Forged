@@ -116,8 +116,13 @@ Every extracted value is escaped at the sink before being interpolated into gene
   datasheet is actually readable. Use the numbers.
 - Prefer concrete code, schemas, and file structures over high-level advice.
 - No em dashes anywhere, in prose, code, or comments. Use commas, colons, or periods.
-- Work directly in the repo. Verify with `tsc --noEmit`, the full suite run more than once (files run
-  in parallel and this repo has shipped flaky races), a production build, and the real app.
+- Work directly in the repo. Verify with `tsc --noEmit`, `npm run lint`, the full suite run more than
+  once (files run in parallel and this repo has shipped flaky races), a production build, and
+  `npm run bench:browser`, which loads that production build in a real browser.
+- **A green suite says nothing about whether the app runs.** Until 2026-08-24 the Content-Security-
+  Policy blocked Next's own bootstrap scripts, so the page never hydrated and nothing on it worked,
+  while the suite, the type-check, the build and every `curl` against every route stayed green.
+  `bench:browser` exists because of that and should be run before claiming the product works.
 
 ## Team
 

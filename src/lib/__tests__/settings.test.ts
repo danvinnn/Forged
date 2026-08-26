@@ -5,6 +5,7 @@ import {
   densityOf,
   footprintSourceOf,
   missingRequired,
+  outOfRange,
   parseSettings,
   settingsComplete
 } from "../settings";
@@ -60,4 +61,51 @@ test("settings from a request body are bounded exactly as the export route bound
   assert.deepEqual(parseSettings({ footprintSource: "standard-always" }), { footprintSource: "standard-always" });
   assert.deepEqual(parseSettings(null), {});
   assert.deepEqual(parseSettings("nonsense"), {});
+});
+
+
+// A VALUE SILENTLY DROPPED IS INDISTINGUISHABLE FROM ONE NEVER GIVEN.
+//
+// Found in a browser 2026-08-24. `parseSettings` bounds the formed foot at 5 mm,
+// which is right and matches `/api/export`. It dropped anything larger without a
+// word: the box still showed the 8 the user typed, the gate still said one field
+// was needed, and nothing on the screen joined the two. The user is then looking
+// at a required field they have already answered, with no way to learn why it
+// did not take.
+
+test("a number the export route would refuse is reported, not just dropped", () => {
+  const typed = { formedLeadSpanMm: 9.5, formedLeadContactMm: 8 };
+  const kept = parseSettings(typed);
+
+  assert.equal(kept.formedLeadContactMm, undefined, "still dropped, because the export refuses it");
+  assert.equal(settingsComplete(kept), false, "so the gate is still shut");
+
+  const rejected = outOfRange(typed);
+  assert.equal(rejected.length, 1, "and the screen can now say which field");
+  assert.equal(rejected[0]?.key, "formedLeadContactMm");
+  assert.equal(rejected[0]?.max, 5, "with the limit it broke, so the message can name a number");
+});
+
+test("a blank field is an unanswered question and never reported as a bad answer", () => {
+  // The two cases need different words from the screen: "answer this" against
+  // "that answer is outside the range". Conflating them is how the original
+  // message managed to be true and useless at once.
+  assert.deepEqual(outOfRange({}), []);
+  assert.deepEqual(outOfRange({ formedLeadContactMm: 1.2, formedLeadSpanMm: 9.5 }), []);
+  assert.equal(missingRequired(parseSettings({})).length, 2);
+});
+
+test("every bound the screen shows is the bound parseSettings actually enforces", () => {
+  // The two drifting apart is what `MAX_FORMED_CONTACT_MM` was written up for
+  // once already: a screen that accepts 8 and a route that refuses it asks the
+  // user a question and then rejects their answer.
+  for (const field of SETTINGS_FIELDS) {
+    if (field.max === undefined) continue;
+    const atLimit = parseSettings({ [field.key]: field.max });
+    assert.equal(atLimit[field.key], field.max, `${field.key} accepts its stated maximum`);
+
+    const justOver = parseSettings({ [field.key]: field.max + 0.01 });
+    assert.equal(justOver[field.key], undefined, `${field.key} refuses just above its stated maximum`);
+    assert.equal(outOfRange({ [field.key]: field.max + 0.01 }).length, 1, "and says so");
+  }
 });

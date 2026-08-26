@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { POST } from "../../app/api/export/route";
 import { extractedValue, resolveForExport, unknown, type PartRecord, type PinRecord } from "../types";
+import { labelForField } from "../review";
 
 /**
  * The shape `/api/export` answers a refusal with, which the UI reads directly.
@@ -531,4 +532,119 @@ test("naming a package cannot substitute a pinout past an unrelated gap", async 
   const payload = await response.json();
   assert.equal(payload.code, "INCOMPLETE_EXTRACTION");
   assert.ok(payload.missing.includes("partNumber"), "and it still says what is actually wrong");
+});
+
+/**
+ * EVERY REFUSAL NAMES ITS FIELDS, and the screen shows them.
+ *
+ * Reported 2026-08-24 as "I got an export failed error with LMP7704-SP". The
+ * route was doing its job: it answered 422 with `code: INCOMPLETE_EXTRACTION`
+ * and `missing: ["pinCount", "pins"]`, which is the whole truth. The screen
+ * handled `INPUT_REQUIRED` and let everything else fall through to a generic
+ * error, so the user was shown "required values were not extracted from the
+ * datasheet. Fill them in before exporting" and never told which values, or
+ * that the pinout was the thing that had not been read.
+ *
+ * The same shape as every other defect in this repo's history: the information
+ * existed, was carried across the wire, and was discarded by the last hop.
+ *
+ * These tests pin the wire format the UI now reads. If a field list stops being
+ * sent, or a code is renamed, this fails here rather than silently returning
+ * the screen to a sentence that names nothing.
+ */
+
+test("an incomplete record is refused WITH the list of what was never read", async () => {
+  const part = exportablePart("SOIC-8", 8);
+  part.pins = unknown<PinRecord[]>();
+  part.pinCount = unknown<number>();
+
+  const response = await POST(post({ part, format: "kicad" }));
+  assert.equal(response.status, 422);
+
+  const payload = await response.json();
+  assert.equal(payload.code, "INCOMPLETE_EXTRACTION");
+  assert.ok(Array.isArray(payload.missing), "the UI renders this array");
+  assert.ok(payload.missing.length > 0, "a refusal that names nothing is what the user complained about");
+  assert.ok(payload.missing.includes("pins"), "and it names the pinout specifically");
+
+  // The field paths must be the ones the label table knows, or the screen shows
+  // raw source identifiers to an engineer.
+  for (const field of payload.missing as string[]) {
+    assert.notEqual(labelForField(field), field, `${field} has a human name`);
+  }
+});
+
+test("an untraceable record is refused WITH the list of what could not be located", async () => {
+  // A record that would otherwise build, with ONE value nobody can locate. The
+  // family fixture is deliberately unresolved until a package is named, so it
+  // trips the missing check first and never reaches the traceability one.
+  const part = exportablePart("SOIC-8", 8);
+  part.dimensions.pitchMm = { value: 1.27, confidence: 0.5, method: "vlm", citation: null };
+
+  const response = await POST(post({ part, format: "kicad" }));
+  assert.equal(response.status, 422);
+
+  const payload = await response.json();
+  assert.equal(payload.code, "UNTRACEABLE_EXTRACTION");
+  assert.ok(Array.isArray(payload.untraceable) && payload.untraceable.length > 0);
+  assert.ok(payload.untraceable.includes("dimensions.pitchMm"));
+  for (const field of payload.untraceable as string[]) {
+    assert.notEqual(labelForField(field), field, `${field} has a human name`);
+  }
+});
+
+test("the two refusals stay distinct, because they need opposite things from a person", () => {
+  // An untraceable value is ON the record and needs checking against the page
+  // it claims. A missing one was never read at all, and no amount of confirming
+  // will produce it. Collapsing them into one message is how "fill them in"
+  // ended up being said about a pinout that did not exist to be filled in.
+  const absent = resolveForExport({ ...exportablePart("SOIC-8", 8), pins: unknown<PinRecord[]>(), pinCount: unknown<number>() });
+  assert.equal(absent.ok, false);
+  assert.ok(absent.ok === false && absent.missing.length > 0);
+  assert.ok(absent.ok === false && !absent.untraceable?.length);
+
+  const uncited = exportablePart("SOIC-8", 8);
+  uncited.dimensions.pitchMm = { value: 1.27, confidence: 0.5, method: "vlm", citation: null };
+  const shaky = resolveForExport(uncited);
+  assert.equal(shaky.ok, false);
+  assert.ok(shaky.ok === false && shaky.missing.length === 0);
+  assert.ok(shaky.ok === false && (shaky.untraceable?.length ?? 0) > 0);
+});
+
+test("a name the format cannot write is a refusal, not a 500", async () => {
+  // Reported 2026-08-24 as "export failed" on an LMP7704-SP. The emitter
+  // refused correctly, nothing in the route caught it, Next answered 500, and
+  // the screen showed the bare words "Export failed." The user could not tell a
+  // working guard from a broken server.
+  //
+  // The character in that report was a U+2013 en dash, which turned out to be a
+  // bug in the encoder rather than a real limit and now encodes fine. This is
+  // about a character that genuinely does not fit.
+  const part = exportablePart("SOIC-8", 8);
+  const pinTable = part.pins.value as PinRecord[];
+  pinTable[0] = { ...pinTable[0]!, name: `IN${String.fromCodePoint(0x4e2d)}` };
+
+  const response = await POST(post({ part, format: "altium" }));
+
+  assert.notEqual(response.status, 500, "a refusal is never a crash");
+  assert.equal(response.status, 422);
+
+  const payload = await response.json();
+  assert.equal(payload.code, "FORMAT_CANNOT_ENCODE");
+  assert.match(payload.error, /U\+4E2D/, "it names the character");
+  assert.deepEqual(payload.availableFormats, ["kicad"], "and where the user can still go");
+});
+
+test("the en dash that caused the report exports cleanly in both formats", async () => {
+  // The real fix for the reported case: Windows-1252 holds an en dash at 0x96
+  // and always did, so nothing about this part should have refused.
+  const part = exportablePart("SOIC-8", 8);
+  const pinTable = part.pins.value as PinRecord[];
+  pinTable[0] = { ...pinTable[0]!, name: `IN A${String.fromCodePoint(0x2013)}` };
+
+  for (const format of ["kicad", "altium"] as const) {
+    const response = await POST(post({ part, format }));
+    assert.equal(response.status, 200, `${format} writes the en dash`);
+    assert.equal(response.headers.get("Content-Type"), "application/zip");
+  }
 });

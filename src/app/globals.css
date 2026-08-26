@@ -24,14 +24,14 @@
   color-scheme: light dark;
 
   /* Paper and ink. Light first, because these documents are read like paper. */
-  --paper: #fbfbfa;
+  --paper: #f8f8f6;
   --surface: #ffffff;
-  --sunken: #f4f4f2;
-  --ink: #16181c;
-  --ink-2: #4a4f57;
+  --sunken: #f1f1ee;
+  --ink: #14161a;
+  --ink-2: #484d55;
   --ink-3: #767c86;
-  --rule: #dcdcd8;
-  --rule-strong: #c2c2bc;
+  --rule: #e2e2dd;
+  --rule-strong: #c7c7c0;
 
   /* One accent, for the next thing to click and nothing else. */
   --accent: #1b4dc1;
@@ -49,26 +49,30 @@
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
   --gap: 1.5rem;
-  --radius: 3px;
+  --radius: 2px;
 }
 
+/* Dark is not the light palette dimmed — it drops to a near-black surface
+   rather than the usual dark-slate compromise. Sharper contrast, same
+   restraint: one accent, nothing decorative added because the lights went
+   off. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #16181b;
-    --surface: #1c1f23;
-    --sunken: #121417;
-    --ink: #e8e9ea;
-    --ink-2: #b3b7bd;
-    --ink-3: #838a93;
-    --rule: #2c3037;
-    --rule-strong: #3d434b;
+    --paper: #0a0b0c;
+    --surface: #131416;
+    --sunken: #08090a;
+    --ink: #f0f1f2;
+    --ink-2: #a9adb4;
+    --ink-3: #71767d;
+    --rule: #212226;
+    --rule-strong: #323438;
     --accent: #6f9bff;
-    --accent-ink: #10131a;
-    --accent-soft: #1b2438;
+    --accent-ink: #0b0e14;
+    --accent-soft: #182238;
     --warn: #e0a355;
-    --warn-soft: #2a2115;
-    --bad: #f07a7a;
-    --bad-soft: #2c1a1b;
+    --warn-soft: #241d13;
+    --bad: #f0807f;
+    --bad-soft: #291819;
     --good: #6cc08d;
   }
 }
@@ -134,22 +138,26 @@ body {
 }
 
 .wordmark {
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 1.0625rem;
 }
 
 .bar-sub {
   color: var(--ink-3);
-  font-size: 0.8125rem;
+  font-size: 0.6875rem;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .mode {
   font-family: var(--mono);
   font-size: 0.6875rem;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 0.15rem 0.45rem;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
   color: var(--ink-2);
@@ -174,31 +182,32 @@ body {
   gap: 0.875rem;
 }
 
-.step-title {
+.step-head {
   display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  align-items: baseline;
+  gap: 0.75rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--rule);
 }
 
-/* The step number is a wayfinding device, so it reads as a label rather than as
-   a heading: same size, quieter, and monospace so the column lines up. */
-.step-n {
+/* The step number is a wayfinding device, so it reads as a label rather than
+   as a heading: tracked-out and quiet, sitting above the title rather than
+   beside it, the way a spec sheet marks a section before naming it. */
+.step-eyebrow {
   font-family: var(--mono);
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--ink-3);
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--radius);
-  width: 1.35rem;
-  height: 1.35rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  white-space: nowrap;
+}
+
+.step-title {
+  margin: 0;
+  font-size: 1.1875rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .step-note {
@@ -210,8 +219,10 @@ body {
 
 .badge {
   margin-left: auto;
+  align-self: center;
   font-size: 0.75rem;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--bad);
   background: var(--bad-soft);
   border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent);
@@ -319,6 +330,7 @@ input[type="number"],
   border-radius: var(--radius);
   padding: 0.4rem 0.5rem;
   min-width: 0;
+  transition: border-color 0.15s ease;
 }
 
 input:focus-visible,
@@ -341,17 +353,22 @@ button:focus-visible,
   border-radius: var(--radius);
   padding: 0.4rem 0.8rem;
   cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
 }
 
 .btn:hover:not(:disabled),
 .lookup button:hover:not(:disabled) {
   border-color: var(--ink-3);
+  transform: translateY(-1px);
 }
 
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -400,9 +417,9 @@ button:disabled {
 }
 
 .ident-part {
-  font-size: 1.375rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 1.875rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .ident-sub {
@@ -425,7 +442,7 @@ button:disabled {
 .identity-facts dt {
   font-size: 0.6875rem;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--ink-3);
 }
 
@@ -522,6 +539,7 @@ button:disabled {
   text-align: left;
   font: inherit;
   color: inherit;
+  transition: background-color 0.15s ease;
 }
 
 .rev-head:hover {
@@ -664,10 +682,12 @@ button:disabled {
   cursor: pointer;
   font: inherit;
   color: inherit;
+  transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
 .pkg:hover:not(:disabled) {
   border-color: var(--ink-3);
+  transform: translateY(-1px);
 }
 
 .pkg-active {
@@ -719,6 +739,11 @@ button:disabled {
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
   cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.fmt:not(.fmt-off):hover {
+  border-color: var(--ink-3);
 }
 
 .fmt input {
@@ -1039,4 +1064,340 @@ button:disabled {
 }
 .status-retry:hover {
   background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+/* --- Starting the read, and watching it happen -----------------------------
+   Both added 2026-08-24 after watching a person use this. Choosing a file used
+   to start a ninety second model call by itself, and the only sign it was
+   running was the status bar, which is 13px at the foot of an otherwise empty
+   page. */
+
+/* The chooser and the button it leads to are ONE cell of `.source`, so the
+   part-number lookup beside them keeps its column. Inserting the button as a
+   third grid child pushed the lookup onto a row of its own and buried the
+   alternative route into the app. */
+.source-file {
+  display: flex;
+  flex-direction: column;
+}
+
+.source-file .drop {
+  flex: 1;
+}
+
+.drop-go {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.drop-go-note {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  max-width: 32ch;
+}
+
+.working {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.25rem 1.4rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* An indeterminate sweep, because the work gives no percentage to report and a
+   fake one would be inventing a number, which is the one thing this product
+   does not do anywhere else either. */
+.working-bar {
+  flex: none;
+  align-self: stretch;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(var(--accent), var(--accent)) no-repeat, var(--sunken);
+  background-size: 100% 35%;
+  animation: working-sweep 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes working-sweep {
+  from { background-position: 0 0%; }
+  to   { background-position: 0 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working-bar { animation: none; background-size: 100% 100%; }
+}
+
+.working-main {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.working-sub {
+  margin: 0.35rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  max-width: 62ch;
+}
+
+/* The reader's working notes, folded away: they are written in field paths and
+   were thirty lines of internal vocabulary sitting under the export button. */
+.notes-fold {
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+}
+
+.notes-fold > summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+}
+
+.notes-fold > summary .count {
+  font-family: var(--mono);
+  color: var(--ink-3);
+  margin-left: 0.35rem;
+}
+
+/* --- What the export refused ----------------------------------------------
+   The route answers with the exact field paths it could not resolve. The screen
+   used to discard them and print a sentence telling the user to fill in values
+   it would not name. */
+
+.blocked {
+  margin-top: 1.25rem;
+  padding: 1rem 1.2rem;
+  border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
+  border-radius: var(--radius);
+  background: var(--bad-soft);
+}
+
+.blocked-untraceable {
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  background: var(--warn-soft);
+}
+
+.blocked-main {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.9375rem;
+}
+
+.blocked-fields {
+  margin: 0.6rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.875rem;
+}
+
+.blocked-why {
+  margin: 0.8rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  max-width: 68ch;
+}
+
+/* A package whose pinout this document never tabulated. Choosing it re-reads
+   the whole datasheet, which is the most expensive action on the screen and
+   used to look identical to the free ones. */
+.pkg-cost {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+/* --- The answer, in one card ----------------------------------------------
+   A finished read used to arrive as four numbered steps at once, and the first
+   person to use it said "I don't know what I'm looking at". This says what the
+   part is, whether it can be built, and what to do next, in that order, before
+   any detail. */
+
+.result {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.result-id {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 1.25rem 1.4rem 1rem;
+}
+
+.result-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  margin: 0;
+  padding: 0.9rem 1.4rem 1rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.9375rem;
+}
+
+.result-verdict > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.result-mark {
+  font-family: var(--mono);
+  font-size: 1rem;
+  line-height: 1.45;
+  flex: none;
+}
+
+.result-detail {
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+.result-ready { background: color-mix(in srgb, var(--good) 10%, transparent); }
+.result-ready .result-mark { color: var(--good); }
+.result-choose,
+.result-ask { background: var(--accent-soft); }
+.result-choose .result-mark,
+.result-ask .result-mark { color: var(--accent); }
+.result-check { background: var(--warn-soft); }
+.result-check .result-mark { color: var(--warn); }
+
+/* The review list, folded. `summary` must not keep its default marker beside a
+   flex row, and the disclosure has to look like one. */
+.reviews-fold > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.reviews-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reviews-fold > summary::after {
+  content: "\25b8";
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: 0.75rem;
+  align-self: center;
+}
+
+.reviews-fold[open] > summary::after {
+  content: "\25be";
+}
+
+.reviews-fold > summary .badge {
+  margin-left: 0;
+}
+
+/* The facts now sit inside the result card, between the name and the verdict. */
+.result .identity-facts {
+  margin: 0;
+  padding: 0 1.4rem 1.1rem;
+  border: 0;
+}
+
+/* --- Questions, gathered under the one drawing they are all read from ------
+   Each question used to carry its own copy of the package outline. Eight
+   questions meant eight identical images and 5764px of page. */
+
+.ask-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+  margin-top: 1rem;
+  padding: 1.25rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+@media (max-width: 860px) {
+  .ask-group {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ask-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.ask-row-full {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.ask-row-full + .ask-row-full {
+  border-top: 1px solid var(--rule);
+  padding-top: 1.25rem;
+}
+
+/* The drawing rides along beside the list rather than repeating down it. */
+.ask-page {
+  position: sticky;
+  top: 1.5rem;
+  min-width: 0;
+}
+
+/* The consistency checks, folded when they all pass. */
+.checks > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.checks > summary::-webkit-details-marker {
+  display: none;
+}
+
+.export-blocked-note {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+/* `.ghost` was only ever defined inside `.settings-actions`, so the standalone
+   "Assembly line settings" link fell back to a default button and rendered as a
+   grey slab, which is loud for the quietest control on the page and worse in
+   dark mode. Defined for the class itself; the scoped rule still wins where it
+   applies. */
+.ghost {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.ghost:hover {
+  color: var(--ink);
+}
+
+/* The action the verdict is telling the user to take, in the card that tells
+   them. Advice with nothing to press sends them hunting up the page. */
+.result-action {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+
+.result-action-note {
+  font-size: 0.75rem;
+  color: var(--ink-3);
 }

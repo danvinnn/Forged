@@ -16,23 +16,11 @@
  * visible.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { extractPartRecord } from "../datasheet";
-import { makeExtractionModel, runExtraction } from "../extraction";
-import type { ExtractionModel } from "../extraction/contracts";
-import { getDeploymentMode } from "../retrieval/deployment";
-import { cachingModel } from "./modelcache";
 import { loadBenchEnv } from "./env";
-import { statedMaxHeightMm } from "../extraction/merge";
-import type { DatasheetText } from "../pdftext";
 import { DIMENSION_ORACLE, type DimensionOracleEntry, type OracleRange } from "./dimension-oracle";
-import { pinTableFor, sameOutlineCode } from "../packagevariants";
-import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
+import { buildCachedParts } from "./oracle-match";
 
 loadBenchEnv();
-
-const CACHE = join(process.cwd(), ".model-cache");
 
 /**
  * How far a reading may sit from the hand-read value.
@@ -95,27 +83,6 @@ function show(value: unknown): string {
     if (typeof r.minMm === "number") return `${r.minMm}-${r.maxMm}`;
   }
   return String(value);
-}
-
-/** The parsed document for a part, from either cache, or null. Memoised. */
-const documents = new Map<string, DatasheetText | null>();
-async function documentFor(part: string): Promise<DatasheetText | null> {
-  if (documents.has(part)) return documents.get(part) ?? null;
-  let parsed: DatasheetText | null = null;
-  for (const dir of [".bench-cache", ".holdout-cache"]) {
-    const path = join(process.cwd(), dir, `${part}.pdf`);
-    if (!existsSync(path)) continue;
-    try {
-      const bytes = readFileSync(path);
-      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      ({ doc: parsed } = await extractPartRecord(`${part}.pdf`, buffer));
-    } catch {
-      parsed = null;
-    }
-    break;
-  }
-  documents.set(part, parsed);
-  return parsed;
 }
 
 function compare(
@@ -246,262 +213,68 @@ function compare(
     }
   }
 
+  // AND EVERY OTHER FIELD A PERSON CONFIRMED THE DRAWING DOES NOT STATE.
+  //
+  // `leadContactMm` above has had this check since the oracle existed, and it is
+  // the only field that did, because its absence was the only one meant as a
+  // claim. `printsNothingFor` lets any field carry the same claim, made
+  // explicitly by whoever read the page rather than inferred from a gap.
+  //
+  // The land pattern is the case that forced it. An entry with no `land` is
+  // usually just a footprint page nobody has read, so silence there cannot mean
+  // "the datasheet draws none" - but where somebody HAS checked, a land pattern
+  // read out of a document that prints none is copper with no source at all.
+  for (const field of entry.printsNothingFor ?? []) {
+    if (field === "land") {
+      for (const part of ["landPadLengthMm", "landPadWidthMm", "landSpanMm", "landSpanCrossMm"] as const) {
+        const read = at(`dimensions.${part}`);
+        if (read !== null && read !== undefined) {
+          add(part, false, read, "this datasheet draws no footprint for this package");
+        }
+      }
+      continue;
+    }
+    const read = at(`dimensions.${field}`);
+    if (read !== null && read !== undefined) {
+      add(field, false, read, "the drawing states none");
+    }
+  }
+
   return rows;
 }
 
-/**
- * The values the PRODUCT would hold for this part, built the way it builds them.
- *
- * ## What this replaces, and why it had to go
- *
- * This function used to be four lines that walked every cache file for a part,
- * in `readdirSync` order, and kept the first non-null it met for each field.
- * That is a hand-rolled merge, and it disagreed with the real one in three ways
- * at once:
- *
- *   - It mixed PROMPTS. Answers stored months apart under different prompts were
- *     merged into one record, so the bench scored a part nobody could produce.
- *     `forge-validate-the-instrument` had already recorded "filter cache
- *     measurements to the current prompt" and this file never did.
- *   - It mixed PASSES. Pass 1 reads the text layer and pass 2 reads the rendered
- *     drawing, and where they disagree the drawing is right - which is the whole
- *     reason there are two. Taking whichever the filesystem listed first threw
- *     that precedence away.
- *   - It ignored everything the merge does BEYOND picking a value: citation
- *     checks, `statedMaxHeightMm`, the per-package join.
- *
- * It reported RHF1201's `leadForm` as `gullwing` on 2026-08-21. The drawing says
- * straight, pass 2 read straight, and the bench took pass 1's text-layer answer
- * off the front page. **A reimplemented merge drifts from the real one; the fix
- * is to delete the reimplementation, not to correct it.**
- *
- * So the record is now built by `runExtraction` - the same call the routes and
- * `bench:extraction` make - against the cache in `offline` mode, which throws on
- * a miss and can never reach the network. A part whose answers are not cached
- * under the CURRENT prompt is simply not scored, which is the honest outcome and
- * the one the old code hid by falling back to stale entries.
- */
-async function recordValuesFor(
-  part: string,
-  model: ExtractionModel,
-  setLabel: (label: string) => void
-): Promise<Record<string, { value?: unknown; page?: number | null }> | null> {
-  for (const dir of [".bench-cache", ".holdout-cache"]) {
-    const path = join(process.cwd(), dir, `${part}.pdf`);
-    if (!existsSync(path)) continue;
-    try {
-      const bytes = readFileSync(path);
-      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      const { doc, part: deterministic } = await extractPartRecord(`${part}.pdf`, buffer);
-      setLabel(part);
-      const outcome = await runExtraction(deterministic, doc, buffer, model, `${part}.pdf`, part);
-      const record = outcome?.part ?? deterministic;
-      // The citation PAGE comes too, because `outlineFor` disambiguates two
-      // drawings in one datasheet by what each states as its own max height and
-      // needs to know which page the reading came from.
-      const values: Record<string, { value?: unknown; page?: number | null }> = {};
-      for (const [field, held] of Object.entries(record.dimensions)) {
-        const value = held as { value: unknown; citation?: { page?: number } | null };
-        values[`dimensions.${field}`] = { value: value.value, page: value.citation?.page ?? null };
-      }
-      values.packageOutlineCode = { value: record.packageOutlineCode.value };
-
-      // THE PACKAGE THE PART ACTUALLY SHIPS AS, which is often not the one the
-      // flat block describes.
-      //
-      // A family datasheet leaves `record.dimensions` entirely null - correctly,
-      // because a part sold in seven packages has no one body size - and states
-      // each package's own measurements in `packagesInThisDocument`. The product
-      // builds the copper from THOSE, through `asPackage`. This bench read the
-      // flat block, so for every such part it compared a hand-read drawing
-      // against a row of nulls and reported "not read".
-      //
-      // Measured 2026-08-22 on the first three drawings added for the shipping
-      // list: AD8628, ADR4525 and AD590 all ship, all build from an R-8 the
-      // oracle now records, and all 27 comparisons came back `read null`. The
-      // instrument could not see the numbers it exists to check, so reading
-      // twenty more drawings would have bought nothing.
-      //
-      // Substituted the way `asPackage` substitutes - BLANK, then overlay - and
-      // not merged over the flat block. That is the product's own rule and its
-      // reason holds here: a field the document did not state for THIS package
-      // is unknown, and inheriting the sibling's number would score a value the
-      // product never emits.
-      const shipped = (await shipOutcome(record, BENCH_SETTINGS)).shippedAs;
-      if (shipped && shipped.designator !== record.packageType.value) {
-        const entry = pinTableFor(record.packagesInThisDocument, shipped.designator);
-        if (entry?.dimensions) {
-          for (const field of Object.keys(record.dimensions)) values[`dimensions.${field}`] = { value: null, page: null };
-          for (const [field, held] of Object.entries(entry.dimensions)) {
-            const value = held as { value: unknown; citation?: { page?: number } | null };
-            values[`dimensions.${field}`] = { value: value.value, page: value.citation?.page ?? null };
-          }
-        }
-        values.packageOutlineCode = { value: shipped.outlineCode };
-      }
-      return values;
-    } catch {
-      // A cache miss under the current prompt, or a document that will not
-      // parse. Either way there is nothing to score, and inventing something to
-      // score is how this function got into trouble in the first place.
-      return null;
-    }
-  }
-  return null;
-}
 
 async function main(): Promise<void> {
-  const inner = await makeExtractionModel(getDeploymentMode());
-  if (!inner) {
+  // ONE definition of "which drawing did this part read", shared with
+  // `bench:questions`. Three separate wrong measurements were paid for while
+  // that rule lived in this file alone; see `oracle-match.ts`.
+  const built = await buildCachedParts();
+  if (!built) {
     console.log("No model configured, so no records can be rebuilt.");
     return;
-  }
-  let currentLabel = "";
-  // OFFLINE. A miss throws rather than reaching the network, so this bench
-  // cannot spend, which is the property that lets it run on every change.
-  const model = cachingModel(inner, "offline", () => currentLabel);
-
-  const parts = new Set<string>();
-  for (const file of readdirSync(CACHE).filter((n) => n.endsWith(".json") && n !== "_billed.json")) {
-    parts.add(file.replace(/-[0-9a-f]{16}\.json$/, ""));
-  }
-  const byPart = new Map<string, Record<string, { value?: unknown; page?: number | null }>>();
-  for (const part of parts) {
-    const values = await recordValuesFor(part, model, (label) => {
-      currentLabel = label;
-    });
-    if (values) byPart.set(part, values);
   }
 
   const rows: Row[] = [];
   const unmatched: string[] = [];
-
-  // Outline code first, because it identifies the drawing. Falling back to the
-  // hand-confirmed part list, because the code is itself model-read and comes
-  // back null for most of the corpus.
-  //
-  // A LIST per part, not one entry. A datasheet routinely prints two outline
-  // drawings and offers the part in both: TPS7A4501-SP is a `U0010A` at 2.03mm
-  // max height and an `HKU0010A` at 2.63. This map kept whichever was declared
-  // last, so a CORRECT reading of one drawing was scored as a wrong reading of
-  // the other and reported under "every WRONG above is a number that would have
-  // placed copper". It was the bench that was wrong.
-  const byPartName = new Map<string, string[]>();
-  for (const [code, entry] of Object.entries(DIMENSION_ORACLE)) {
-    for (const part of entry.parts) byPartName.set(part, [...(byPartName.get(part) ?? []), code]);
-  }
-
-  /**
-   * Which of a part's outlines the reading actually came from.
-   *
-   * Decided by the height the CITED page prints in its own title block, which
-   * is the one thing on a drawing that names the drawing unambiguously and is
-   * present on both of these. No candidate matches, or several do, and this
-   * gives up rather than picking: an unmatched part is reported as unchecked,
-   * which is honest, where a guess would be scored as fact.
-   */
-  const outlineFor = (codes: string[], stated: number | null): string | null => {
-    // EVEN ONE CANDIDATE HAS TO SURVIVE THE HEIGHT CHECK.
-    //
-    // A part list says "this part reads this drawing", and it is wrong whenever
-    // the datasheet prints two and the reading came from the other one. Adding
-    // `DGS0010A` on 2026-08-20 attributed a 2.0 x 1.5 x 0.4mm reading to a
-    // 3 x 3 x 1.1mm VSSOP and reported six WRONG values, none of which was a
-    // misread: `ADS1115` is offered in both and the model had read the other.
-    //
-    // So the cited page's own title block gets a veto here as well as a vote.
-    // An unmatched part is reported as unchecked, which is true; a mismatched
-    // one is reported as a defect, which is a lie about the product.
-    const fitsHeight = (code: string) => {
-      const wanted = DIMENSION_ORACLE[code].bodyHeightMaxMm;
-      if (wanted === undefined || stated === null) return true;
-      return Math.abs(wanted - stated) < 0.02;
-    };
-    if (codes.length === 1) return fitsHeight(codes[0]) ? codes[0] : null;
-    if (stated === null) return null;
-    const fits = codes.filter((code) => {
-      const wanted = DIMENSION_ORACLE[code].bodyHeightMaxMm;
-      return wanted !== undefined && Math.abs(wanted - stated) < 0.02;
-    });
-    return fits.length === 1 ? fits[0] : null;
-  };
-
-  for (const [part, values] of byPart) {
-    // THE CORRECTION THE PRODUCT APPLIES, applied here too.
-    //
-    // This bench reads the model cache, and the record is not the model's
-    // answer: `mergeModelValues` replaces an overall height with the one the
-    // drawing states in its own title block, because the model answers the body
-    // thickness instead on about a fifth of the pages that state it. Measuring
-    // the raw answer scores a field the product does not ship, which is the
-    // "one step away from the thing it is about" mistake this file has made
-    // before. See `statedMaxHeightMm`.
-    // READ, NOT APPLIED. `mergeModelValues` already replaces an overall height
-    // with the one the drawing states in its own title block, so the record
-    // arriving here has been corrected. This used to do the correction a SECOND
-    // time, which was harmless while it agreed and is exactly the reimplemented
-    // logic that made this bench disagree with the product elsewhere.
-    //
-    // The value is still needed for `outlineFor`, which tells two drawings in one
-    // datasheet apart by what each states as its own max height.
-    let statedHeight: number | null = null;
-    const height = values["dimensions.bodyHeightMm"];
-    if (height && typeof height.value === "number") {
-      const doc = await documentFor(part);
-      const page = height.page;
-      statedHeight = doc ? statedMaxHeightMm(doc, typeof page === "number" ? page : null) : null;
-    }
-    const claimed = values["packageOutlineCode"]?.value;
-    // A CODE THE RECORD REPORTS BEATS THE PART LIST, INCLUDING WHEN IT MATCHES
-    // NOTHING.
-    //
-    // The part list says "this part reads this drawing". Since 2026-08-22 the
-    // code arriving here is the one the part actually SHIPPED as, and where the
-    // two disagree the code is right by construction: it came from the package
-    // the copper was built from.
-    //
-    // Falling through to the list when the code is merely UNKNOWN scored a
-    // reading against a drawing it did not come from. Measured the day the
-    // shipped-package code was wired in: AD8628 ships as UJ-5, a 5-lead TSOT,
-    // and was scored against the R-8 SOIC in the same datasheet - seven WRONG
-    // values, none of them a misread. NCP1200 ships as CASE 626-05, a DIP, and
-    // was scored against the 751-07 SOIC for another five.
-    //
-    // The height veto in `outlineFor` was supposed to catch exactly this and
-    // cannot: it only fires on an entry with `bodyHeightMaxMm`, and an entry
-    // recording a max/nom/min range has none.
-    //
-    // So an unmatched code is UNCHECKED, which is true, rather than checked
-    // against a sibling, which is a lie about the product.
-    // An ALIAS counts as the code. One title block can print two - ISL71001M's
-    // page 36 is headed both `Q64.10x10J` and `PT0064AA` - and without this the
-    // run that reports the second one calls a hand-read drawing UNCHECKED.
-    const aliasOf = (want: string) =>
-      Object.keys(DIMENSION_ORACLE).find((key) =>
-        (DIMENSION_ORACLE[key].alsoKnownAs ?? []).some((alias) => sameOutlineCode(alias, want))
-      ) ?? null;
-    const code =
-      typeof claimed === "string" && claimed.trim()
-        ? (DIMENSION_ORACLE[claimed] ? claimed : aliasOf(claimed))
-        : outlineFor(byPartName.get(part) ?? [], statedHeight);
-    if (!code) {
+  for (const entry of built) {
+    if (!entry.oracleCode) {
       // NAME THE CODE THE RECORD DID REPORT, not just the part.
       //
       // "94 parts have no oracle entry" is a number nobody can act on: it does
       // not say which DRAWING to go and read. The record usually knows - it
       // reports an outline code that simply has no entry yet - and printing it
       // turns the list into a work queue.
-      unmatched.push(typeof claimed === "string" && claimed.trim() ? `${part} [${claimed.trim()}]` : part);
+      unmatched.push(entry.claimedCode ? `${entry.part} [${entry.claimedCode}]` : entry.part);
       continue;
     }
-    rows.push(...compare(part, code, DIMENSION_ORACLE[code], values));
+    rows.push(...compare(entry.part, entry.oracleCode, DIMENSION_ORACLE[entry.oracleCode], entry.values));
   }
 
   const correct = rows.filter((r) => r.verdict === "correct").length;
   const wrong = rows.filter((r) => r.verdict === "WRONG");
   const unread = rows.filter((r) => r.verdict === "not read").length;
 
-  console.log(`\nChecked ${byPart.size} cached parts against ${Object.keys(DIMENSION_ORACLE).length} hand-read drawings.\n`);
+  console.log(`\nChecked ${built.length} cached parts against ${Object.keys(DIMENSION_ORACLE).length} hand-read drawings.\n`);
 
   for (const row of rows) {
     const mark = row.verdict === "correct" ? "  ok   " : row.verdict === "WRONG" ? "  WRONG" : "  ---  ";

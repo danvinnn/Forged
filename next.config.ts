@@ -9,25 +9,13 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   // Disallow being framed, so the UI cannot be used in a clickjacking overlay.
   { key: "X-Frame-Options", value: "DENY" },
-  // Modern equivalent of X-Frame-Options plus a default-deny for everything, then re-allow only
-  // what the app needs. 'unsafe-inline' for styles is Next's styled-jsx requirement; scripts are
-  // NOT given unsafe-inline, so an injected <script> will not run. connect-src is self only, which
-  // also means a compromised bundle cannot exfiltrate to an arbitrary origin.
-  {
-    key: "Content-Security-Policy",
-    value: [
-      "default-src 'self'",
-      "script-src 'self'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data:",
-      "font-src 'self'",
-      "connect-src 'self'",
-      "object-src 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-      "frame-ancestors 'none'"
-    ].join("; ")
-  },
+  // The Content-Security-Policy is NOT here. It carries a per-request nonce, so
+  // it is issued by `src/middleware.ts`, which explains why at length. It must
+  // not also be set here: two CSP headers are enforced as their INTERSECTION,
+  // so a static `script-src 'self'` alongside the nonce policy would go on
+  // blocking the framework's own bootstrap and the app would stay dead while
+  // looking fixed.
+
   // Do not leak full URLs (which can carry part numbers) to third parties via the Referer header.
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   // We use no browser sensors; deny them so a future dependency cannot quietly turn them on.

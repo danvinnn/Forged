@@ -484,12 +484,22 @@ test("a package's pins and its measurements survive being read by different pass
   // `combine` took pass 2's list WHOLE, so the moment the second half started
   // arriving it threw away every pin table pass 1 had found.
   const { combineForTest } = await import("../run");
+  // TWENTY ROWS UNDER A TWENTY-LEAD CAPTION, because a lead-count disagreement
+  // now keeps two entries apart however they are keyed. That rule exists because
+  // a drawing code is model-read and a count is proven: LT1013 came back with
+  // one code on two different drawings, and joining on it destroyed two whole
+  // packages. A fixture whose pin table contradicts its own caption is not a
+  // case this join should make, so it is made self-consistent rather than the
+  // rule made blind to it.
+  const twentyRows = Array.from({ length: 20 }, (_, index) => ({
+    number: String(index + 1),
+    name: `AIN${index}`,
+    electricalType: "unspecified" as const
+  }));
   const merged = combineForTest(
     {
       values: {},
-      packagesInThisDocument: [
-        { packageType: "SSOP-20", pins: [{ number: "1", name: "AIN0", electricalType: "unspecified" }] }
-      ]
+      packagesInThisDocument: [{ packageType: "SSOP-20", pins: twentyRows }]
     },
     {
       values: {},
@@ -502,7 +512,7 @@ test("a package's pins and its measurements survive being read by different pass
   );
 
   const twenty = merged.packagesInThisDocument?.find((entry) => /20/.test(entry.packageType));
-  assert.equal(twenty?.pins?.length, 1, "pass 1's pin table survives pass 2");
+  assert.equal(twenty?.pins?.length, 20, "pass 1's pin table survives pass 2");
   assert.equal(twenty?.dimensions?.["dimensions.pitchMm"]?.value, 0.65, "and pass 2's drawing read joins it");
   assert.equal(
     merged.packagesInThisDocument?.length,
@@ -913,6 +923,171 @@ test("two drawing codes keep two packages apart however alike they are captioned
     2,
     "identical captions, different drawings: a wrong body is copper in the wrong place"
   );
+});
+
+// ONE CODE ON TWO DRAWINGS. The code is read by the model, so it can be wrong,
+// and joining on it alone destroyed two whole packages of an LT1013: its 8-lead
+// and 14-lead PDIPs were reported under a single drawing number, and the second
+// entry then overwrote the first's slot. Found by `bench:discards` 2026-08-25.
+test("one drawing code reported for two lead counts does not merge two packages", async () => {
+  const rows = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      number: String(index + 1),
+      name: `P${index + 1}`,
+      electricalType: "unspecified" as const
+    }));
+  const model = stub([
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "8-Lead PDIP", outlineCode: "05-08-1510", pins: rows(8) },
+        { packageType: "14-Lead PDIP", outlineCode: "05-08-1510", pins: rows(14) }
+      ]
+    }
+  ]);
+
+  const part = buildPartRecord(doc, "ACME555.pdf");
+  const run = await runExtraction(part, doc, NOT_A_PDF, model, "ACME555.pdf", "ACME555");
+  const entries = run?.part.packagesInThisDocument ?? [];
+
+  assert.equal(entries.length, 2, "eight leads and fourteen are two packages, whatever code is printed");
+  assert.deepEqual(
+    entries.map((entry) => entry.pins?.length).sort((left, right) => (left ?? 0) - (right ?? 0)),
+    [8, 14],
+    "and neither pin table was overwritten by the other"
+  );
+});
+
+// READING MORE MUST NOT SPLIT AN ENTRY. Both passes call the package `SMD5C`;
+// pass 2 also reads its drawing code, which used to send it to a different key
+// where no rule could establish identity. The pinout ended up in one entry and
+// the measurements in another. Found by `bench:discards` 2026-08-25.
+test("an entry joins its identically captioned twin even when only one read a code", async () => {
+  const rows = Array.from({ length: 5 }, (_, index) => ({
+    number: String(index + 1),
+    name: `P${index + 1}`,
+    electricalType: "unspecified" as const
+  }));
+  // Through the joiner itself: what is under test is which entries meet, not
+  // whether a citation can be found for a value in a stub document.
+  const { combineForTest } = await import("../run");
+  const merged = combineForTest(
+    { values: {}, packagesInThisDocument: [{ packageType: "SMD5C", pins: rows }] },
+    {
+      values: {},
+      packagesInThisDocument: [
+        {
+          packageType: "SMD5C",
+          outlineCode: "7924296_E",
+          dimensions: { "dimensions.pitchMm": { value: 1.91, page: 1 } }
+        }
+      ]
+    },
+    "RHFL4913A"
+  );
+  const entries = merged.packagesInThisDocument ?? [];
+
+  assert.equal(entries.length, 1, "one package the document names once, not two half-built entries");
+  assert.equal(entries[0].pins?.length, 5, "the pinout survived");
+  assert.ok(entries[0].dimensions, "and so did the measurements");
+});
+
+// A PACKAGE NAME IS NOT A SIBLING DEVICE. `SMD5C` is letters then digits and
+// five characters long, which is the shape of a part number, and reading it as
+// one discarded the entry as belonging to another device. A caption naming a
+// device always names a package beside it.
+test("a caption that is only a package name is not read as another device", async () => {
+  const { devicesNamedForTest } = await import("../run");
+  assert.deepEqual(devicesNamedForTest("SMD5C"), [], "nothing but a package name");
+  assert.deepEqual(devicesNamedForTest("TO-257"), [], "nor this one");
+  assert.deepEqual(devicesNamedForTest("D (OPA1612)"), ["OPA1612"], "a code beside a device is a device");
+  assert.deepEqual(
+    devicesNamedForTest("20-lead SSOP (ADM1385)"),
+    ["ADM1385"],
+    "and so is a device beside a family"
+  );
+});
+
+// A WRONG NETLIST, SHIPPED, BECAUSE THE MERGE PICKED THE WRONG PASS.
+//
+// LT1013 ships as the S8 plastic SO. Pass 1 handed ONE pin list to four of its
+// packages - the SO, the PDIP, the CERDIP and the TO-5 can - which the document
+// draws as three different figures, and its S8 box carries the note "THIS PIN
+// CONFIGURATION DIFFERS FROM THE STANDARD 8-PIN DUAL-IN-LINE CONFIGURATION".
+// Pass 2 gave the SO a list of its own, and it was right.
+//
+// `fromFirst.pins ?? fromSecond.pins` shipped pass 1's, so every pin was wrong
+// under a real part number. Measured over the corpus the two passes are 1-1
+// where they disagree, so pass 1's precedence had no basis here at all; the tie
+// is broken on how SPECIFICALLY each pass read this package instead.
+test("the pass that gave this package its own pinout beats the one that generalised", async () => {
+  const { combineForTest } = await import("../run");
+  const rows = (names: string[]) =>
+    names.map((name, index) => ({ number: String(index + 1), name, electricalType: "unspecified" as const }));
+  const dip = rows(["OUTPUT A", "-IN A", "+IN A", "V-", "+IN B", "-IN B", "OUTPUT B", "V+"]);
+  const so = rows(["+INA", "V-", "+INB", "-INB", "OUTB", "V+", "OUTA", "-INA"]);
+
+  const merged = combineForTest(
+    {
+      values: {},
+      // Pass 1 hands the SAME list to three packages, the SO among them.
+      packagesInThisDocument: [
+        { packageType: "8-Lead Plastic SO", outlineCode: "05-08-1610", pins: dip },
+        { packageType: "8-Lead PDIP", outlineCode: "05-08-1510", pins: dip },
+        { packageType: "8-Lead CERDIP", outlineCode: "05-08-1110", pins: dip }
+      ]
+    },
+    {
+      values: {},
+      // Pass 2 reads the SO on its own.
+      packagesInThisDocument: [
+        { packageType: "8-Lead Plastic Small Outline", outlineCode: "05-08-1610", pins: so }
+      ]
+    }
+  );
+
+  const outline = (merged.packagesInThisDocument ?? []).find((entry) =>
+    /05-08-1610/.test(entry.outlineCode ?? "")
+  );
+  assert.deepEqual(
+    outline?.pins?.map((pin) => pin.name),
+    ["+INA", "V-", "+INB", "-INB", "OUTB", "V+", "OUTA", "-INA"],
+    "the SO keeps the reading taken of the SO, not the one copied from the PDIP"
+  );
+});
+
+// AND PASS 1 KEEPS ITS PRECEDENCE WHERE NEITHER PASS WAS MORE SPECIFIC.
+//
+// The measured case that must not regress: on OPA2189 both passes share each
+// list with exactly one other package, so nothing separates them and pass 1 -
+// which has the whole document - stays the authority. A tie-break that fired on
+// every disagreement would trade one wrong netlist for another.
+test("pass 1 still wins when both passes generalised equally", async () => {
+  const { combineForTest } = await import("../run");
+  const rows = (names: string[]) =>
+    names.map((name, index) => ({ number: String(index + 1), name, electricalType: "unspecified" as const }));
+  const right = rows(["OUT A", "-IN A", "+IN A", "V-", "+IN B", "-IN B", "OUT B", "V+"]);
+  const wrong = rows(["OUT A", "-IN A", "+IN A", "V-", "+IN B", "-IN B", "V+", "OUT B"]);
+
+  const merged = combineForTest(
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "VSSOP (DGK)", outlineCode: "DGK0008A", pins: right },
+        { packageType: "SOIC (D-8)", outlineCode: "D0008A", pins: right }
+      ]
+    },
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "VSSOP (DGK)", outlineCode: "DGK0008A", pins: wrong },
+        { packageType: "SOIC (D)", outlineCode: "D0008A", pins: wrong }
+      ]
+    }
+  );
+
+  const dgk = (merged.packagesInThisDocument ?? []).find((entry) => /DGK0008A/.test(entry.outlineCode ?? ""));
+  assert.equal(dgk?.pins?.[6].name, "OUT B", "pass 1's reading stands where the tie-break has nothing to say");
 });
 
 // A code is an ADDITION, not a precondition. Most drawings print none.

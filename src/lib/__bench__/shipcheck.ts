@@ -207,6 +207,20 @@ export async function shipOutcome(
   brokeWhenAnswered: string | null;
   /** The package whose drawing built the copper. Null when nothing shipped. */
   shippedAs: ShippedPackage | null;
+  /**
+   * The questions the product would put to the user, and which package they are
+   * about. Empty when nothing is asked.
+   *
+   * Exposed rather than re-derived because `bench:questions` has to judge these
+   * exact questions against the hand-read drawings, and there is only one route
+   * through the chooser that produces them - the CHEAPEST one, which is the path
+   * a user actually takes. A second implementation of "what does the product
+   * ask" would drift from this one, which is the failure this whole module was
+   * created to end.
+   */
+  asks: RequiredInput[];
+  /** The designator those questions belong to, where the chooser named one. */
+  asksFor: string | null;
 }> {
   const resolved = resolveForExport(record);
 
@@ -244,7 +258,9 @@ export async function shipOutcome(
         why: "",
         asked: 0,
         brokeWhenAnswered: null,
-        shippedAs: { designator: resolved.part.packageType, outlineCode: resolved.part.packageOutlineCode }
+        shippedAs: { designator: resolved.part.packageType, outlineCode: resolved.part.packageOutlineCode },
+        asks: [],
+        asksFor: null
       };
     } catch (error) {
       // ONE PART MUST NEVER KILL THE RUN.
@@ -268,7 +284,9 @@ export async function shipOutcome(
           why: `invalid: ${why}`,
           asked: 0,
           brokeWhenAnswered: null,
-          shippedAs: null
+          shippedAs: null,
+          asks: [],
+          asksFor: null
         };
       }
       direct = error;
@@ -286,7 +304,9 @@ export async function shipOutcome(
       why: "",
       asked: 0,
       brokeWhenAnswered: null,
-      shippedAs: identityOf(record, offered.designator)
+      shippedAs: identityOf(record, offered.designator),
+      asks: [],
+      asksFor: null
     };
   }
 
@@ -307,7 +327,16 @@ export async function shipOutcome(
     // The traceability refusal is the truest answer only when nothing else has
     // one: a record with no pins and no offered package really is unread.
     if (reason === null && held !== null) {
-      return { ships: false, shipsAnswered: false, why: held, asked: 0, brokeWhenAnswered: null, shippedAs: null };
+      return {
+        ships: false,
+        shipsAnswered: false,
+        why: held,
+        asked: 0,
+        brokeWhenAnswered: null,
+        shippedAs: null,
+        asks: [],
+        asksFor: null
+      };
     }
     return {
       ships: false,
@@ -315,7 +344,9 @@ export async function shipOutcome(
       why: `unsupported: ${(reason ?? "no land pattern").slice(0, 60)}`,
       asked: 0,
       brokeWhenAnswered: null,
-      shippedAs: null
+      shippedAs: null,
+      asks: [],
+      asksFor: null
     };
   }
   const cheapest = asks.reduce((best, ask) => (ask.needs.length < best.needs.length ? ask : best));
@@ -335,7 +366,9 @@ export async function shipOutcome(
     why: `needs ${fewest.map((need) => need.field).join(",")}`,
     asked: answered.ok ? answered.asked : fewest.length,
     brokeWhenAnswered: answered.ok ? null : answered.why,
-    shippedAs: answered.ok ? answered.shippedAs : null
+    shippedAs: answered.ok ? answered.shippedAs : null,
+    asks: fewest,
+    asksFor: cheapest.designator ?? null
   };
 }
 

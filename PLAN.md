@@ -634,3 +634,667 @@ fields: `landSpanMm` (22), `landPadLengthMm` (20), `landPadWidthMm` (20) and
 `leadSides` (15). Those four are where prompt work would move the number, and
 they are readable off pages the model is already being shown. Worth a look before
 paying for a run that measures the same gap again.
+
+---
+
+## Deferred: three items parked on 2026-08-24
+
+> Parked to build and connect the frontend (`forged-ui`). Nothing here is
+> blocked; it is sequencing, not difficulty. Resume from this section.
+
+### D1. Commit the extraction/oracle working set
+
+Five files carry finished, tested work and are uncommitted on `main`:
+`LEARNINGS.md`, `src/lib/__bench__/dimension-oracle.ts`,
+`src/lib/__bench__/dimensions.ts`, `src/lib/__tests__/rectangular-quad.test.ts`,
+`src/lib/extraction/models/prompt.ts`.
+
+They contain the two live wrong-footprint fixes and their tests, twenty new
+hand-read oracle entries, four `bench:dimensions` instrument fixes, and the
+prompt changes whose negative result is written up in `LEARNINGS.md` under
+2026-08-24. Split into logical commits. Do not push unless asked.
+
+### D2. TSV911 and TSZ121: the land whose centre is not on its terminal
+
+**Do not attempt this with prompt wording.** That route is measured dead: two
+well-evidenced field-guide changes, one with 2-of-2 supporting reads and a
+mechanism legible on the page, moved neither part, while run variance
+introduced five new misreads on parts nobody had touched. Written up in
+`LEARNINGS.md`, 2026-08-24.
+
+**What is actually wrong.** Both parts take the *thermal* land's 0.45 mm as a
+*lead* land's length, then correctly derive the span from that wrong number
+(2.80 - 0.45 = 2.35). TSV911 ships with its pads overlapping their terminals by
+0.05 mm where the drawing wants 0.35, about a seventh of the intended contact.
+Both parts ship today. Nothing in the product objects, because every number is
+individually plausible and no land overlaps another.
+
+**The structural check to try, on our own output, from numbers we already read.**
+The terminal is 0.425 mm long and ends at the body edge, so its centre sits
+1.0 - 0.425/2 = 0.79 mm from the package centre. We emit the land centred at
+2.35/2 = 1.175 mm. The land's centre is 0.39 mm outboard of a 0.425 mm
+terminal, so it is not on the terminal at all.
+
+Proposed invariant: *the centre of a lead land must lie somewhere on the
+terminal it solders to*, i.e.
+`|landSpanMm/2 - terminalCentre| < leadContactMm/2`, where `terminalCentre`
+comes from the body extent and the contact length. This invents no threshold,
+uses only values read off the drawing, and is a statement about our geometry
+rather than an argument with the document.
+
+**Validate before believing it.** Run it across the whole tuned corpus first;
+that is free. If it fires on parts whose footprints are correct, it is dead and
+should be recorded as dead, not softened with a fudge factor until it passes.
+Watch gullwing packages in particular, where the foot centre and the land
+centre relate differently than on a no-lead part.
+
+### D3. The blind set
+
+Still the only external validation. Every number the product reports is
+measured on 57 datasheets we chose ourselves. Waiting on part numbers picked by
+someone who did not build the corpus. Not actionable here.
+
+### Also still open (unchanged, lower priority)
+
+- **ISO7741 / DW0016B prints two complete land patterns**, an IPC nominal
+  (7.3 mm creepage) and an HV option (8.1 mm), and does not say which applies.
+  The product silently takes whichever the model returned. On an isolator this
+  is a safety-relevant choice, so it needs a question in the chooser rather than
+  a default. See `forge-datasheet-first-lands`.
+
+---
+
+## Frontend, connected and checked in a browser, 2026-08-24
+
+> **Status: done.** The `forged-ui` branch is closed out and `main` runs end to
+> end in a real browser. What follows is the record, not remaining work.
+
+### What `forged-ui` actually was
+
+Not a separate frontend. It branched from `a896c62`, nine commits behind main,
+and carried exactly one commit of its own, `d851859`, a restyle of the step
+headers and the colour tokens. Everything else in a diff against main is main
+being ahead: the settings gate, `chosenPackage`, the retry path and the wider
+`/api/lookup` all postdate the branch point.
+
+It builds clean on its own (`tsc` and `next build` both exit 0). The restyle was
+ported onto main rather than reimplemented: `globals.css` applied with a
+three-way merge, and all six step headers converted to the stacked eyebrow and
+title layout, main having a "Step 00" settings section the branch never had.
+Nothing else on that branch is worth taking, and it can be deleted.
+
+### The defect that mattered
+
+`next.config.ts` set `script-src 'self'`. Next boots the App Router client from
+INLINE script elements, so every one was blocked, React never hydrated, and the
+page was served as dead HTML. That is the reported "cannot upload files": the
+input had no handler on it.
+
+Fixed with a per-request nonce in `src/middleware.ts`, which is stricter than
+the alternative. Then fixed a second time with `force-dynamic` in
+`src/app/layout.tsx`, because a statically prerendered route has no request to
+take a nonce from and the PRODUCTION build was still dead while `next dev`
+worked. Written up in `LEARNINGS.md`.
+
+### Three more, all found by driving the app rather than by reading it
+
+- The settings gate refused a file and then had no way forward, because
+  re-picking the same file fires no `change` event. The file is now held and run
+  when the gate opens, and the input is cleared on every change.
+- An out-of-range setting was dropped in silence while the gate went on
+  demanding the field. `outOfRange` now names the field and its limit.
+- The chooser printed "TSOT, 23 leads" on a five-lead part, and underneath that,
+  `5-Lead SOT` and `5-Lead TSOT` were declaring NO lead count on documents that
+  write it in words. Measured neutral on the tuned corpus, both ways.
+
+### The instrument, which is the part worth keeping
+
+`npm run bench:browser` loads the production build in a real browser and fails
+on any console error, uncaught exception, blocked request or 4xx. It was
+validated by reintroducing both CSP defects and confirming it fails and names
+the cause, per the standing rule about instruments that have never failed.
+
+It separates what MUST happen from what a document merely offers, and prints the
+optional paths a run did not exercise, so a set of datasheets that quietly stops
+covering the review panel or the question flow says so instead of passing.
+
+`npm run lint` also works again. `eslint-config-next` is still eslintrc-format
+and loads `@rushstack/eslint-patch`, which refuses to start under ESLint 9.39;
+the config is now built from `@next/eslint-plugin-next`'s flat export directly.
+
+---
+
+# Plan: read correctly, ship correctly, ask only what is genuinely missing
+
+> Rewritten 2026-08-25. The first draft was organised around instruments and
+> "failing loudly", which is not the goal. The goal is that the product reads
+> what the datasheet prints, ships a correct bundle from it, and asks a person
+> for a number ONLY when the document genuinely does not carry it, and then asks
+> for the right number.
+>
+> Each section below is one of those outcomes, with the target stated as a
+> number that is currently wrong, and the judge named.
+
+## The judge is the hand-read oracles
+
+We already have ground truth, built by a person reading drawings:
+
+```
+DIMENSION_ORACLE   51 drawings, 504 hand-read values, 28 with a printed land pattern
+PINOUT_ORACLE      38 hand-read pin tables
+```
+
+**A value in the oracle is a value the datasheet demonstrably prints.** That
+makes every question the product asks falsifiable: ask for a field the oracle
+holds for that drawing, and the question is provably wrong. No judgement call,
+no sampling, no spending.
+
+Everything below leans on that, which is why extending the oracle is not
+bookkeeping but the thing that makes the rest decidable.
+
+## 1. Ask only when the datasheet genuinely does not have it
+
+**Target: zero questions for a value the oracle says is printed. Unknown today,
+never measured.**
+
+For every part, take the questions the product would ask and check each field
+against that part's oracle entry. Any hit is a false question: the number is on
+the drawing, a person has read it, and we are asking anyway.
+
+Each hit is then one of two defects, and the check says which:
+
+- the model returned it and we discarded it (the `asPackage` capital letter, the
+  numberless pad row)
+- the model did not return it, and the value is printed, so the reading is at
+  fault and the page is known
+
+Free, deterministic, and it turns "why is it asking me for this?" from a
+judgement into a list. **This is the first thing to build**, because it is the
+exact complaint and it is answerable with data already on disk.
+
+## 2. When we do ask, ask for the right thing
+
+**Target: every question is answerable, and answering it completes the export.**
+
+Two failures here, both seen:
+
+- A question with no possible answer. `leadForm` was offered two of its three
+  values, so a no-lead package could not be described. Written up 2026-08-17.
+- A question that is answered and changes nothing.
+
+`shipOutcome` already supplies answers and checks the export really completes,
+which covers the second. The first needs the question CATALOGUE audited: for
+each field the product can ask for, can a correct answer be expressed in the
+form we accept?
+
+Free. Small, and it has already produced one defect.
+
+## 3. Read correctly
+
+**Target: `bench:dimensions` WRONG goes to zero. It is 16 today, out of 482
+compared.**
+
+Every one of those sixteen is a number that would place copper. They are already
+identified by part and field. Two acceptable outcomes per item: read it right,
+or refuse it and ask. Emitting a wrong number is the only unacceptable one.
+
+Related and known: three parts take a thermal land's dimension for a lead land's
+and derive a plausible span from it. TSV911 ships with its pads overlapping
+their terminals by a seventh of what the drawing intends. Prompt wording has
+been measured dead on these; the remaining routes are structural.
+
+## 4. Ship correctly
+
+**Target: every shipping part's copper is checked against a hand-read drawing.
+47 of 52 today.**
+
+`bench:copper` measures emitted pads back out and reports no disagreement with
+the record, and `bench:dimensions` checks the record against the drawing. The
+chain is only closed where the drawing has been read, so the five unchecked
+shipping parts are the gap: LM139AQML-SP, AD590, VA10820, STM32G071RB,
+STM32F103C8.
+
+## 5. Never discard what was read
+
+**Target: every discarded value is explainable in one sentence.**
+
+Six of six defects on 2026-08-24/25 were this: pins thrown away over a
+thermal-pad row, eight dimensions blanked over a capital letter, a whole Altium
+export refused over a character the format holds.
+
+`bench:discards` does this for pins and found four broken parts in a second.
+Generalise it to every field, grouped by the reason the code gives. A discard
+with a stated deliberate rule behind it is fine. One without is a defect.
+
+## 6. Never claim what was not checked
+
+**Target: no sentence asserts what a document contains unless we looked and can
+say where.**
+
+We told a user their datasheet printed no footprint while displaying the page
+that printed it. Enumerate every sentence of that kind and either produce the
+evidence or rewrite it to say what we did.
+
+## 7. Extend the oracle, because it decides everything above
+
+**Target: a hand-read drawing for every part the product ships, and a hand-read
+pin table for every part it claims a pinout for.**
+
+Ten cached parts have no oracle entry at all, so nothing about them can be
+judged right or wrong: AD590, DF13-4P-1.25DSA, LM139AQML-SP, RTAX2000S,
+STM32F103C8, STM32G071RB, TSZ121, UT32M0R500, VA10820, VA41630.
+
+This is the slow part and it is a person reading drawings. It is also what makes
+sections 1, 3 and 4 decidable, so it paces the whole plan.
+
+## Order, and why
+
+1. **Section 1**, the false-question list. Free, answers the actual complaint,
+   and its output is the work list for sections 3 and 5.
+2. **Section 5**, generalised discards. Free, and section 1 will point straight
+   at the cases.
+3. **Section 6**, the claims audit. Free, small, mostly reading.
+4. **Section 2**, the question catalogue. Free, small.
+5. **Section 3 and 4**, the sixteen wrong numbers and the five unchecked parts.
+   Needs section 7 to keep going.
+6. **Section 7** runs alongside all of it.
+
+Everything before the paid work is free and deterministic. Nothing here needs a
+model call until the reading fixes in section 3 are being verified.
+
+## What is deliberately NOT in this plan
+
+**Variance measurement.** The same datasheet read three times gave three
+different records, and the error bar on every corpus figure is unmeasured. It is
+worth knowing eventually and it is not worth knowing yet: three of the six
+defects looked exactly like variance until they were opened, and each turned out
+to be a discard. Measure the error bar after the defects it is hiding are gone.
+
+**A promise that this finds everything.** The Content-Security-Policy defect
+made the whole application dead for its entire life and was invisible to the
+type checker, 760 tests, the production build and every route test. It was found
+by loading the page in a browser for the first time. The next one will be
+somewhere nobody has looked either, and the only reliable finder of those so far
+has been a person using the product and refusing to believe it.
+
+
+---
+
+# Executed, 2026-08-25
+
+The seven sections above were worked in the order they set out. What follows is
+what each one actually measured, because a plan whose outcome is not written
+down beside it is a plan that gets re-run.
+
+## The headline numbers, before and after
+
+```
+                              before   after
+SHIPS UNAIDED                 44/57    45/57      one click, nothing asked
+SHIPS A BUNDLE                52/57    52/57      after choosing and answering
+VERIFIED (copper hand-read)   47/52    52/52      every shipping part
+PACKAGE FAMILY                27/28    28/28      the designator names a real package
+packages the chooser offers   162      196        of which buildable, 76 -> 89
+bench:dimensions CORRECT      466      502
+bench:dimensions WRONG        16       21         the instrument got better, see below
+silent discards               28       0
+false questions               unknown  1
+tests                         770      784
+```
+
+WRONG rising is not a regression. Five drawings were hand-read into the oracle
+for the first time (section 7), which made nine previously unjudgeable numbers
+checkable, and four of those were wrong. Four other WRONG rows were fixed. The
+product got better and the instrument got better faster.
+
+## 1. Ask only when the datasheet genuinely does not have it - BUILT, 1 found
+
+`npm run bench:questions`. For every part it takes the questions the product
+would actually ask - from `shipOutcome`, so there is one definition of "what
+does the product ask" - and checks each field against that part's hand-read
+drawing. A hit is a false question, classified three ways: HELD on the record
+and asked anyway, DROPPED by the merge, or never read.
+
+Validated by injecting a land pattern into an oracle entry and confirming four
+questions flipped to FALSE, then reverting.
+
+**Result: 18 questions across 7 parts. 12 legitimate (a person read that drawing
+and it prints nothing), 4 settings, 1 unjudgeable, 1 FALSE.**
+
+The false one is `STM32G071RB.bodyHeightMm`. Its LQFP64 mechanical data prints
+`A - - 1.60` on page 131, and the model asked to be shown pages 130 and 132 -
+the outline figure and the notes - and never saw the table between them.
+
+It is left open deliberately. The category is 4 of 57 datasheets, all of which
+carry three to six such tables, so any fix has to be page-scoped, and the page
+in question was never rendered. Reaching it means changing the request, which
+invalidates all 2294 cached model answers and turns every free bench into a paid
+one. That is a spend decision, not a code decision.
+
+## 2. When we do ask, ask for the right thing - CLOSED
+
+The catalogue of askable fields is now a value, `REQUIRED_INPUT_FIELDS`, and the
+export route derives its accepted millimetre fields from it rather than
+repeating the list. The list had fallen behind the generator twice before, each
+time producing a question whose answer the route rejected as unknown.
+
+`question-catalogue.test.ts` proves the partition: every askable field is
+answered by exactly one route, nothing accepted is unasked, and each of the three
+shaped fields has its branch.
+
+The other half - a question that is answered and changes nothing - was already
+computed by `shipOutcome` as `brokeWhenAnswered` and **printed by nothing**. The
+one outcome the input model cannot tolerate was the one no run reported. It is
+now printed, and validated by forcing it. **Result: zero.**
+
+## 3 and 4. Read correctly, ship correctly - VERIFIED 47/52 -> 52/52
+
+Five drawings hand-read: `NAJ0020A`, `H-03-1`, `CQZ12805`, `5W_LQFP64_ME_V1`,
+`A0B9`. Every shipping part's copper is now checkable against a page a person
+has looked at. Two of the five were shipping wrong copper and nothing could have
+said so.
+
+**Fixed - the inner gap read as the centre span.** Four parts (DRV8825, ISO7741,
+TPS54360, UCC27524) reported the distance between the INNER EDGES of two land
+rows where the field asks for centre to centre. A gull-wing foot sits beyond the
+body edge, so its land rows are further apart than the body is wide; a reading
+that does not clear the body is the gap. True on 22 of 22 hand-read gull-wing
+footprints, and false only for `nolead` packages, whose terminals are on the
+underside - which is the physical basis, not a hedge. The centre span is the gap
+plus one land, and that lands on the hand-read value exactly on all four.
+Corrected on the RECORD, not in the generator, so the number a reviewer sees is
+the number that places the copper.
+
+**Fixed - a land pattern read out of a document that prints none.** The oracle
+can now assert absence per field (`printsNothingFor`), which `leadContactMm` has
+been able to do since the oracle existed and nothing else could. STM32G071RB was
+carrying a 1.2 x 0.3 land on an 11.5 mm span cited to its LQFP64 notes page; that
+section is three pages and draws no footprint at all.
+
+**Still wrong, measured and named, 21 rows.** The two worth naming:
+
+- `STM32F103C8` emits 0.75 mm lands on a 6.55 mm span where its own printed
+  footprint says 0.55 on 6.75. Both readings sum to the drawing's 7.30 mm outer
+  extent, so the model split it in the wrong place: 0.75 is the corner clearance
+  between one row and the row at right angles to it.
+- `VA10820` reads a 15.6 mm lead span where the drawing prints 13.97. 15.60 REF
+  is on the cross-section, not the plan view.
+- `AD590` builds three collinear pads on a 2.54 mm pitch for a TO-52 whose three
+  leads sit on a 0.050 inch grid around the can's centre. The oracle now records
+  that the drawing states no lead pitch, so this reads as WRONG rather than as
+  nothing.
+
+## 5. Never discard what was read - 28 -> 0
+
+`bench:discards` was generalised from pins to every field and to the per-package
+tables, which is where a family datasheet's copper actually comes from and which
+had no reason channel at all. Three defects, all of them the same shape:
+
+- **LT1013 lost two whole packages.** Its 8-lead and 14-lead PDIPs came back
+  under one drawing code, and the merge joined on that key with no check of any
+  kind, so the second entry overwrote the first's slot. Five packages reached the
+  record where the document describes seven. A key match now has to survive a
+  lead-count contradiction.
+- **RHFL4913A was split in half by reading more.** Both passes call the package
+  `SMD5C`; pass 2 also read its drawing code, which sent it to a different key
+  where nothing could establish identity. The pinout ended up in one entry and
+  the measurements in another. Two entries the document itself calls by the same
+  name are now an identity.
+- **`SMD5C` was read as a sibling device.** It is letters then digits and five
+  characters long, which is the shape of a part number, so the entry was
+  discarded as belonging to another part. A caption naming a device always names
+  a package beside it; a caption that is nothing but a device-shaped token is
+  naming its own package.
+
+And a fourth, found while chasing them: **the chooser offered only what the
+ordering table named.** 18 of 57 parts held a complete, located pin table for a
+package the user could not pick - 34 packages in all. The ordering guide is one
+of the two places a datasheet names its packages and it is the one that goes
+stale. Offered packages went 162 to 196, buildable 76 to 89, and every offered
+label is now required to resolve back to the table it was made from.
+
+## 6. Never claim what was not checked - CLOSED
+
+Six sentences asserted what a document contains without evidence. Each now says
+what the reading returned, which is both true and more useful: "this was not
+read" tells a user to look, "the datasheet does not have it" tells them to stop.
+
+`document-claims.test.ts` scans the source and refuses the phrasings. Scoped to
+what a user sees: the extraction prompt is exempt, because telling a model to
+answer null when it sees no drawing is the correct instruction. Validated by
+reintroducing one of the removed sentences.
+
+## 7. Extend the oracle - 10 parts unjudgeable -> 5
+
+The five that block nothing remain: DF13-4P-1.25DSA, RTAX2000S, TSZ121,
+UT32M0R500, VA41630. None of them ships.
+
+## What did NOT get done, and why
+
+**`bench:dimensions` WRONG is 21, not 0.** Every one is named above or in the
+run output. The remainder are model misreads of a rendered drawing, and the
+cheap fixes are used up: the ones with a general rule behind them have been
+taken. Moving the rest means changing what is asked or how the page is shown,
+which invalidates the model cache and costs money to re-measure.
+
+**The hold-out has not been re-run.** Nothing here was tuned against it and
+nothing in it was opened. It is a paid run and the decision to spend is not mine.
+
+
+---
+
+# Pin tables, 2026-08-25
+
+Fourteen shipping parts had a pinout nothing could contradict. Eleven are now
+hand-read. **Ten were correct and one was wrong on every pin.**
+
+    correct   LD1117  LTC3105  MAX232  NCP1200  TSV321  PCF8574
+              TPS54360  TS922  TSV911  TSZ121
+    WRONG     LT1013
+
+Plus OPA2277, whose entry already existed and had never been compared: pins 7 and
+8 swapped, `V+` and `Out B`.
+
+## The check could not see most of its own oracle
+
+`PIN NAMES: 23/24 parts match` had been printed for weeks. The oracle had 44
+entries and **twenty were never compared to anything** - `checkNames` read
+`record.pins`, which is empty by design on a family datasheet. Same defect
+`bench:dimensions` carried until 2026-08-22, same cause, same fix.
+
+    PIN NAMES   23/24 (of 44 entries)  ->  36/40 (of 49 entries)
+
+## The model read LT1013 correctly and the merge discarded it
+
+    pass 1   "8-Lead Plastic SO"              1:OUTPUT A 2:-IN A 3:+IN A 4:V- ...
+    pass 2   "8-Lead Plastic Small Outline"   1:+INA 2:V- 3:+INB 4:-INB ...
+
+Pass 2 matches the hand read exactly. Pass 1 had copied the PDIP's assignment
+onto the SO entry - it gives byte-identical lists to `8-Lead Plastic SO` and
+`8-Lead PDIP`. `mergePackageEntries` prefers pass 1 for pin tables.
+
+**Not changed.** That precedence has three measured parts behind it and altering
+it on the strength of one is the tailoring RULES.md 4 forbids. Two discriminators
+were considered and rejected: "identical pin lists within one pass" fires on
+legitimate cases, and "prefer the pass that cited a rendered page" is the flat
+field's rule, which per-package entries have no page to apply. **This needs a
+corpus measurement, and it is the highest-value open item.**
+
+## Still unread
+
+`TPS7A4700` (20-pin VQFN), `UT54LVDS217` (48-pin), `VA10820` (128-pin), plus the
+seven printed footprints and TSZ121's outline drawing.
+
+## A flaky test, named as such
+
+One run in seven failed. It did not reproduce across six further runs and the
+failing test was not captured, so it is recorded as observed rather than
+diagnosed. `LEARNINGS.md` already says to run the suite more than once because
+`node:test` parallelises; this is that, and it is not evidence the tree is clean.
+
+
+---
+
+# Making the downstream code correct, 2026-08-25
+
+The question: how do we make sure everything between "we read it" and "we ship
+it" cannot lose or corrupt what was read.
+
+## What every defect this week had in common
+
+Nine defects were found on 2026-08-24 and 25. Not one of them was a wrong
+calculation. Every single one was the pipeline **making a decision and not
+recording that it had made one**:
+
+    pins discarded over a thermal-pad row          a DROP nobody was told about
+    8 dimensions blanked over a capital letter     a DROP nobody was told about
+    an Altium export refused over one character    a DROP nobody was told about
+    two LT1013 packages destroyed by a merge       a CHOOSE nobody was told about
+    RHFL4913A split in half by reading more        a CHOOSE nobody was told about
+    34 packages the chooser never offered          a DROP nobody was told about
+    4 land spans read as the inner gap             a TRANSFORM nobody was told about
+    a land pattern read from a page printing none  a DROP nobody was told about
+    LT1013's netlist, wrong on every pin           a CHOOSE nobody was told about
+
+The code was not careless. Each site was written deliberately, with a comment,
+and was correct for the case in front of its author. What was missing in all nine
+was any way to ask "what did the pipeline decide today, and why".
+
+## The three kinds of site, and their coverage now
+
+Every place a read value can change has one of three shapes. Counted across
+`run.ts`, `merge.ts` and `exporters.ts`:
+
+    DROP       a value goes in and nothing comes out
+               10 sites report a reason, 35 are silent
+    CHOOSE     two values go in and one comes out
+               65 sites, and NONE of them report anything
+    TRANSFORM  a value goes in and a different one comes out
+               2 sites report (statedMaxHeightMm, the inner-gap span), the rest do not
+
+**CHOOSE is the whole gap.** It is where the wrong netlist lived, where LT1013's
+two packages died, and where RHFL4913A was split. Sixty-five sites, no register,
+no measurement, no way to see what happened.
+
+## Phase 1 - one register, and every site declares into it
+
+Add a single decision log carried on the record: field, package, what came in,
+what went out, and the one-sentence reason. Then convert the sites:
+
+  1. the 65 CHOOSE sites, highest value first: pins, then the fields that place
+     copper, then everything else
+  2. the 35 silent DROP sites
+  3. the TRANSFORM sites
+
+This is mechanical work on code that already exists. It changes no behaviour.
+
+What it buys is the thing that was missing every time: **"is downstream
+correct?" stops being a question about 178 branches of control flow and becomes a
+question about a list of decisions, which a person can read.** A decision with no
+justification in the register is a defect, exactly as a silent discard is now.
+
+## Phase 2 - collapse the facts that are written twice
+
+A distinct class, hit five times this week: **one fact expressed in two places,
+which then drift.** Each was invisible until something broke.
+
+    the thermal pad's number       "EP" in the check, pinCount+1 in the emitter
+    the shipping pin table         flat record in the check, per-package in the product
+    the shipping dimensions        flat record in the check, per-package in the product
+    the askable field list         a union in exporters, a literal list in the route
+    the package identity           caption in one path, drawing code in another
+
+These do not need a register, they need deleting. One definition, imported by
+both users. `REQUIRED_INPUT_FIELDS` was done this way on 2026-08-25 and the
+drift it allowed is now impossible rather than merely absent.
+
+Sweep the pipeline for the pattern: any constant, key or identity that appears in
+two files is a candidate, and the test is whether one could change without the
+other.
+
+## Phase 3 - rank the CHOOSE sites by what they touch
+
+Not all 65 matter equally. Ranked by consequence:
+
+  1. **pins** - a wrong choice is a wrong netlist under a real part number, which
+     no geometric check can see. One site, now fixed and pinned.
+  2. **the copper fields** - landPad*, landSpan*, pitch, leadSpan, thermalPad*.
+     A wrong choice is a wrong footprint. `bench:copper` measures these back out
+     of the emitted pads, so a bad choice here is at least catchable.
+  3. **the body fields** - silkscreen and courtyard only. Wrong is ugly, not
+     scrap.
+  4. **everything else** - names, notes, metadata.
+
+Work them in that order and stop when the remaining ones cannot place copper.
+
+## What this gives you, and what it does not
+
+It gives you: every loss and every choice in the pipeline visible by
+construction, the same way silent discards became visible and immediately
+produced three fixes. It makes the class of bug that has caused every defect this
+week detectable the moment it is introduced rather than months later.
+
+It does not give you: a promise that every choice is the RIGHT one. LT1013 needed
+a hand-read pinout to know which of two readings was correct, and no amount of
+logging supplies that. Visibility is the precondition, not the whole answer - but
+every one of the nine was invisible first, and none of them survived being seen.
+
+
+# The downstream audit, executed, 2026-08-25
+
+The plan above ranked the decision surface and said CHOOSE was the whole gap.
+Executing it found something the count did not predict: **the defects were not in
+the CHOOSE sites at all.** The one CHOOSE site named as highest risk measured
+clean over the whole corpus, and five real defects turned up in places the count
+did not cover - axis mappings, an unchecked output, and a validator that two
+callers ran differently.
+
+## Method
+
+Build every package the corpus documents, offline and free, and look at the pads.
+100 footprints in about forty seconds. Then compare what the chooser promises
+against what the export actually does, for every option.
+
+## Fixed
+
+| | |
+|---|---|
+| LT1013 TO-5 built 8 pads in a 35.56 mm line on an 8.95 mm can | refused |
+| a body grown to hold its lands, redrawing VA10820 0.4 mm too large | backed out |
+| every TO-220 / TO-92 / SIP drawn 90 degrees from its own pins | transposed |
+| a gapped pin table shipped N lands against fewer symbol pins | `symbolViolations` |
+| the chooser offered options the export then refused | same invariants both sides |
+| `pinCount + 1` written out by hand in four places | one `thermalPadNumber` |
+
+## Measured clean
+
+- `run.ts:596`, the pass-2-overwrites-pass-1 dimension spread: 89 joins, pass 1
+  contributes nothing in any of them.
+- 81 of 81 "ships" options export. Before the chooser fix, 81 of 83.
+- The refusal census is questions, not defects.
+
+## Cost
+
+No model calls. No spend. Tests 786 to 791, all green; typecheck and lint clean;
+`bench:copper`, `bench:discards` and `bench:guards` unchanged. One package lost
+its "ships" label and it was the wrong one.
+
+## Corrected the same day
+
+The first version also GREW the drawn body on a dual or quad whose lead row did
+not fit it. `bench:dimensions` disproved the premise: VA10820's body reading is
+correct, and its drawing prints a 12.40 mm lead row on a 12.00 mm ceramic body,
+because a brazed lead frame overhangs. The growth was backed out, the single-row
+bound widened to `body + pitch` from that same measured overhang, and the property
+test scoped to single rows.
+
+## What is NOT closed
+
+- **AD590's TO-52.** Three leads on a 2.54 mm bolt circle, built as three
+  collinear pads. The row (5.08 mm) FITS the body (5.31 mm), so no invariant can
+  prove it wrong: the record honestly describes a consistent single row. This is a
+  reading defect, not a downstream one, and it needs a circular arrangement to fix
+  properly.
+- **Grid arrays.** BGA and LGA pinouts are correctly refused at the pin table, but
+  their packages are still OFFERED by the chooser and can never build.
+- The remaining wrong dimension rows in `bench:dimensions`.

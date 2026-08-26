@@ -150,8 +150,29 @@ export function findVendorLandPattern(doc: DatasheetText, family?: string): Vend
  * now gets them; this function's job is only to say "there is one here that the
  * text layer cannot parse" so the user is never told a datasheet prints no
  * footprint when it prints one on a numbered page.
+ *
+ * ## The vocabulary, widened on evidence 2026-08-25
+ *
+ * `footprint example` alone is ST's phrasing. Scanned over every line of the 57
+ * tuned datasheets, it matched 19 and MISSED 126. A user reported the failure
+ * it caused: an LTC6563 prints "RECOMMENDED SOLDER PAD PITCH AND DIMENSIONS" on
+ * page 33, dimensioned, and the screen showed them that page while saying the
+ * datasheet printed no footprint.
+ *
+ * The additions are the headings the corpus actually prints: TI's `LAND PATTERN
+ * EXAMPLE` (39 lines), `RECOMMENDED LAND PATTERN`, `RECOMMENDED FOOTPRINT`,
+ * `RECOMMENDED SOLDER PAD`. Adding TI's is safe because this function is only
+ * consulted when the callout reader, which is built on TI's conventions,
+ * already came back with nothing.
+ *
+ * Three near misses are deliberately EXCLUDED, because each names a footprint
+ * without being a drawing of one: `TABLE N. FOOTPRINT DATA`, the ordering
+ * table's `IPC FOOTPRINT TYPE PACKAGE CODE`, and revision-history lines reading
+ * `MECHANICAL DATA UPDATED AND ADDED FOOTPRINT DATA`. Pointing a user at a
+ * revision history is the same defect as pointing them at nothing.
  */
-const UNREADABLE_FOOTPRINT_HEADING = /\bfootprint example\b/i;
+const UNREADABLE_FOOTPRINT_HEADING =
+  /\b(?:land pattern example|footprint example|recommended land pattern|recommended footprint|recommended solder pad|solder pad pitch and dimensions)\b/i;
 
 /** Dotted leaders, the signature of a table-of-contents entry. */
 const TOC_LEADER = /\.{4,}|(?:\.\s){4,}/;
@@ -160,6 +181,21 @@ const TOC_LEADER = /\.{4,}|(?:\.\s){4,}/;
 export function findUnreadableFootprint(doc: DatasheetText, family?: string): number | null {
   const wanted = family?.trim().split(/\s+/)[0]?.toUpperCase();
   const headings = [...doc.text.matchAll(new RegExp(UNREADABLE_FOOTPRINT_HEADING.source, "gi"))];
+
+  /**
+   * Candidates that are drawings rather than contents lines, kept so the family
+   * gate can be relaxed when there is only ONE of them.
+   *
+   * The gate exists so a multi-package datasheet does not point at another
+   * package's footprint, which is right. On a document that draws exactly one,
+   * it is pure loss: page 33 of an LTC6563 does not repeat "24-Lead QFN" above
+   * its solder pad drawing, so the only footprint in the document failed a check
+   * written for documents with several.
+   *
+   * One candidate is not a choice, so there is nothing to guess between. Two or
+   * more and the gate still decides, because then picking would be a guess.
+   */
+  const drawings: number[] = [];
 
   for (const heading of headings) {
     // The CONTENTS names every figure before the document draws any of them, so
@@ -170,6 +206,8 @@ export function findUnreadableFootprint(doc: DatasheetText, family?: string): nu
     // list of figures instead of the figure.
     const after = doc.text.slice(heading.index, heading.index + 80);
     if (TOC_LEADER.test(after)) continue;
+    const page = doc.pages.find((candidate) => heading.index < candidate.end)?.page ?? null;
+    if (page !== null && !drawings.includes(page)) drawings.push(page);
 
     // The caption names the package immediately before the phrase, as in
     // `LQFP64 - Footprint example`. Punctuation is stripped so `LQFP-64`,
@@ -180,10 +218,12 @@ export function findUnreadableFootprint(doc: DatasheetText, family?: string): nu
       const seen = caption.toUpperCase().replace(/[^A-Z0-9]/g, "");
       if (!seen.includes(bare)) continue;
     }
-    return doc.pages.find((candidate) => heading.index < candidate.end)?.page ?? null;
+    return page;
   }
 
-  return null;
+  // Nothing named the family, but the document drew exactly one footprint. See
+  // `drawings`.
+  return drawings.length === 1 ? drawings[0]! : null;
 }
 
 /** Whether any vendor dimension sits within tolerance of a computed value. */

@@ -27,7 +27,17 @@ function partWith(partNumber: string): ResolvedPart {
     vendorLandPattern: null,
     exposedPad: false,
     pinCount: 8,
-    pins: [],
+    // A REAL PIN TABLE, because the export refuses one that is missing.
+    //
+    // This was `[]`, which builds eight lands beside a symbol with no pins at
+    // all - a bundle whose two halves describe different parts. `symbolViolations`
+    // reports it as of 2026-08-25 and `resolveForExport` has always refused it,
+    // so the fixture was exercising a record the product cannot produce.
+    pins: Array.from({ length: 8 }, (_, index) => ({
+      number: String(index + 1),
+      name: `P${index + 1}`,
+      electricalType: "passive" as const
+    })),
     dimensions: {
       bodyLengthMm: 4.9,
       bodyWidthMm: 3.9,

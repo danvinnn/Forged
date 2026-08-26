@@ -24,6 +24,7 @@
  *   SPAN     opposing rows sit `landSpanMm` apart, centre to centre
  *   SIZE     every land is the size the land pattern specified
  *   PAD      the exposed pad's long axis runs along the body's long axis
+ *   EP SIZE  the exposed pad is the size the record read for it
  *
  * Where `DIMENSION_ORACLE` has a `land` entry it additionally compares the
  * emitted span and pad size against the hand-read drawing, which is the only
@@ -36,6 +37,7 @@ import { buildFootprintGeometry, FootprintUnavailableError } from "../exporters"
 import { DIMENSION_ORACLE } from "./dimension-oracle";
 import { sameOutlineCode } from "../packagevariants";
 import { isStitched, replayRecords } from "./replay";
+import { thermalPadNumber } from "../geometry";
 import type { Pad } from "../geometry";
 import type { ResolvedPart } from "../types";
 
@@ -148,12 +150,12 @@ function checkPart(
   // the pad `pinCount + 1` and `geometryViolations` requires exactly that, so it
   // is the one identification that cannot drift. `EP` is kept for records that
   // carry a vendor label.
-  const thermalPadNumber = String(part.pinCount + 1);
+  const padNumber = thermalPadNumber(part.pinCount);
   const lands = pads.filter(
     (pad) =>
       pad.number !== "EP" &&
       pad.mounting === "smd" &&
-      !(part.exposedPad && pad.number === thermalPadNumber)
+      !(part.exposedPad && pad.number === padNumber)
   );
   if (lands.length === 0) return findings;
 
@@ -238,7 +240,19 @@ function checkPart(
 
   // THE EXPOSED PAD'S AXIS. It shipped turned ninety degrees on 2026-08-16 and
   // still fitted between the lead rows, which is why nothing caught it.
-  const ep = pads.find((pad) => pad.number === "EP");
+  //
+  // IDENTIFIED THE WAY THE EXCLUSION ABOVE IDENTIFIES IT, which is by number.
+  // This looked for `pad.number === "EP"` and `emitThermalPad` numbers the pad
+  // `pinCount + 1`, so it matched nothing: **the check written to stop a rotated
+  // thermal pad shipping had never run, on any part, since the day it was
+  // added.** The file's own comment ninety lines up says which number the
+  // emitter uses, and this line disagreed with it.
+  //
+  // Found 2026-08-25 by forcing the condition true and getting zero findings.
+  // A check that cannot fail is worse than no check: it reports a clean sheet
+  // for something nobody is looking at.
+  const thermalPad = pads.find((pad) => part.exposedPad && pad.number === padNumber);
+  const ep = thermalPad ?? pads.find((pad) => pad.number === "EP");
   const epLength = part.dimensions.thermalPadLengthMm;
   const epWidth = part.dimensions.thermalPadWidthMm;
   const bodyLength = part.dimensions.bodyLengthMm;
@@ -258,6 +272,28 @@ function checkPart(
             `its long axis runs across the body's`
         );
       }
+    }
+  }
+
+  // AND THE PAD'S SIZE, not just its axis.
+  //
+  // The axis check above has been here since the pad shipped rotated ninety
+  // degrees, and it only ever asked which way round the pad is. Nothing asked
+  // whether it is the size the record says. That is copper - on a QFN it is the
+  // largest single piece of copper in the footprint and the one the part is
+  // soldered by - built from two values that were READ, on a path of its own
+  // that none of the land checks above touch.
+  //
+  // `thermalPadLengthMm` runs along the same axis as `bodyLengthMm`, which the
+  // placer steps along Y, so it is the pad's HEIGHT and the width is its X. The
+  // axis mapping is stated because this codebase has paid three times for a
+  // convention held in one module.
+  if (ep && epLength !== null && epWidth !== null) {
+    if (!near(ep.heightMm, epLength) || !near(ep.widthMm, epWidth)) {
+      record(
+        "EP SIZE",
+        `exposed pad emitted ${ep.widthMm} x ${ep.heightMm}, record says ${epWidth} x ${epLength} (width x length)`
+      );
     }
   }
 

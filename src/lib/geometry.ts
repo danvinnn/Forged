@@ -112,6 +112,23 @@ export interface ThermalVia {
   padMm: number;
 }
 
+/**
+ * The pad number an exposed thermal pad is given: one past the last lead.
+ *
+ * ONE DEFINITION, because this was written out by hand in four places and two of
+ * them had already drifted. `bench:copper` looked for a pad numbered `"EP"` while
+ * `emitThermalPad` numbers it `pinCount + 1`, so the check written to catch a
+ * rotated thermal pad matched nothing and had never run on any part since the day
+ * it was added.
+ *
+ * The convention itself: a vendor label like `EP` or `PAD` cannot be used,
+ * because `geometryViolations` requires the pad set to be exactly 1..N plus this
+ * one, and every CAD tool expects the same.
+ */
+export function thermalPadNumber(pinCount: number): string {
+  return String(pinCount + 1);
+}
+
 /** What the footprint was computed from, carried through to every output. */
 export interface FootprintProvenance {
   family: string;
@@ -131,6 +148,22 @@ export interface FootprintProvenance {
    */
   centreToCentreCrossMm?: number;
   pitchMm: number;
+  /**
+   * The shape the lands were actually laid out in.
+   *
+   * Recorded rather than re-derived. `datasheetLayout` decides this from
+   * `leadSides` and the pad placement follows it, so anything downstream that
+   * needs to know which axis a lead ROW runs along has to either be told or
+   * guess from the coordinates. Guessing is what `geometryViolations` did on its
+   * first attempt at the row-fits-body invariant, and it read a top-row land and
+   * a bottom-row land that happened to share an x as a single 14.9 mm column on
+   * a 12 mm body: a false violation on a correct footprint.
+   *
+   * A reviewer reading the provenance block is owed it for the same reason they
+   * are owed the pitch and the span: it is a decision this generator made about
+   * their package, and it is not otherwise stated anywhere in the output.
+   */
+  arrangement: "single" | "dual" | "quad";
   /**
    * What was READ OFF THE DATASHEET and then thrown away on the way to this
    * footprint. Empty on the ordinary path.

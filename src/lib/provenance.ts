@@ -38,3 +38,39 @@ export function isUntraceable(field: Extracted<unknown>): boolean {
     field.citation === null
   );
 }
+
+/**
+ * A value a person typed in, with the reader's provenance removed.
+ *
+ * ## Why the citation must go
+ *
+ * A citation is a promise that the value can be found at that place in the
+ * document. When a person CORRECTS a field, they are saying the reader's value
+ * was wrong, so the page it was read from is the page the wrong value came
+ * from. Carrying that citation onto the new number turns it into a claim that
+ * the datasheet says something it does not.
+ *
+ * That is not a cosmetic distinction here. The whole positioning of this
+ * product is that every number can be traced back to a page for QML and IPC
+ * Class 3 sign-off. A reviewer following a falsified citation finds a different
+ * number at the other end, which is worse than finding none: an absent citation
+ * says "a person supplied this", and a wrong one says "the vendor did".
+ *
+ * Found 2026-08-24. `handleCorrectReview` patched only value, confidence and
+ * method, and the patch helper merges, so the model's citation survived every
+ * hand correction. `updatePin` did it explicitly, passing the old citation
+ * through with a comment saying the provenance changes with the edit.
+ *
+ * ## Why this is safe at the export gate
+ *
+ * `isUntraceable` refuses a MODEL value with no citation. A `user` value is not
+ * a model value, so dropping the citation cannot block an export; it only stops
+ * the record claiming a source it does not have.
+ *
+ * CONFIRMING is a different act and deliberately keeps its citation: a model
+ * read it AND a person checked it against the page it names, which is a
+ * stronger record than either alone. Only a correction discards.
+ */
+export function userEdited<T>(value: T): Extracted<T> {
+  return { value, confidence: 1, method: "user", citation: null };
+}
