@@ -2,8 +2,10 @@ import { findPackageDrawing, type PackageDrawing } from "./packagedrawing";
 import { findUnreadableFootprint, findVendorLandPattern } from "./vendorland";
 import { collectReviewItems, reviewPages, type ReviewItem } from "./review";
 import { renderPages, type RenderedPage } from "./pagerender";
-import { packageOptions, type PackageChoice, type RequiredInput } from "./exporters";
+import { packageOptions, type OptionAnswers, type PackageChoice, type RequiredInput } from "./exporters";
+import { sameDesignatorName } from "./packagevariants";
 import { confidenceChecks, type ConfidenceCheck } from "./confidence";
+import type { Confirmation } from "./confirm";
 import { resolveForExport, type PartRecord } from "./types";
 import type { DatasheetText } from "./pdftext";
 
@@ -42,6 +44,15 @@ export interface Readout {
   packageChoice: PackageChoice;
   checks: ConfidenceCheck[];
   review: ReviewItem[];
+  /**
+   * WHAT A PERSON HAS TO CHECK before trusting this reading, and nothing else.
+   *
+   * The invariant in `confirm.ts`: a value ships silently only where two
+   * independent sources agree on it, and everything else is here. For the
+   * package the reading itself settled on; each offered package carries its own
+   * list on `PackageOption.toCheck`.
+   */
+  toCheck: Confirmation[];
   /** Pages the panel shows: every page a question or a review item points at. */
   reviewPages: RenderedPage[];
 }
@@ -49,24 +60,20 @@ export interface Readout {
 /** How many pages may be rasterised for the panel. Images are the expensive part. */
 const MAX_PANEL_PAGES = 8;
 
-export async function buildReadout(
-  part: PartRecord,
-  doc: DatasheetText,
-  pdfBytes: ArrayBuffer,
-  /**
-   * Pages the extraction pass already rasterised, so the panel does not pay to
-   * render a page twice. Empty is fine and simply means everything is rendered
-   * here.
-   */
-  alreadyRendered: readonly RenderedPage[] = []
-): Promise<Readout> {
-  // Where the mechanical drawing is, so a value we could not read can be asked
-  // for with that page in front of the user. Nothing is READ off the drawing
-  // here; this is only its location.
-  const packageDrawing = findPackageDrawing(doc, part.packageType.value ?? undefined);
-
-  // WHERE THE PRINTED FOOTPRINT IS, for the package the READING settled on.
-  //
+/**
+ * WHERE THE PRINTED FOOTPRINT IS, for the package the READING settled on.
+ *
+ * Exported because it is not decoration: `contradictsPrintedLand` and the
+ * corroboration recorded on every footprint both read `vendorLandPattern`, and
+ * a record that has not been through this carries null for it. A bench building
+ * records straight from `runExtraction` therefore measured a product where NO
+ * footprint has a second source - 94 of 94 flagged - which is a fact about the
+ * instrument and not about the product.
+ *
+ * Same failure as `bench:dimensions` reading the flat block while the product
+ * built from the per-package table. One definition, shared.
+ */
+export function withPrintedFootprint(part: PartRecord, doc: DatasheetText): PartRecord {
   // Has to happen after the model, not in `buildPartRecord`, where the only
   // package name in existence is one the user clicked. On the ordinary path
   // nothing was found there and two things went wrong at once: the land-pattern
@@ -77,12 +84,11 @@ export async function buildReadout(
   //
   // A package the CALLER named still wins: their choice is a statement, and an
   // inference must not overwrite it.
-  let resolved = part;
-  if (!resolved.vendorLandPattern && resolved.packageType.value) {
-    const printed = findVendorLandPattern(doc, resolved.packageType.value);
+  if (!part.vendorLandPattern && part.packageType.value) {
+    const printed = findVendorLandPattern(doc, part.packageType.value, part.packageOutlineCode.value ?? undefined);
     if (printed) {
-      resolved = {
-        ...resolved,
+      part = {
+        ...part,
         vendorLandPattern: {
           page: printed.page,
           valuesMm: printed.dimensions.map((dimension) => dimension.valueMm)
@@ -112,19 +118,116 @@ export async function buildReadout(
       // it. The field already means "where this datasheet prints its footprint,
       // plus whatever callouts we could read off it", and this is that page with
       // none of them.
-      const unreadable = findUnreadableFootprint(doc, resolved.packageType.value);
+      const unreadable = findUnreadableFootprint(doc, part.packageType.value);
       if (unreadable !== null) {
-        resolved = { ...resolved, vendorLandPattern: { page: unreadable, valuesMm: [] } };
+        part = { ...part, vendorLandPattern: { page: unreadable, valuesMm: [] } };
       }
     }
   }
+
+  // AND THE SAME FOR EVERY OTHER PACKAGE THE DOCUMENT DESCRIBES.
+  //
+  // The field above names the page for whichever package the READING settled on,
+  // and `asPackage` correctly drops it on a relabel: that page draws one
+  // package's pads and against a sibling designator it is the wrong drawing.
+  // Dropping it was all that happened, so every package reached through the
+  // chooser arrived with no printed footprint at all - 7 of 106 shipping parts
+  // carried one, measured 2026-08-27, against documents that mostly draw one per
+  // package. It is the second source for the copper and for the pitch.
+  //
+  // Located HERE, where the document is in hand, and carried on the record so
+  // `/api/export` sees exactly what the chooser saw. Doing it in the chooser
+  // instead would have been the drift `optionFor` exists to prevent: the chooser
+  // would report a corroboration the export could not reproduce.
+  if (part.packagesInThisDocument && part.packagesInThisDocument.length > 0) {
+    part = {
+      ...part,
+      packagesInThisDocument: part.packagesInThisDocument.map((entry) =>
+        entry.vendorLandPattern
+        ? entry
+        : { ...entry, ...printedFootprintFor(doc, entry.packageType, entry.alsoKnownAs, entry.outlineCode) }
+      )
+    };
+  }
+  return part;
+}
+
+/**
+ * The page this datasheet prints a footprint on for one named package, and
+ * whatever callouts could be read off it.
+ *
+ * Returns an empty object rather than null so a caller can spread it, which
+ * keeps "we did not find one" from writing an explicit undefined over a field
+ * some other pass may have filled.
+ *
+ * A drawing we can SEE but cannot READ is recorded with no values, because that
+ * is a different answer from no drawing and the user can act on it. Everything
+ * downstream guards on the list being non-empty.
+ */
+function printedFootprintFor(
+  doc: DatasheetText,
+  packageType: string,
+  alsoKnownAs: readonly string[] | undefined,
+  /** The drawing's own code, which identifies it where the caption drifts. */
+  outlineCode: string | undefined
+): { vendorLandPattern?: { page: number; valuesMm: number[] } } {
+  // EVERY NAME THIS DOCUMENT PRINTS FOR THE PACKAGE, because the footprint's
+  // caption and the pinout's caption are routinely different words for one
+  // package. That is the whole reason `alsoKnownAs` exists.
+  for (const name of [packageType, ...(alsoKnownAs ?? [])]) {
+    const printed = findVendorLandPattern(doc, name, outlineCode);
+    if (printed) {
+      return {
+        vendorLandPattern: {
+          page: printed.page,
+          valuesMm: printed.dimensions.map((dimension) => dimension.valueMm)
+        }
+      };
+    }
+  }
+  for (const name of [packageType, ...(alsoKnownAs ?? [])]) {
+    const unreadable = findUnreadableFootprint(doc, name);
+    if (unreadable !== null) return { vendorLandPattern: { page: unreadable, valuesMm: [] } };
+  }
+  return {};
+}
+
+export async function buildReadout(
+  part: PartRecord,
+  doc: DatasheetText,
+  pdfBytes: ArrayBuffer,
+  /**
+   * Pages the extraction pass already rasterised, so the panel does not pay to
+   * render a page twice. Empty is fine and simply means everything is rendered
+   * here.
+   */
+  alreadyRendered: readonly RenderedPage[] = [],
+  /**
+   * What the caller has ALREADY answered, from their settings.
+   *
+   * The chooser decides what the screen asks for, and building it as if nothing
+   * had been answered shows a user questions their own settings screen has
+   * answered. See `answersFromSettings`.
+   */
+  answers: OptionAnswers = {}
+): Promise<Readout> {
+  // Where the mechanical drawing is, so a value we could not read can be asked
+  // for with that page in front of the user. Nothing is READ off the drawing
+  // here; this is only its location.
+  const packageDrawing = findPackageDrawing(doc, part.packageType.value ?? undefined);
+
+  const resolved = withPrintedFootprint(part, doc);
 
   // What clicking each offered package would actually do. Computed here, where
   // the record is complete, because the chooser is shown before any export is
   // attempted and a dropdown that cannot say which of its entries work is the
   // failure `packageOptions` exists to end. It runs the real generator, so it
   // costs one footprint build per package and can never disagree with the export.
-  const packageChoice = packageOptions(resolved);
+  // THE DOCUMENT GOES WITH IT, so each option can say what a user would have to
+  // check before trusting it. See `PackageOption.toCheck` and `confirm.ts`: the
+  // pinout's second source is this document's own text layer, so a chooser
+  // without the document can only report that it does not know.
+  const packageChoice = packageOptions(resolved, answers, doc);
 
   // What the record checks out against, from evidence already in hand. Runs on
   // the resolved projection because every check is about geometry, and a record
@@ -152,6 +255,15 @@ export async function buildReadout(
     : packageChoice;
 
   const review = collectReviewItems(resolved);
+
+  // The chooser already computed this per package, against the real geometry.
+  // Read back rather than recomputed, so the panel and the dropdown can never
+  // disagree about how much work a package is.
+  const settled =
+    located.ok && resolved.packageType.value
+      ? located.options.find((option) => sameDesignatorName(option.designator, resolved.packageType.value!))
+      : undefined;
+  const toCheck = settled?.toCheck ?? (located.ok ? (located.options.find((option) => option.toCheck)?.toCheck ?? []) : []);
 
   // Every page the user might be shown: the ones review cites, plus the ones the
   // questions point at, plus the drawing. Rendered together because a second
@@ -182,6 +294,7 @@ export async function buildReadout(
     packageChoice: located,
     checks,
     review,
+    toCheck,
     reviewPages: wanted.map((page) => have.get(page)).filter((image): image is RenderedPage => Boolean(image))
   };
 }

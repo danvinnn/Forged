@@ -29,6 +29,7 @@ import { makeExtractionModel, runExtraction } from "../extraction";
 import type { ExtractionModel } from "../extraction/contracts";
 import { getDeploymentMode } from "../retrieval/deployment";
 import { statedMaxHeightMm } from "../extraction/merge";
+import { withPrintedFootprint } from "../readout";
 import type { DatasheetText } from "../pdftext";
 import type { ExtractionField } from "../extraction/contracts";
 import type { PartRecord } from "../types";
@@ -154,7 +155,15 @@ async function recordValuesFor(
       const { doc, part: deterministic } = await extractPartRecord(`${part}.pdf`, buffer);
       setLabel(part);
       const outcome = await runExtraction(deterministic, doc, buffer, model, `${part}.pdf`, part);
-      const record = outcome?.part ?? deterministic;
+      // THROUGH THE READOUT'S REPAIR, because the product's record has been
+      // through it and a bench record that has not is a different record.
+      //
+      // `vendorLandPattern` is located by `buildReadout`, not by extraction, and
+      // it is what `contradictsPrintedLand` and the footprint's corroboration
+      // both read. Without this every part measured here reports a land pattern
+      // with no second source: 94 of 94 on the first run of `bench:confirm`,
+      // which was a fact about this file.
+      const record = withPrintedFootprint(outcome?.part ?? deterministic, doc);
       // The citation PAGE comes too, because `outlineFor` disambiguates two
       // drawings in one datasheet by what each states as its own max height and
       // needs to know which page the reading came from.

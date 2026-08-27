@@ -788,8 +788,15 @@ function soleFamily(name: string): string | null {
   return found.size === 1 ? [...found][0]! : null;
 }
 
-/** The lead count a name states in words, wherever it sits. */
-function statedLeadCount(name: string): number | null {
+/**
+ * The lead count a name states in words, wherever it sits.
+ *
+ * Exported since 2026-08-27 for the per-package join in `merge.ts`. A lead count
+ * is not an IDENTITY - `forge-lead-count-is-not-an-identity` - but two names that
+ * state DIFFERENT counts are certainly not the same package, and that is all the
+ * join asks of it.
+ */
+export function statedLeadCount(name: string): number | null {
   const match = /(\d{1,3})\s*[-\s]?\s*(?:lead|pin|ld)s?\b/i.exec(name);
   if (!match) return null;
   const count = Number(match[1]);

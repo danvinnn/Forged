@@ -30,6 +30,7 @@ import {
 } from "./packagevariants";
 import {
   thermalPadNumber,
+  type Corroboration,
   type FootprintGeometry,
   type Pad,
   type SymbolGeometry,
@@ -37,6 +38,8 @@ import {
   type ThermalVia
 } from "./geometry";
 import { confidenceChecks, FootprintInvalidError, summariseChecks, validateGeometry, validateSymbol } from "./confidence";
+import { confirmations, type Confirmation } from "./confirm";
+import type { DatasheetText } from "./pdftext";
 import { emitKicadFootprint, emitKicadSymbol } from "./emitters/kicad";
 import { emitAltiumPcbLib, emitAltiumSchLib } from "./emitters/altium";
 
@@ -1061,7 +1064,33 @@ export function buildFootprintGeometry(
   const printed = printedLand(part, densityLevel, discards, formedLeadSpanMm, formedLeadContactMm);
 
   if (printed && layout) {
-    return assemble(part, densityLevel, printed, layout, undefined, discards);
+    // STEP 2A: THE PADS THE DATASHEET PRINTED, CHECKED AGAINST IPC-7351B.
+    //
+    // The printed pattern is the source and stays the source; this does not vote
+    // on the copper. It asks the one question nothing was asking: does a pattern
+    // computed from a DIFFERENT drawing on a DIFFERENT page land in the same
+    // place? Where it does, the pads have two independent readings behind them
+    // and ship silently. Where it does not, or where the outline was not read
+    // well enough to compute one, the user is told so and shown both pages.
+    const padLengthMm = part.dimensions.landPadLengthMm as number;
+    const centreSpanMm = part.dimensions.landSpanMm as number;
+    const rawCross = part.dimensions.landSpanCrossMm;
+    return assemble(
+      part,
+      densityLevel,
+      printed,
+      layout,
+      corroborateAgainstIpc(
+        part,
+        padLengthMm,
+        centreSpanMm,
+        typeof rawCross === "number" && Number.isFinite(rawCross) ? rawCross : null,
+        formedLeadSpanMm,
+        formedLeadContactMm
+      ),
+      undefined,
+      discards
+    );
   }
 
   // DERIVED FROM THIS PART'S OWN PACKAGE DRAWING.
@@ -1085,6 +1114,7 @@ export function buildFootprintGeometry(
             `page ${part.vendorLandPattern?.page} disagrees with it`
         );
       } else {
+        const printedMm = part.vendorLandPattern?.valuesMm ?? [];
         return assemble(
           part,
           densityLevel,
@@ -1093,6 +1123,23 @@ export function buildFootprintGeometry(
             ...layout,
             source: `IPC-7351B density ${densityLevel}, computed from this datasheet's own package drawing`
           },
+          printedMm.length > 0
+            ? {
+                from: "ipc7351b",
+                against: "printed",
+                agrees: true,
+                because: "agrees",
+                detail: `Computed from the package outline by IPC-7351B and matched against the footprint this datasheet prints on page ${part.vendorLandPattern?.page}.`
+              }
+            : {
+                from: "ipc7351b",
+                against: null,
+                agrees: false,
+                because: "no-printed-footprint",
+                detail:
+                  `Computed from the package outline by IPC-7351B. No recommended footprint was read from this datasheet, ` +
+                  `so nothing independent checked these pads.`
+              },
           undefined,
           discards
         );
@@ -1285,6 +1332,17 @@ function throughHoleFootprint(part: ResolvedPart, densityLevel: DensityLevel): F
         ? `IPC-7251 density ${densityLevel}, from a ${lead} mm lead on a single row at ${pitchMm} mm pitch read off this datasheet`
         : `IPC-7251 density ${densityLevel}, from a ${lead} mm lead on a ${spanMm} mm row spacing read off this datasheet`
     },
+    {
+      from: "ipc7251",
+      against: null,
+      agrees: false,
+      because: "through-hole-has-no-printed-pattern",
+      // A through-hole datasheet prints no recommended pattern to check this
+      // against - IPC-7251 sizes the hole from the lead diameter and nothing
+      // else - so there is no second source and saying otherwise would be the
+      // lie this whole mechanism exists to stop.
+      detail: `Hole and land sized by IPC-7251 from a ${lead} mm lead. No recommended land pattern was read from this datasheet to check them against.`
+    },
     { drillMm: hole.drillMm }
   );
 }
@@ -1393,6 +1451,101 @@ function leadFromDrawing(
     ...(usableCross ? { spanCross: { minMm: usableCross.minMm, maxMm: usableCross.maxMm } } : {}),
     contact: { minMm: contact.minMm, maxMm: contact.maxMm },
     width: { minMm: width.minMm, maxMm: width.maxMm }
+  };
+}
+
+/**
+ * THE SECOND READING OF A PRINTED FOOTPRINT: the same pads, from the standard.
+ *
+ * The datasheet's own recommended footprint is the source of the copper and this
+ * does not change that. It asks whether an INDEPENDENT reading agrees: the
+ * package outline drawing states the leads, IPC-7351B says what pads those leads
+ * want, and the printed pattern either lands where the standard would put it or
+ * it does not.
+ *
+ * ## Why a BAND and not an equality
+ *
+ * A vendor's pattern is a design their application engineers signed, and
+ * IPC-7351B publishes three density levels rather than one number. The
+ * practitioner rule, from the PCB Libraries forum where the IPC-7351 authors
+ * post, is that any manufacturer pattern between the Least and Most density
+ * level is fine to use. So agreement means "inside the band the standard
+ * allows", which is the industry's own bound; demanding equality with density B
+ * would flag every vendor who chose differently, which is most of them.
+ *
+ * This is a genuine second source. The two readings share no input and no
+ * failure mode: one is a drawing of pads on one page, the other is arithmetic on
+ * a drawing of leads on another. A misread decimal point in either shows up here
+ * and nowhere else, which is how the ADS1115 was caught with correct inputs and
+ * the wrong lead form.
+ *
+ * Returns `against: null` where the outline was not read well enough to compute
+ * a band, which is honest and is the state much of the corpus is silently in.
+ */
+function corroborateAgainstIpc(
+  part: ResolvedPart,
+  padLengthMm: number,
+  centreSpanMm: number,
+  crossSpanMm: number | null,
+  formedLeadSpanMm?: number,
+  formedLeadContactMm?: number
+): Corroboration {
+  const page = part.vendorLandPattern?.page ?? null;
+  const where = page ? ` on page ${page}` : "";
+  // A LIMIT OF THE STANDARD, NOT OF THE READING, and the two must not be
+  // reported as the same thing.
+  //
+  // IPC-7351B publishes its fillet goals per lead form and only the gull-wing
+  // set is transcribed here; see the refusal in `computeLandPattern`. So a QFN's
+  // printed pattern has nothing to be checked against however well its drawing
+  // was read, and telling its reader "the package outline was not read well
+  // enough" sends them to look at a page that is already correct.
+  if (part.dimensions.leadForm === "nolead") {
+    return {
+      from: "printed",
+      against: null,
+      agrees: false,
+      because: "no-ipc-model-for-lead-form",
+      detail:
+        `Taken from the footprint printed in this datasheet${where}. IPC-7351B's land model for no-lead packages is ` +
+        `not transcribed here, so there is no independent pattern to check it against.`
+    };
+  }
+  const band = withinIpcBand(part, padLengthMm, centreSpanMm, formedLeadSpanMm, formedLeadContactMm, crossSpanMm);
+  if (band === null) {
+    return {
+      from: "printed",
+      against: null,
+      agrees: false,
+      because: "outline-not-read",
+      detail:
+        `Taken from the footprint printed in this datasheet${where}. Its package outline drawing was not read ` +
+        `well enough to compute an independent pattern to check it against.`
+    };
+  }
+  if (band) {
+    return {
+      from: "printed",
+      against: "ipc7351b",
+      agrees: true,
+      because: "agrees",
+      detail:
+        `Taken from the footprint printed in this datasheet${where}, and inside the range IPC-7351B computes ` +
+        `independently from the leads its package outline drawing states.`
+    };
+  }
+  // Unreachable on the ordinary path: `printedLand` discards a pattern the band
+  // rejects and the build falls through to computing one. Kept because this
+  // function must be correct for the answer it is given rather than for the
+  // answer its only caller happens to produce today.
+  return {
+    from: "printed",
+    against: "ipc7351b",
+    agrees: false,
+    because: "patterns-differ",
+    detail:
+      `Taken from the footprint printed in this datasheet${where}. It sits outside the range IPC-7351B computes ` +
+      `from the leads its package outline drawing states.`
   };
 }
 
@@ -1852,6 +2005,8 @@ function assemble(
   densityLevel: DensityLevel,
   land: LandPattern,
   definition: PadLayout,
+  /** What second reading checked this copper. See `FootprintProvenance.corroboration`. */
+  corroboration: Corroboration,
   /** Present for a through-hole part: the finished hole every pad carries. */
   hole?: { drillMm: number },
   /** Readings rejected on the way here. Recorded even when the build succeeds. */
@@ -2482,6 +2637,7 @@ function assemble(
         : {}),
       pitchMm: definition.pitchMm,
       arrangement: definition.arrangement,
+      corroboration,
       // See `FootprintProvenance.discards`. Threaded from the caller rather than
       // rebuilt, because the discards happen before `assemble` is reached.
       discards
@@ -2790,7 +2946,27 @@ export async function createExportZip(
   // re-reading the datasheet.
   const checks = confidenceChecks(part);
 
-  zip.file(
+  // ONE DOOR INTO THE ARCHIVE, and it pins the date.
+  //
+  // `manifest.json` was written with a bare `zip.file(name, content)` while every
+  // other entry went through the loop below with `{ date: entryDate }`. JSZip
+  // stamps an undated entry from the WALL CLOCK, so the manifest carried a
+  // different modification time in each archive and the bundle was not
+  // reproducible - the exact defect the note below this describes fixing, missed
+  // on the one entry written above the loop.
+  //
+  // It failed about one run in ten, and the reason is the ZIP format: the DOS
+  // date field has TWO-SECOND resolution. Two builds inside one tick are
+  // byte-identical and two straddling a tick are not, so the test that asserts
+  // reproducibility passed nearly always and went red in CI. A flaky test here
+  // was the product being non-deterministic, not the test being unreliable.
+  //
+  // Every entry now goes through `addEntry`, so an entry added later cannot
+  // reintroduce this by forgetting an argument.
+  const entryDate = options.generatedAt ?? new Date();
+  const addEntry = (name: string, content: string | Buffer) => zip.file(name, content, { date: entryDate });
+
+  addEntry(
     "manifest.json",
     JSON.stringify(
       {
@@ -2820,10 +2996,7 @@ export async function createExportZip(
   // archives of identical files still differ. Found on 2026-08-21 while testing
   // the two `new Date()` calls above: fixing those alone would have left the
   // bundle non-reproducible for a third reason nobody had looked for.
-  const entryDate = options.generatedAt ?? new Date();
-  for (const file of files) {
-    zip.file(file.name, file.content, { date: entryDate });
-  }
+  for (const file of files) addEntry(file.name, file.content);
 
   return {
     buffer: await zip.generateAsync({ type: "nodebuffer" }),
@@ -2903,6 +3076,17 @@ export interface PackageOption {
   needs: RequiredInput[];
   /** Populated for `unsupported`, null otherwise. */
   reason: string | null;
+  /**
+   * WHAT THE USER WOULD HAVE TO CHECK if they took this package.
+   *
+   * Null when the chooser was given no document, which is every caller that is
+   * not the readout: the pinout's second source is the document's own text
+   * layer, and a caller without the document cannot produce one. Null means "not
+   * evaluated here", never "nothing to check".
+   *
+   * Empty on `unsupported`, where there is nothing to take.
+   */
+  toCheck: Confirmation[] | null;
 }
 
 export type PackageChoice =
@@ -2974,7 +3158,13 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
     ...(table ? { pins: table.pins!, pinCount: table.pins!.length } : {}),
     packageOutlineCode: null,
     jedecOutline: null,
-    vendorLandPattern: null,
+    // THE PAGE THIS DOCUMENT PRINTS *THIS* PACKAGE'S FOOTPRINT ON, where it
+    // located one. Null otherwise, which is the old behaviour and still correct:
+    // the record's flat field names the page for a DIFFERENT package's pads.
+    //
+    // Located at parse time by `withPrintedFootprint`, not here, because this
+    // function has no document. See `PartRecord.packagesInThisDocument`.
+    vendorLandPattern: entry?.vendorLandPattern ?? null,
     // A thermal pad belongs to one package of a family and not to its siblings,
     // so it comes from THAT PACKAGE'S OWN TABLE where the document printed one.
     //
@@ -3069,6 +3259,8 @@ function optionFor(
   part: ResolvedPart,
   variant: { designator: string; family: string; leadCount: number | null },
   drawingIsThisPackage: boolean,
+  /** The document, so each option can say what a user would have to check. */
+  doc: DatasheetText | null,
   /**
    * Everything the caller has ALREADY answered.
    *
@@ -3128,12 +3320,32 @@ function optionFor(
     //
     // The questions are still carried, so the caller can offer them and unlock
     // the solid. See `PackageOption.needs`.
-    return { ...base, status: "ships", needs: body, reason: null };
+    const supplied = withSupplied(candidate, answers.supplied);
+    const report = doc ? confirmations(supplied, geometry, doc) : null;
+    // OVER THE BUDGET IS A REFUSAL, NOT A WARNING.
+    //
+    // Anthony's rule, 2026-08-27: past five things to check the product has
+    // stopped saving anyone time, so it says this datasheet cannot be done
+    // automatically rather than handing the job back with a dozen boxes. The
+    // reason names every one of them, so the refusal is actionable and nobody
+    // has to guess what was missing.
+    if (report && report.overBudget) {
+      return {
+        ...base,
+        status: "unsupported",
+        needs: [],
+        reason:
+          `Too much of this package could not be confirmed against a second reading of the datasheet to ship it ` +
+          `without checking: ${report.flagged.map((item) => item.label.toLowerCase()).join(", ")}.`,
+        toCheck: report.flagged
+      };
+    }
+    return { ...base, status: "ships", needs: body, reason: null, toCheck: report?.flagged ?? null };
   } catch (error) {
     if (error instanceof FootprintUnavailableError) {
       return error.needs.length > 0
-        ? { ...base, status: "needs-input", needs: [...error.needs, ...body], reason: null }
-        : { ...base, status: "unsupported", needs: [], reason: error.reason };
+        ? { ...base, status: "needs-input", needs: [...error.needs, ...body], reason: null, toCheck: null }
+        : { ...base, status: "unsupported", needs: [], reason: error.reason, toCheck: [] };
     }
     // A footprint that fails its own invariants is a NON-SHIP and says why.
     //
@@ -3143,7 +3355,7 @@ function optionFor(
     // Without it the message lands in the branch below, which is worded as
     // though Forge had crashed.
     if (error instanceof FootprintInvalidError) {
-      return { ...base, status: "unsupported", needs: [], reason: error.violations.join("; ") };
+      return { ...base, status: "unsupported", needs: [], reason: error.violations.join("; "), toCheck: [] };
     }
     // Anything else is a defect rather than a refusal, and reporting it as an
     // unbuildable package would bury it. It is still not allowed to fail the
@@ -3152,7 +3364,8 @@ function optionFor(
       ...base,
       status: "unsupported",
       needs: [],
-      reason: error instanceof Error ? error.message : "The footprint generator failed."
+      reason: error instanceof Error ? error.message : "The footprint generator failed.",
+      toCheck: []
     };
   }
 }
@@ -3251,7 +3464,8 @@ export function recordForPackage(record: PartRecord, designator: string): PartRe
 function optionsFromPerPackageTables(
   record: PartRecord,
   resolved: Extract<ReturnType<typeof resolveForExport>, { ok: false }>,
-  answers: OptionAnswers = {}
+  answers: OptionAnswers = {},
+  doc: DatasheetText | null = null
 ): PackageChoice | null {
   const tables = record.packagesInThisDocument;
   if (!tables || tables.length === 0) return null;
@@ -3338,7 +3552,7 @@ function optionsFromPerPackageTables(
         }))
       : offered;
 
-  const options = choices.map((variant) => optionFromPerPackageTable(record, tables, variant, answers));
+  const options = choices.map((variant) => optionFromPerPackageTable(record, tables, variant, answers, doc));
   // AND THE PACKAGES THE DOCUMENT DESCRIBES THAT NOTHING ABOVE REACHED.
   //
   // The same addition the other route makes, and needed here for the same
@@ -3347,7 +3561,7 @@ function optionsFromPerPackageTables(
   // name the ordering guide never used stays invisible. See
   // `packagesOnlyTheDocumentNames`.
   const extra = packagesOnlyTheDocumentNames(record, options).map((variant) =>
-    optionFromPerPackageTable(record, tables, variant, answers)
+    optionFromPerPackageTable(record, tables, variant, answers, doc)
   );
 
   return { ok: true, options: [...options, ...extra] };
@@ -3365,7 +3579,8 @@ function optionFromPerPackageTable(
   record: PartRecord,
   tables: NonNullable<PartRecord["packagesInThisDocument"]>,
   variant: { designator: string; family: string; leadCount: number | null },
-  answers: OptionAnswers
+  answers: OptionAnswers,
+  doc: DatasheetText | null
 ): PackageOption {
   const base = { designator: variant.designator, family: variant.family, leadCount: variant.leadCount };
   const entry = pinTableFor(tables, variant.designator);
@@ -3383,7 +3598,8 @@ function optionFromPerPackageTable(
           `for it, and a footprint cannot be numbered without one. Re-reading the datasheet for this ` +
           `package is what would settle it.`
         : `Pinouts were read from this datasheet for other packages, and none of them matches ` +
-          `${variant.designator}. Re-reading the datasheet for this package is what would settle it.`
+          `${variant.designator}. Re-reading the datasheet for this package is what would settle it.`,
+      toCheck: []
     };
   }
   const forThisPackage = withPinTable(record, entry);
@@ -3394,10 +3610,11 @@ function optionFromPerPackageTable(
       ...base,
       status: "unsupported" as const,
       needs: [],
-      reason: `${variant.designator}'s own pin table is on the record but cannot be used: ${why.join(", ")}.`
+      reason: `${variant.designator}'s own pin table is on the record but cannot be used: ${why.join(", ")}.`,
+      toCheck: []
     };
   }
-  return optionFor(usable.part, variant, false, answers);
+  return optionFor(usable.part, variant, false, doc, answers);
 }
 
 /**
@@ -3538,10 +3755,18 @@ function withPinTable(
  * package equally, and reporting that against each option in turn would present
  * one problem as several and imply a different choice might avoid it.
  */
-export function packageOptions(record: PartRecord, answers: OptionAnswers = {}): PackageChoice {
+export function packageOptions(
+  record: PartRecord,
+  answers: OptionAnswers = {},
+  /**
+   * The document the record was read from, so each option can say what a user
+   * would have to check before trusting it. See `PackageOption.toCheck`.
+   */
+  doc: DatasheetText | null = null
+): PackageChoice {
   const resolved = resolveForExport(record);
   if (!resolved.ok) {
-    const perPackage = optionsFromPerPackageTables(record, resolved, answers);
+    const perPackage = optionsFromPerPackageTables(record, resolved, answers, doc);
     if (perPackage) return perPackage;
     const blocked = resolved.missing.length > 0 ? resolved.missing : (resolved.untraceable ?? []);
     return { ok: false, blockedBy: blocked };
@@ -3551,15 +3776,53 @@ export function packageOptions(record: PartRecord, answers: OptionAnswers = {}):
   const harvested = record.packageVariants.map((variant) =>
     // Same rule as `asPackage`, and for the same reason: the chosen package
     // spelled differently is still the chosen package.
-    optionFor(resolved.part, variant, chosen !== null && sameDesignatorName(variant.designator, chosen), answers)
+    optionFor(resolved.part, variant, chosen !== null && sameDesignatorName(variant.designator, chosen), doc, answers)
   );
   // AND THE PACKAGES THE DOCUMENT DESCRIBES THAT THE ORDERING TABLE DID NOT
   // NAME. See `packagesOnlyTheDocumentNames`.
   const tables = record.packagesInThisDocument;
   const extra = tables
     ? packagesOnlyTheDocumentNames(record, harvested).map((variant) =>
-        optionFromPerPackageTable(record, tables, variant, answers)
+        optionFromPerPackageTable(record, tables, variant, answers, doc)
       )
     : [];
-  return { ok: true, options: [...harvested, ...extra] };
+
+  // AND THE PACKAGE THE READING ITSELF SETTLED ON, always.
+  //
+  // Exporting without choosing anything builds the record AS IT STANDS - that is
+  // what `/api/export` does with no `packageType` override, and it is the path
+  // most users take. The chooser only represented it when some harvested variant
+  // happened to be spelled the same way, and the ordering table's vocabulary
+  // routinely differs from the drawing's: a record reading `HTSSOP (28)` against
+  // variants reading `HTSSOP`.
+  //
+  // Where it did not match, every option went through `asPackage`, which blanks
+  // every dimension because they describe another package's drawings - correctly
+  // - and the screen then asked for all eight. Measured 2026-08-27: THIRTEEN
+  // parts that ship with no question at all were shown eight, and the verdict
+  // read "8 numbers are needed before this can be built" directly above a button
+  // that built it. A verdict contradicting the button beneath it spends the
+  // user's trust and then their time.
+  //
+  // Built with `drawingIsThisPackage` true, which is exactly true: it IS the
+  // package the drawings were read for.
+  const own = record.packageType.value;
+  const options = [...harvested, ...extra];
+  const missing =
+    own !== null && own.trim().length > 0 && !options.some((option) => sameDesignatorName(option.designator, own));
+  return {
+    ok: true,
+    options: missing
+      ? [
+          optionFor(
+            resolved.part,
+            { designator: own!, family: familyToken(own!) ?? own!, leadCount: record.pinCount.value },
+            true,
+            doc,
+            answers
+          ),
+          ...options
+        ]
+      : options
+  };
 }

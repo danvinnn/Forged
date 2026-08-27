@@ -81,6 +81,37 @@ async function filesOf(bundle: Awaited<ReturnType<typeof createExportZip>>): Pro
   return out;
 }
 
+test("every entry in the archive carries the pinned date, not the wall clock", async () => {
+  // THE DETERMINISTIC FORM OF THE TEST BELOW.
+  //
+  // `manifest.json` was written with a bare `zip.file(name, content)` while every
+  // other entry passed `{ date }`. JSZip stamps an undated entry from the wall
+  // clock, so the bundle was not reproducible.
+  //
+  // The byte comparison below is the right property but a poor detector: the ZIP
+  // date field has TWO-SECOND resolution, so two builds inside one tick are
+  // identical and two straddling a tick are not. It passed roughly nine runs in
+  // ten and went red in CI, and for months that read as a flaky test rather than
+  // as the product being non-deterministic.
+  //
+  // This asks the question directly, of every entry, and cannot pass by luck.
+  const at = new Date("2026-08-21T12:00:00.000Z");
+  const bundle = await createExportZip(soic8(), "kicad", { generatedAt: at });
+  const zip = await JSZip.loadAsync(bundle.buffer);
+
+  const entries = Object.values(zip.files).filter((entry) => !entry.dir);
+  assert.ok(entries.length > 1, "more than one entry, or this proves nothing");
+  for (const entry of entries) {
+    assert.equal(
+      // The ZIP stores DOS time to a two-second resolution, so the stored value
+      // is the pinned instant rounded, not the instant itself.
+      Math.abs(entry.date.getTime() - at.getTime()) <= 2000,
+      true,
+      `${entry.name} is stamped ${entry.date.toISOString()} and not the pinned ${at.toISOString()}`
+    );
+  }
+});
+
 test("a pinned timestamp makes the whole ARCHIVE byte-identical", async () => {
   const at = new Date("2026-08-21T12:00:00.000Z");
   const first = await createExportZip(soic8(), "kicad", { generatedAt: at });

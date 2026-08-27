@@ -1298,3 +1298,457 @@ test scoped to single rows.
 - **Grid arrays.** BGA and LGA pinouts are correctly refused at the pin table, but
   their packages are still OFFERED by the chooser and can never build.
 - The remaining wrong dimension rows in `bench:dimensions`.
+
+
+---
+
+# The release plan, 2026-08-27
+
+## Why the previous weeks felt like nothing changed
+
+Work has been converging on nothing because **there is no definition of done and
+no instrument that measures the thing the release bar is about.**
+
+Everything we measure - READ, SHIPS, fields filled - asks whether a part REACHES
+a bundle. Nothing measures whether the numbers in it are RIGHT, except on the 57
+parts a person read by hand. So no number can ever say "good enough", and each
+session ends by handing over a fresh list of defects found by whatever ad-hoc
+method was to hand that day.
+
+Hand-reading is the bottleneck. It found every real defect this week, including
+STM32F407VG's twenty-two shifted pins, and it caps at dozens of parts. A consumer
+uploads parts nobody has read.
+
+## The bar, in numbers
+
+The goal, agreed: **correct, or it tells you precisely what it could not read and
+asks you for that** - where the ask is genuine, the ask is rare, and the user
+trusts everything else without checking it.
+
+| the promise | how it is measured | today |
+|---|---|---|
+| the numbers are correct | share of shipping parts whose pinout and copper are CONFIRMED by a second independent reading | not measured |
+| or it says what it could not read | false questions | 0 |
+| the ask is genuine | every ask checked against the page it claims is silent | 12 asks, all genuine |
+| the ask is rare | parts asking anything at all | 3 of 57 |
+| works end to end | full browser journey green in CI | partial, and costs money to run |
+| any datasheet | parts producing a bundle | 93% hold-out |
+
+Three of six are already met. This plan is the other three, and row one gates the
+rest.
+
+## The idea the plan rests on: THE DOCUMENT AGAINST ITSELF
+
+To know whether a document was read correctly you need what the document says.
+There are three sources and only one is always available:
+
+1. a human reads it - does not scale
+2. another library carries that part - exists for SOME parts, and our market of
+   rad-hard ceramics is exactly the part of the space those libraries omit
+3. **read the document a second, independent way** - available on every document,
+   by construction
+
+A datasheet states its important facts twice, and we have only ever read them
+once:
+
+    pinout        the pin diagram AND the pin-function table
+    dimensions    the outline drawing AND the mechanical data table
+    land pattern  the printed footprint AND what IPC computes from the lead data
+
+Every real defect found this week was a first-column reading that the second
+column would have contradicted. LT1013 shipped the PDIP's assignment on an SO;
+STM32F407VG dropped pin 28 and shifted twenty-two.
+
+### Why this is not the cross-check that was deleted
+
+That one compared two READERS of different quality, went inert when the parser
+was removed, and reported "0 disagreements on 0/56 parts", which reads like a
+pass and means nothing was examined.
+
+This compares two STATEMENTS IN ONE DOCUMENT. It cannot go inert, because the
+second statement is on the page whatever else changes.
+
+### The false conflicts, and the rule that separates them
+
+The objection that killed the last attempt is real: readings disagree for
+innocent reasons. Measured on STM32F407VG, the one part hand-read completely:
+
+    pin 12   figure "PH0"   table "PH0/OSC_IN (PH0)"    one CONTAINS the other
+    pin 29   ours "PA5"     figure "PA4"                 neither contains the other
+
+**All eight false conflicts were containment. All twenty-two real ones were not.**
+That is not a threshold fitted to the data; it is ST's printed convention, the
+pin name beside its function after reset, in one table cell.
+
+---
+
+# Phase 1 - the self-check, validated before it is trusted
+
+## 1a. Measure whether the second reading is free
+
+The pin table is TEXT. Whether the text layer can supply a pin-number-to-name
+mapping decides the entire cost of this plan, and it is free to find out.
+
+    On how many corpus parts can the text layer produce a pin mapping at all,
+    and where it can, does its ASSIGNMENT match the model's reading?
+
+Known counter-example: STM32F407VG's Table 7 is mangled at the row that mattered
+and gave a third wrong answer. One part is not a verdict.
+
+- **clean** -> the second opinion costs nothing
+- **noisy** -> it needs a second model call, and the cost is measured before it is
+  spent
+- **either way** -> the answer is recorded so nobody re-opens it
+
+## 1b. Measure the false-positive rate against what we already know
+
+`PINOUT_ORACLE` holds 40 hand-read pinouts. Run the containment rule over them
+and count how often it flags a part we KNOW is right.
+
+**This gates everything.** If it fires on correct parts it dies here, and goes in
+LEARNINGS beside the other measured negatives so nobody proposes it a fourth
+time.
+
+## 1c. Ship it, narrowly
+
+Only where both readings exist. Never holds a part on a containment difference.
+Where two readings disagree substantively, that is the rare case worth a human
+glance, and the user is shown the two pages and the one difference.
+
+**Phase 1 is done when** every shipping part carries a per-part answer to "was
+this confirmed twice", and the false-positive rate of that answer is measured
+rather than assumed.
+
+# Phase 2 - drive the confirmed rate up, by class
+
+Every disagreement is classified before anything is fixed, and the fix covers the
+class. RULES.md rule 4 stands: state the rule without naming a vendor, a part, a
+package family, or the symptom.
+
+**Done when** the confirmed rate clears a threshold stated in advance AND every
+remaining disagreement has a named, understood reason. Not "still looking".
+
+# Phase 3 - the bounded coverage holes
+
+Three, all known and finite:
+
+- **no-lead land patterns** - QFN, DFN, SON, LGA, the largest modern family,
+  buildable today only when the datasheet prints a footprint. Confirmed twice as
+  the biggest limit, including by the hold-out.
+- **grid arrays** - BGA and LGA are correctly refused and still OFFERED by the
+  chooser, which is a promise the product cannot keep.
+- **metal cans** - leads on a bolt circle cannot be expressed at all.
+
+**Done when** every package family either builds or refuses with a reason the
+user can act on.
+
+# Phase 4 - end to end as a gate rather than an occasional check
+
+`bench:browser` covers upload, chooser and export, but the full path needs
+`--full`, which spends money, so it is not routine. That is why frontend-to-
+backend defects survive: the app served a dead page for its entire life with
+every other instrument green.
+
+Make the full journey replay from cache so it runs free, and put it in CI.
+
+**Done when** the complete user journey is green on every commit.
+
+# Phase 5 - beta
+
+Five to ten engineers, their own parts, instrumented so we see what they upload
+and what fails.
+
+**Done when** their parts hit the same numbers as our corpus. If they do not, the
+corpus was the problem and we will finally know.
+
+---
+
+# The rule that stops the churn
+
+**No more ad-hoc defect hunting, and no more passes over the 57 tuned parts.**
+Yield there is falling and it is why this feels endless.
+
+Every fix from here comes from an instrument in this plan. If no instrument
+caught it, the gap is the instrument, and that is what gets fixed.
+
+"I found another defect" is not progress. It is progress only when one of the six
+numbers in the table above moves.
+
+# What this plan does NOT give
+
+It does not certify an individual rad-hard part. Nothing does, short of a person
+reading the drawing, and that stays true for the parts a customer signs off on.
+
+What it changes is that hand-reading stops being the only DETECTOR. The classes
+of defect become visible on every datasheet, automatically, and the human read is
+spent confirming rather than searching.
+
+
+---
+
+# THE FINISH PLAN, 2026-08-27
+
+Supersedes the phases above. This is the plan that ends the project.
+
+## The goal, stated as something a machine can enforce
+
+> Correct, or it tells you precisely what it could not read and asks you for
+> that. The ask is genuine, the ask is rare, and the user trusts everything else
+> without checking it.
+
+That goal forbids exactly ONE thing: **a value that is wrong and silent.** It
+does not require perfect reading. It requires perfect classification.
+
+So the whole product reduces to one invariant and one number.
+
+## THE INVARIANT
+
+> **No value ships silently unless two INDEPENDENT sources agree on it.
+> Everything else is put in front of the user.**
+
+There is no third state and nothing falls through. "We could not confirm this" is
+not a caveat on the rule; it is an outcome the rule already handles.
+
+### Independent means read by different MEANS, not the same means twice
+
+This is load-bearing and it is what removes the last residual. A model that
+misreads a rotated figure will misread it the same way twice. So the two sources
+must fail differently:
+
+    one from the TEXT LAYER          a pin-function table, a mechanical data table
+    one from the RENDERED IMAGE      a pinout figure, an outline drawing
+    or one from ARITHMETIC           IPC-7351B computed from the lead data
+
+A text-layer read and an image read cannot share a failure mode. That is what
+makes agreement mean something.
+
+## THE NUMBER
+
+**Flagged values per part.** Anthony's gate, 2026-08-27:
+
+    no part ever shows more than 5
+    most parts show 0            target 80% of parts
+    average under 1 per part
+
+### What happens to a part that would need more than five
+
+It is REFUSED, with the list of what could not be confirmed. It is never shipped
+with twelve boxes to fill in.
+
+That keeps the invariant whole and keeps the promise: the user never faces more
+than five, because past five we say this datasheet cannot be done automatically
+rather than handing them the job back.
+
+---
+
+# Step 1 - turn the invariant on and measure the truth
+
+Every value carries a state: CONFIRMED, FLAGGED, or ABSENT. Publish
+flagged-per-part on every run.
+
+**The number will start bad.** Today we confirm almost nothing and ship it
+silently, so turning this on makes the real state visible all at once. That jump
+is the measurement arriving, not a regression, and it is the first honest picture
+of the product we will ever have had.
+
+**Done when** every shipping value has a state and the distribution is published.
+
+# Step 2 - wire the three confirmations, cheapest first
+
+**2a. The land pattern. Free, and already written.**
+`contradictsPrintedLand` compares a printed footprint against one computed from
+the lead data by IPC-7351B. It exists, it is tested, and it is stranded behind an
+`else`: it runs ONLY when the printed pattern could not be read, so on the 48 of
+64 footprints built FROM the printed pattern it never runs at all. Compute both,
+always, and compare. Pure arithmetic on data already on the record.
+
+**2b. The dimensions. Probably free.**
+The outline drawing carries arrows; the mechanical data table carries the same
+numbers as TEXT. Measure first whether the text layer yields the table on enough
+parts. If yes, this costs nothing.
+
+**2c. The pinout. Measure the cost before spending.**
+The pin-function table against the pinout figure. The table is often text; where
+it is not, this needs a second model read. Measure which before committing.
+
+Every real defect found this month was a pinout, so this is the highest-value
+one even if it is the only one that costs money.
+
+**Done when** all three run on every part and each contributes to the flagged
+count.
+
+# Step 3 - drive flagged-per-part under the gate
+
+Every flagged value is classified before anything is fixed. Fix the class, never
+the instance. RULES.md rule 4 stands.
+
+Two ways a value leaves the flagged bucket, and only two:
+
+1. we read the second source better, and the two now agree
+2. the datasheet genuinely states it once or not at all, and it stays an ask
+
+**Done when** no part exceeds 5, 80% of parts are at 0, and the average is under
+1.
+
+# Step 4 - the false-conflict guard, measured not assumed
+
+A disagreement that is not a defect is an ask the user should never have seen.
+The known shape is CONTAINMENT: ST prints `PH0` in the figure and
+`PH0/OSC_IN (PH0)` in the table, the same pin under two printed names. All eight
+false conflicts on STM32F407VG were containment; all twenty-two real ones were
+not.
+
+Validate the rule against the 40 hand-read pinouts in `PINOUT_ORACLE` BEFORE it
+ships. If it flags parts we know are correct, it does not ship.
+
+**Done when** the false-positive rate is measured and stated.
+
+# Step 5 - end to end, as a gate
+
+`bench:browser` covers upload, chooser and export, but the full path needs
+`--full`, which spends money, so it never runs. That is why frontend-to-backend
+defects survive: this app served a DEAD PAGE for its entire life while every
+other instrument was green.
+
+Make the full journey replay from cache so it is free, and put it in CI.
+
+**Done when** the complete user journey is green on every commit.
+
+# Step 6 - beta, with the market
+
+Five to ten RAD-HARD engineers on their own parts. Not commodity parts: rad-hard
+is where no external library exists, where the cost of being wrong is highest,
+and where this product is the only option.
+
+**Done when** their parts hit the same flagged-per-part distribution as ours.
+
+---
+
+# Why this finishes the product
+
+| the promise | what delivers it |
+|---|---|
+| the numbers are correct | everything shipped silently was confirmed by two independent sources |
+| or it tells you what it could not read | the invariant, which has no third state |
+| the ask is genuine | flagged means two sources disagreed or only one exists, which IS "we cannot determine this" |
+| the ask is rare | the gate: never more than 5, most parts 0 |
+| the user trusts the rest | the rest is the confirmed set, backed by the datasheet rather than by us |
+
+Five for five, and none of them rests on reading perfectly. They rest on never
+shipping a number that nothing checked.
+
+# The rule that keeps it finished
+
+Progress is flagged-per-part going down. Nothing else is reported as progress:
+not defects found, not tests added, not SHIPS, not READ. If work does not move
+that number, it is said plainly that it did not.
+
+---
+
+# THE FINISH PLAN: EXECUTED, 2026-08-27
+
+What was built, what it measured, and what is left. The plan above is the
+intent; this is the record.
+
+## The invariant is live
+
+`RULES.md` rule 7 and `src/lib/confirm.ts`. Every value that reaches the output
+is **confirmed** - two independent readings of the datasheet agree on it, and it
+ships without being mentioned - or **flagged**, and the user is shown it. No
+third state.
+
+Wired into the product end to end: `packageOptions` computes it per offered
+package against the real geometry, `PackageOption.toCheck` carries it, the
+readout and both routes return it, and the screen leads with it. A package that
+would need more than `MAX_FLAGGED` is refused with the list rather than shipped
+with a form.
+
+## The number
+
+`npm run bench:confirm`, free and offline.
+
+```
+                         first run     now
+  average per part          1.72        1.53
+  parts with nothing          0%         34%
+  worst part                   4           4      gate: never above 5   MET
+```
+
+**The gate Anthony set is met and was met from the first run.** No part in the
+tuned corpus asks for more than four glances, and a third ask for none.
+
+The two aspirational targets in the plan above - 80% of parts at zero, average
+under one - are NOT met, and the reason is measured rather than guessed: see
+"what is actually left" below.
+
+## Was the confirmation worth anything?
+
+Scored against the 36 hand-read pinouts in `PINOUT_ORACLE`, which is the only
+ground truth this project has:
+
+```
+  confirmed and the oracle agrees      23
+  CONFIRMED AND THE ORACLE DISAGREES    0    <- would have sunk the whole idea
+  flagged and the oracle disagrees      1
+  flagged though the oracle agrees     13    <- glances we did not have to ask for
+```
+
+Zero false confirmations. That is the property the reader is tuned to protect and
+three further refinements were rejected for risking it.
+
+## Steps, against the plan above
+
+| step | state |
+|---|---|
+| 1. turn the invariant on and measure | done, `bench:confirm` |
+| 2a. the land pattern, free | done, and it was stranded behind an `else` |
+| 2b. the dimensions | done for the pitch; the lead dimensions are the next lever, measured below |
+| 2c. the pinout | done, `pinevidence.ts`, free, zero false confirmations |
+| 3. drive the number under the gate | gate met; the two stretch targets are not |
+| 4. the false-conflict guard, measured | done, and the accusations were then dropped entirely |
+| 5. end to end as a gate | the free pass is in CI; `--full` still costs money |
+| 6. beta with rad-hard engineers | not started, and it is not a code step |
+
+## What is actually left, with numbers
+
+Every remaining flag falls into five classes. Three of them are the datasheet
+being silent and are correctly reported as such; two are ours.
+
+```
+  51  pitch/no-printed-footprint         the datasheet prints no footprint we found
+  33  land-pattern/no-printed-footprint  the same, for the pads
+  17  pinout/partly-corroborated         some pins are drawn as artwork
+  15  land-pattern/no-ipc-model          no-lead: the STANDARD is not transcribed
+  12  body/no-span-to-bound-it           a no-lead package has no lead span
+```
+
+**The measured next lever:** 28 of 85 parts restate all three lead dimensions -
+span, contact and width - as min-max pairs in their text layer. That is a second
+reading of the numbers a computed land pattern is built from, and it would move
+the largest class above. It was not built here because being HONEST about it
+requires the extraction method to reach `ResolvedPart`: a text-layer restatement
+corroborates a value read off the RENDERED page and is circular for one read from
+the text, and `ResolvedPart` currently carries neither. That plumbing is the
+work.
+
+**Two things that will not move and should not be chased:** a pinout drawn as
+artwork has no text layer to read twice, and IPC-7351B's no-lead fillet goals are
+not transcribed here for reasons `computeLandPattern` states at length. Both are
+reported to the user in those words.
+
+## Everything green, 2026-08-27
+
+```
+  tsc, lint, npm test           813 tests, 0 fail
+  bench:extraction              SHIPS 49/57 unaided (86%), 52/57 with a choice (91%)
+  bench:dimensions              pass
+  bench:questions               pass
+  bench:copper                  pass
+  bench:guards                  pass
+  bench:corpus                  pass
+  bench:discards                0 silently discarded, up from 9
+  bench:browser                 4/4 stages, 0 browser problems, now in CI
+  VERIFIED                      52/52 shipping parts hand-read
+  PIN NAMES                     38/39
+  PACKAGE FAMILY                28/28
+```

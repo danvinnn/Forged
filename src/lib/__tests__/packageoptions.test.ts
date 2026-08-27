@@ -593,3 +593,46 @@ test("an offered label always resolves back to the table it was made from", () =
   }
   assert.equal(choice.options.length, 3, "all three packages the document describes");
 });
+
+/**
+ * THE PACKAGE THE READING SETTLED ON IS ALWAYS ON OFFER.
+ *
+ * Exporting without choosing anything builds the record AS IT STANDS, which is
+ * the path most users take. The chooser only represented that package when some
+ * harvested variant happened to be spelled the same way, and the ordering
+ * table's vocabulary routinely differs from the drawing's.
+ *
+ * Where it did not match, every option went through `asPackage` - which blanks
+ * every dimension, correctly, because they describe another package's drawings -
+ * and the screen asked for all eight. Measured 2026-08-27: THIRTEEN parts that
+ * ship with no question at all were shown eight questions, under a verdict
+ * reading "8 numbers are needed before this can be built", directly above a
+ * button that built it.
+ */
+test("a record whose own package the ordering table spells differently still ships without a question", () => {
+  const choice = packageOptions(
+    record({
+      packageType: cited("SOIC (D)"),
+      // What an ordering guide prints, which is not what the drawing is titled.
+      packageVariants: [variant("SOIC", "SOIC")]
+    })
+  );
+
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  const own = choice.options.find((option) => option.designator === "SOIC (D)");
+  assert.ok(own, "the package the drawings were read for has to be on offer");
+  assert.equal(own.status, "ships", "it is the record as it stands, which exports");
+  assert.deepEqual(own.needs, [], "and it asks for nothing, because the export asks for nothing");
+});
+
+test("it is not offered twice when the ordering table does name it", () => {
+  const choice = packageOptions(record({ packageVariants: [variant("SOIC-8", "SOIC")] }));
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  assert.equal(
+    choice.options.filter((option) => option.designator === "SOIC-8").length,
+    1,
+    "one package, one row in the dropdown"
+  );
+});

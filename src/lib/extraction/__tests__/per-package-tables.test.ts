@@ -34,7 +34,7 @@ import type { PinRecord } from "../../types";
 const doc = datasheetTextFromPages([
   "ACME1256 Data Sheet\nAvailable as SSOP-20 and SSOP-28.",
   "Pin Functions, SSOP-20\nAIN0 AIN1 AIN2 AIN3 AIN4 AIN5 AIN6 AIN7 VREF AGND DGND DVDD CLKIN RESET DRDY CS SCLK DIN DOUT AVDD",
-  "Thermal pad note: the exposed pad must be soldered to the board."
+  "Thermal pad note: the exposed pad must be soldered to the board. Body 7.2 mm."
 ]);
 
 const rows = (numbers: Array<number | string>): PinRecord[] =>
@@ -213,4 +213,118 @@ test("a package with an unusable pin table keeps the measurements read off its d
   assert.ok(entry, "the entry survives on the strength of the half that passed");
   assert.equal(entry.pins, undefined, "the gapped table is still refused");
   assert.equal(entry.dimensions?.pitchMm?.value, 0.65, "and the drawing is still read");
+});
+
+/**
+ * ONE DRAWING, ONE ENTRY.
+ *
+ * A document is routinely read twice for the same package - once where it
+ * tabulates the pinout and once where it draws the outline - and the two
+ * readings arrive as two entries. Nothing joined them, and `pinTableFor` is a
+ * `find`, so every lookup took the first and the other half was on the record
+ * and unreachable.
+ *
+ * Measured on LM317, 2026-08-27: its `MPDS094A` is read once with a pin table
+ * and no measurements and once with nine measurements. `bench:discards` reported
+ * the nine as thrown away with no reason given, which is exactly what they were.
+ */
+const twoReadings = datasheetTextFromPages([
+  "ACME317 Data Sheet\nAvailable as SOT-223 and TO-220.",
+  "Pin Functions, SOT-223\nAIN0 AIN1 AIN2 AIN3",
+  "MPDS094A package outline: body 6.5 by 3.5 mm."
+]);
+
+test("two readings of ONE drawing become one entry", () => {
+  const record = buildPartRecord(twoReadings, "ACME317.pdf");
+  const { part } = mergeModelValues(
+    record,
+    twoReadings,
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "SOT-223", outlineCode: "MPDS094A", pins: rows([1, 2, 3, 4]) },
+        {
+          packageType: "SOT-223",
+          outlineCode: "MPDS094A",
+          dimensions: {
+            "dimensions.bodyLengthMm": { value: 6.5, page: 3 },
+            "dimensions.bodyWidthMm": { value: 3.5, page: 3 }
+          }
+        }
+      ]
+    },
+    "test-model"
+  );
+
+  const tables = part.packagesInThisDocument ?? [];
+  assert.equal(tables.length, 1, "one drawing code is one package");
+  assert.equal(tables[0]?.pins?.length, 4, "the pinout survives the join");
+  assert.equal(tables[0]?.dimensions?.bodyLengthMm?.value, 6.5, "and so do the measurements");
+});
+
+test("two packages of DIFFERENT lengths stay apart, whatever code they carry", () => {
+  // LT1013's reading files its 8-lead and 14-lead PDIPs under one drawing code.
+  // Joining on the code alone folded the fourteen-lead package into the
+  // eight-lead one and dropped its measurements. A lead count is not an
+  // identity, but two entries STATING different counts are not one package.
+  const doc14 = datasheetTextFromPages([
+    "ACME1013 Data Sheet\nAvailable as an 8-Lead PDIP and a 14-Lead PDIP.",
+    "Pin Functions\nAIN0 AIN1 AIN2 AIN3 AIN4 AIN5 AIN6 AIN7",
+    "Package outline 05-08-1510: body 19.558 by 6.477 mm."
+  ]);
+  const { part } = mergeModelValues(
+    buildPartRecord(doc14, "ACME1013.pdf"),
+    doc14,
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "8-Lead PDIP", outlineCode: "05-08-1510", pins: rows([1, 2, 3, 4, 5, 6, 7, 8]) },
+        {
+          packageType: "14-Lead PDIP",
+          outlineCode: "05-08-1510",
+          dimensions: { "dimensions.bodyLengthMm": { value: 19.558, page: 3 } }
+        }
+      ]
+    },
+    "test-model"
+  );
+
+  const tables = part.packagesInThisDocument ?? [];
+  assert.equal(tables.length, 2, "an 8-lead and a 14-lead package are two packages");
+});
+
+test("a reading disagreeing with ITSELF about the row count is still one package", () => {
+  // A SOT-223 is three leads and a tab, and its two readings returned four rows
+  // and three. That is not evidence of two packages, so the join is guarded on
+  // STATED counts only and never on the number of rows read.
+  const { part } = mergeModelValues(
+    buildPartRecord(twoReadings, "ACME317.pdf"),
+    twoReadings,
+    {
+      values: {},
+      packagesInThisDocument: [
+        { packageType: "SOT-223", outlineCode: "MPDS094A", pins: rows([1, 2, 3, 4]) },
+        {
+          packageType: "SOT-223",
+          outlineCode: "MPDS094A",
+          pins: rows([1, 2, 3]),
+          dimensions: { "dimensions.bodyLengthMm": { value: 6.5, page: 3 } }
+        }
+      ]
+    },
+    "test-model"
+  );
+
+  assert.equal((part.packagesInThisDocument ?? []).length, 1);
+});
+
+test("entries with NO drawing code are left alone", () => {
+  // The code is the drawing's identity and the caption is not: one document can
+  // print two different drawings under one caption, so joining on the caption
+  // would merge two packages into a package that does not exist.
+  const { part } = mergeWith([
+    { packageType: "SSOP-20", pins: rows([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) },
+    { packageType: "SSOP-20", dimensions: { "dimensions.bodyLengthMm": { value: 7.2, page: 3 } } }
+  ]);
+  assert.equal((part.packagesInThisDocument ?? []).length, 2);
 });

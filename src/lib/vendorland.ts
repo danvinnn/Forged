@@ -71,8 +71,74 @@ const LAND_PATTERN_HEADING = /LAND PATTERN EXAMPLE/i;
 function forRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
 }
-/** "8X (1.5)" or a bare "(5.8)". Values are reference dimensions in millimetres. */
-const DIMENSION = /(?:(\d{1,3})X\s*)?\((\d{1,3}(?:\.\d{1,3})?)\)/g;
+/**
+ * "8X (1.5)" or a bare "(5.8)".
+ *
+ * The leading digits are optional because a dual-dimensioned drawing writes the
+ * inch value as `.061` with no zero before the point. That form matched nothing,
+ * so every TI drawing dimensioned in inches read as a footprint with no callouts
+ * at all - and those are the drawings whose millimetres sit in brackets a few
+ * characters later, which is where the number we actually want was.
+ */
+const DIMENSION = /(?:(\d{1,3})X\s*)?\(\s*(\d{0,3}(?:\.\d{1,4})?)\s*\)/g;
+
+/**
+ * The millimetre twin of an inch callout, on a drawing dimensioned in both.
+ *
+ * TI prints `8X (.061  )` and `[1.55]` on the next line, and the bracketed
+ * figure is the one this project works in. Which is which is NOT assumed and no
+ * note is parsed for it: 1.55 is 0.061 x 25.4, and that arithmetic identifies
+ * the pair on its own. A drawing dimensioned the other way round - millimetres
+ * in parentheses, inches in brackets - is recognised by the same test running in
+ * the same direction, and its parenthesised value is already what we want.
+ *
+ * A callout with no twin on an inch-primary drawing is DROPPED rather than
+ * converted. Converting would be sound arithmetic on a sound premise, and the
+ * premise is what would be doing the work; a bag of land dimensions silently
+ * scaled by 25.4 is the worst failure this file could produce.
+ */
+const TWIN = /\[\s*(\d{0,3}(?:\.\d{1,4})?)\s*\]/;
+
+/** How far past a callout its bracketed twin may sit, in characters. */
+const TWIN_WINDOW = 48;
+
+/** Millimetres per inch, and the ratio that identifies a dual-dimensioned pair. */
+const MM_PER_INCH = 25.4;
+
+/**
+ * Every land dimension in one drawing block, in millimetres.
+ *
+ * Returns an empty list where the block is dimensioned in inches and its
+ * millimetre twins could not be paired up, which is the honest outcome: the
+ * caller treats no callouts as a footprint it could not read, and
+ * `findUnreadableFootprint` still reports the page.
+ */
+function dimensionsIn(block: string): VendorLandDimension[] {
+  const found: Array<{ repeat: number | null; parenMm: number; twinMm: number | null }> = [];
+  for (const match of block.matchAll(DIMENSION)) {
+    const parenMm = Number(match[2]);
+    if (!Number.isFinite(parenMm) || parenMm <= 0) continue;
+    const ahead = block.slice(match.index + match[0].length, match.index + match[0].length + TWIN_WINDOW);
+    const twin = TWIN.exec(ahead);
+    const twinMm = twin ? Number(twin[1]) : null;
+    found.push({ repeat: match[1] ? Number(match[1]) : null, parenMm, twinMm: Number.isFinite(twinMm) ? twinMm : null });
+  }
+
+  // IS THIS DRAWING DIMENSIONED IN INCHES? The pairs say so themselves.
+  const inchPrimary = found.some(
+    (entry) => entry.twinMm !== null && entry.parenMm > 0 && Math.abs(entry.twinMm - entry.parenMm * MM_PER_INCH) <= entry.twinMm * 0.02
+  );
+
+  const dimensions: VendorLandDimension[] = [];
+  for (const entry of found) {
+    const valueMm = inchPrimary ? entry.twinMm : entry.parenMm;
+    if (valueMm === null) continue;
+    // Radii and solder-mask slivers are not land dimensions.
+    if (!Number.isFinite(valueMm) || valueMm <= 0.1 || valueMm > 100) continue;
+    dimensions.push({ repeat: entry.repeat, valueMm });
+  }
+  return dimensions;
+}
 
 /** How far back from the heading the dimension callouts sit, in characters. */
 const DRAWING_WINDOW = 1200;
@@ -86,7 +152,58 @@ const DRAWING_WINDOW = 1200;
  * disagreement that did not exist. Each drawing names its package in the header
  * line above the callouts, so that is what selects the right one.
  */
-export function findVendorLandPattern(doc: DatasheetText, family?: string): VendorLandPattern | null {
+/**
+ * A drawing title token, with trademark decoration removed.
+ *
+ * TI sets a superscript trademark beside the family word and the text layer
+ * folds it back in, so `VSSOP` arrives as `TMVSSOP` and an equality test against
+ * the package family fails on a drawing that is the right one. Measured on
+ * LM358, whose DGK drawing is titled `DGK0008A TMVSSOP`.
+ *
+ * The literal `TM` is stripped only when something substantial is left, so a
+ * family whose own name begins with those letters is not truncated.
+ */
+function withoutTrademark(token: string): string {
+  const bare = token.toUpperCase().replace(/[^A-Z0-9-]/g, "");
+  const stripped = bare.replace(/^TM/, "");
+  return stripped.length >= 4 ? stripped : bare;
+}
+
+/**
+ * Does this drawing's title name the package we are asking about?
+ *
+ * THE OUTLINE CODE FIRST, because it is the drawing's own identity and the one
+ * thing that does not drift: `PWP0028C` is `PWP0028C` whatever the caption calls
+ * it. The caption does drift, and it drifts between the ordering table and the
+ * drawing in the same document: DRV8825's ordering guide says `HTSSOP` and its
+ * drawing is titled `PowerPAD TSSOP`, so a family comparison rejected the right
+ * drawing for a package whose code was sitting on the record.
+ *
+ * The family word is the fallback for a record with no code, and it is compared
+ * against every token of the title rather than the second one alone.
+ */
+function titleNames(block: string, wanted: string | undefined, outlineCode: string | undefined): boolean {
+  const header = /EXAMPLE BOARD LAYOUT\s*\n\s*(\S+)\s+([^\n]*)/i.exec(block);
+  const key = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (outlineCode && header && key(header[1]) === key(outlineCode)) return true;
+  if (!wanted) return header ? !outlineCode : true;
+  if (header) {
+    const tokens = `${header[1]} ${header[2]}`.split(/\s+/).map(withoutTrademark);
+    if (tokens.includes(withoutTrademark(wanted))) return true;
+    // A code we know about that this title does not carry means this is another
+    // package's drawing, whatever its caption says.
+    if (outlineCode) return false;
+    return false;
+  }
+  return new RegExp(`\\b${forRegex(wanted)}\\b`, "i").test(block);
+}
+
+export function findVendorLandPattern(
+  doc: DatasheetText,
+  family?: string,
+  /** The vendor's own code for this package's outline drawing, where one is known. */
+  outlineCode?: string
+): VendorLandPattern | null {
   const headings = [...doc.text.matchAll(new RegExp(LAND_PATTERN_HEADING.source, "gi"))];
   if (headings.length === 0) return null;
 
@@ -103,21 +220,11 @@ export function findVendorLandPattern(doc: DatasheetText, family?: string): Vend
     const titles = [...window.matchAll(/EXAMPLE BOARD LAYOUT/gi)];
     const block = titles.length > 0 ? window.slice(titles[titles.length - 1].index) : window;
 
-    if (wanted) {
-      // The package header sits just after the "EXAMPLE BOARD LAYOUT" title. Any
-      // other family named there means this drawing is for a different package.
-      const header = /EXAMPLE BOARD LAYOUT\s*\n\s*(\S+)\s+([A-Z0-9-]+)/i.exec(block);
-      if (header && header[2].toUpperCase() !== wanted) continue;
-      if (!header && !new RegExp(`\\b${forRegex(wanted)}\\b`, "i").test(block)) continue;
-    }
+    // The package header sits just after the "EXAMPLE BOARD LAYOUT" title. Any
+    // other package named there means this drawing is for a different one.
+    if ((wanted || outlineCode) && !titleNames(block, wanted, outlineCode)) continue;
 
-    const dimensions: VendorLandDimension[] = [];
-    for (const match of block.matchAll(DIMENSION)) {
-      const valueMm = Number(match[2]);
-      // Radii and solder-mask slivers are not land dimensions.
-      if (!Number.isFinite(valueMm) || valueMm <= 0.1 || valueMm > 100) continue;
-      dimensions.push({ repeat: match[1] ? Number(match[1]) : null, valueMm });
-    }
+    const dimensions = dimensionsIn(block);
     if (dimensions.length === 0) continue;
 
     const page = doc.pages.find((candidate) => heading.index < candidate.end)?.page ?? 1;

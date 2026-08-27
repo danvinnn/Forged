@@ -334,6 +334,7 @@ test("a footprint with no model given carries no body and no model store", () =>
       centreToCentreMm: 5.4,
       pitchMm: 1.27,
       arrangement: "dual" as const,
+      corroboration: { from: "printed" as const, against: null, agrees: false, because: "fixture", detail: "fixture" },
       discards: []
     }
   };
@@ -375,6 +376,7 @@ test("a footprint written without a terminator byte is what a strict reader requ
       centreToCentreMm: 5.4,
       pitchMm: 1.27,
       arrangement: "dual" as const,
+      corroboration: { from: "printed" as const, against: null, agrees: false, because: "fixture", detail: "fixture" },
       discards: []
     }
   };

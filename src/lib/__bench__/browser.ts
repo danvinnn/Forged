@@ -131,6 +131,37 @@ function note(line: string) {
   }
 }
 
+/**
+ * Kills the server and everything it spawned.
+ *
+ * The whole GROUP, by negating the pid, because the handle we hold is `npx` and
+ * the process holding the port is its grandchild. See `detached` at the spawn.
+ */
+function stopServer(server: ChildProcess | undefined): void {
+  if (!server?.pid) return;
+  try {
+    process.kill(-server.pid, "SIGKILL");
+  } catch {
+    // Already gone, or the platform declined a group kill. Fall back to the
+    // handle, which is still better than nothing.
+    server.kill("SIGKILL");
+  }
+}
+
+/** Is anything answering on the port this bench wants for its own server? */
+async function respondsOnPort(): Promise<boolean> {
+  try {
+    await fetch(`${BASE}/api/config`, { signal: AbortSignal.timeout(1500) });
+    return true;
+  } catch {
+    // A connection refused, which is what a free port looks like. A server that
+    // answers with an ERROR still counts as present, which is deliberate: the
+    // stale build that prompted this answered 200 on some paths and 400 on
+    // others, and either way it is not ours.
+    return false;
+  }
+}
+
 async function waitForServer(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -633,6 +664,29 @@ async function main() {
   let server: ChildProcess | undefined;
   let browser: import("playwright").Browser | undefined;
   try {
+    // NOBODY ELSE'S SERVER.
+    //
+    // `next start` binds, fails because the port is taken, and exits - and
+    // `waitForServer` then finds a server answering on that port and carries on
+    // against WHATEVER IS THERE. On 2026-08-27 that was a `next start` left over
+    // from an earlier session, serving an older build: the HTML it returned
+    // named chunk hashes that no longer existed on disk, so every asset 400'd
+    // and the run reported the app as dead. Eight browser problems, none of them
+    // about the code being tested.
+    //
+    // Same shape as every other entry in `forge-instrument-not-product`: the
+    // measurement was of something other than the product, and it read as a
+    // catastrophic product defect. Refusing outright is the only safe answer,
+    // because a bench that silently measures a stranger cannot be trusted when
+    // it is green either.
+    if (await respondsOnPort()) {
+      console.error(
+        `Something is already listening on ${PORT}. This bench starts its own production server and ` +
+          `cannot tell yours from its own, so it will not run against it. Stop it and try again.`
+      );
+      process.exit(2);
+    }
+
     note(`Starting the production server on ${PORT}...`);
     // THE SERVER'S OWN LOG, KEPT.
     //
@@ -644,10 +698,24 @@ async function main() {
     server = spawn("npx", ["next", "start", "-p", String(PORT)], {
       cwd: ROOT,
       stdio: ["ignore", serverLog, serverLog],
-      env: { ...process.env, PORT: String(PORT) }
+      env: { ...process.env, PORT: String(PORT) },
+      // ITS OWN PROCESS GROUP, so the whole tree can be killed at the end.
+      //
+      // `npx` is a wrapper: it spawns `next start`, which spawns the server that
+      // actually holds the port. Killing the handle we have here kills the
+      // wrapper and leaves the grandchild listening, so every run of this bench
+      // left a production server behind on 3210. The next run then found the
+      // port taken, `next start` exited, and the bench measured the STALE server
+      // from the previous run - serving an older build whose chunk hashes no
+      // longer exist on disk, which reads as the application being dead.
+      //
+      // Two bugs, one cause. The guard above refuses to run against a stranger;
+      // this stops us creating one.
+      detached: true
     });
     if (!(await waitForServer(60_000))) {
       console.error("The production server never came up.");
+      stopServer(server);
       process.exit(2);
     }
 
@@ -695,7 +763,7 @@ async function main() {
     await checks(page);
   } finally {
     await browser?.close();
-    server?.kill("SIGKILL");
+    stopServer(server);
   }
 
   // What MUST happen, kept apart from what a document merely happens to offer.

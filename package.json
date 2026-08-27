@@ -22,7 +22,8 @@
     "bench:copper": "tsx src/lib/__bench__/copper.ts",
     "bench:repeat": "tsx src/lib/__bench__/repeat.ts",
     "bench:browser": "tsx src/lib/__bench__/browser.ts",
-    "bench:discards": "tsx src/lib/__bench__/discards.ts"
+    "bench:discards": "tsx src/lib/__bench__/discards.ts",
+    "bench:confirm": "tsx src/lib/__bench__/confirm.ts"
   },
   "dependencies": {
     "@google/genai": "^2.17.1",

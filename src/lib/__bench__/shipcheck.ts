@@ -26,16 +26,18 @@
  */
 
 import {
+  asPackage,
   createExportZip,
   packageOptions,
+  recordForPackage,
   FootprintUnavailableError,
   type OptionAnswers,
   type RequiredInput,
   type SuppliedDimensions
 } from "../exporters";
 import { pinTableFor } from "../packagevariants";
-import { densityOf, type ForgeSettings } from "../settings";
-import { resolveForExport, type PartRecord } from "../types";
+import { answersFromSettings, densityOf, type ForgeSettings } from "../settings";
+import { resolveForExport, type PartRecord, type ResolvedPart } from "../types";
 
 /**
  * One stand-in answer, in the units the field is asked in.
@@ -152,6 +154,23 @@ function identityOf(record: PartRecord, designator: string): ShippedPackage {
   return { designator, outlineCode: pinTableFor(record.packagesInThisDocument, designator)?.outlineCode ?? null };
 }
 
+/**
+ * THE RECORD THE EXPORT ACTUALLY BUILDS FROM, once a package has been chosen.
+ *
+ * Built the way `/api/export` builds it and in the same order: name the package,
+ * resolve, then relabel. Any other order gets a different record - `asPackage`
+ * blanks dimensions that `recordForPackage` had just supplied - and a bench
+ * holding a different record from the one the copper came off is the failure
+ * `bench:dimensions` spent a whole sitting on.
+ *
+ * Returns null only when the named package leaves a record `resolveForExport`
+ * declines, which is a part that does not ship at all.
+ */
+function shippedRecordFor(record: PartRecord, designator: string): ResolvedPart | null {
+  const resolved = resolveForExport(recordForPackage(record, designator));
+  return resolved.ok ? asPackage(resolved.part, designator) : null;
+}
+
 export const BENCH_SETTINGS: ForgeSettings = {
   formedLeadSpanMm: 7.62,
   formedLeadContactMm: 1.4
@@ -207,6 +226,16 @@ export async function shipOutcome(
   brokeWhenAnswered: string | null;
   /** The package whose drawing built the copper. Null when nothing shipped. */
   shippedAs: ShippedPackage | null;
+  /**
+   * The record the bundle was BUILT FROM, which is not the record that went in.
+   *
+   * A family datasheet leaves the flat block empty and states each package in
+   * `packagesInThisDocument`; the copper, the pin names and the pad count all
+   * come from that table through `asPackage`. Every instrument that wants to
+   * judge what shipped needs this record and not the input one, and each that
+   * re-derived it got a different answer. Null when nothing shipped.
+   */
+  shippedPart: ResolvedPart | null;
   /**
    * The questions the product would put to the user, and which package they are
    * about. Empty when nothing is asked.
@@ -278,6 +307,7 @@ export async function shipOutcome(
         asked: 0,
         brokeWhenAnswered: null,
         shippedAs: { designator: resolved.part.packageType, outlineCode: resolved.part.packageOutlineCode },
+        shippedPart: resolved.part,
         asks: [] as RequiredInput[],
         asksFor: null
       };
@@ -326,6 +356,7 @@ export async function shipOutcome(
           asked: 0,
           brokeWhenAnswered: null,
           shippedAs: null,
+          shippedPart: null,
           asks: [],
           asksFor: null
         };
@@ -365,6 +396,7 @@ export async function shipOutcome(
       asked: 0,
       brokeWhenAnswered: null,
       shippedAs: identityOf(record, offered.designator),
+      shippedPart: shippedRecordFor(record, offered.designator),
       asks: [],
       asksFor: null
     };
@@ -394,6 +426,7 @@ export async function shipOutcome(
         asked: 0,
         brokeWhenAnswered: null,
         shippedAs: null,
+        shippedPart: null,
         asks: [],
         asksFor: null
       };
@@ -405,6 +438,7 @@ export async function shipOutcome(
       asked: 0,
       brokeWhenAnswered: null,
       shippedAs: null,
+      shippedPart: null,
       asks: [],
       asksFor: null
     };
@@ -427,6 +461,8 @@ export async function shipOutcome(
     asked: answered.ok ? answered.asked : fewest.length,
     brokeWhenAnswered: answered.ok ? null : answered.why,
     shippedAs: answered.ok ? answered.shippedAs : null,
+    shippedPart:
+      answered.ok && answered.shippedAs ? shippedRecordFor(record, answered.shippedAs.designator) : null,
     asks: fewest,
     asksFor: cheapest.designator ?? null
   };
@@ -440,12 +476,8 @@ export async function shipOutcome(
  * them unset measures a product nobody uses: every straight-lead part would ask
  * for a span the customer has already given.
  */
-function installAnswers(settings: ForgeSettings): OptionAnswers {
-  return {
-    ...(settings.formedLeadSpanMm !== undefined ? { formedLeadSpanMm: settings.formedLeadSpanMm } : {}),
-    ...(settings.formedLeadContactMm !== undefined ? { formedLeadContactMm: settings.formedLeadContactMm } : {})
-  };
-}
+/** See `answersFromSettings`. One definition, shared with the routes. */
+const installAnswers = (settings: ForgeSettings): OptionAnswers => answersFromSettings(settings);
 
 /**
  * Answer every question the product asked, then try again.

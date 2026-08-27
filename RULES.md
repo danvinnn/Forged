@@ -124,6 +124,58 @@ engineer expects" is the only available answer.
 It does not license guessing. It means: go and find out what they expect, from
 published practice or from a real library, and record where the answer came from.
 
+## 7. Nothing ships silently unless two independent sources agree on it
+
+The invariant, and the one the product is judged on. `src/lib/confirm.ts` is
+where it lives.
+
+A value that reaches the output is either **confirmed** - two independent
+readings of the datasheet agree on it, and it ships without being mentioned - or
+**flagged**, and the user is shown it. There is no third state, and "we could not
+confirm this" is not a caveat on the rule; it is an outcome the rule already
+handles.
+
+### Independent means read by different MEANS, not the same means twice
+
+This is the load-bearing half. A model that misreads a rotated figure misreads it
+the same way twice, so a second model call is not a second source. Every pairing
+in `confirm.ts` is a reading against a DIFFERENT KIND of reading:
+
+| value | one source | the other |
+|---|---|---|
+| the pinout | a model reading the document | text-layer geometry, `pinevidence.ts` |
+| the copper | the vendor's printed footprint | IPC-7351B arithmetic on the outline |
+| the pin count | the pin table | the drawing's lead count, or the package name |
+| the pitch | the package outline drawing | the printed footprint drawing |
+| the body | the body dimensions | the lead span that has to reach past them |
+| the thermal pad | the outline's D2 and E2 | the printed footprint's own pad |
+
+A pairing that cannot name two different means is not a confirmation. Say so
+rather than inventing one.
+
+### The unit is a GLANCE, and there is a hard budget
+
+A flagged item is something a person settles by looking at one page once, so the
+pinout is ONE item whether the part has 8 pins or 144.
+
+**No part may ship with more than five.** Anthony's number, 2026-08-27: past five
+the product has stopped saving anyone time. A package that would need more is
+refused with the list of what could not be confirmed, never shipped with a dozen
+boxes to fill in. `MAX_FLAGGED` in `confirm.ts` is the number and `optionFor` is
+where the refusal happens.
+
+### A bound that cannot fail is not a confirmation
+
+A check that passes on every real record confirms nothing, and one that fires on
+correct readings spends the user's attention and teaches them to click past it.
+Both are worse than saying "nothing checked this".
+
+The worked example is the lead pitch. "The lead row has to fit the body" sounds
+like a confirmation; measured over 94 correctly read parts the row spans between
+0.44 and 1.03 of its body, so a bound wide enough to admit them all admits almost
+every wrong pitch too. The bound was dropped rather than tuned, and the pitch is
+confirmed against the printed footprint or not at all.
+
 ## The decision register
 
 Every value the product emits is one of three things, and which one is recorded:

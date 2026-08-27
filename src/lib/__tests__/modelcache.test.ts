@@ -29,6 +29,29 @@ import {
 const TEMP_DIR = mkdtempSync(join(tmpdir(), "forge-modelcache-"));
 process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
 
+/**
+ * THE RATE LIMITER'S WINDOW IS SHARED BY EVERY TEST IN THIS FILE, so this file
+ * states the limit it wants instead of inheriting one.
+ *
+ * `waitForSlot` records attempts in a MODULE-SCOPED array that is never reset -
+ * deliberately, because the limit is per API key and per process. Every test
+ * here that makes a live call pushes into it, and the default ceiling is twelve
+ * per rolling minute. So "under the ceiling nothing waits" was asserting that
+ * five requests take under a second while carrying whatever the tests above it
+ * had already spent, and crossing the ceiling makes it sleep for up to
+ * fifty-eight seconds.
+ *
+ * That is order- AND timing-dependent: a fast machine finishes the earlier tests
+ * while their attempts are still inside the sixty-second window, a slow one lets
+ * them age out. It is the "rate-limiter singleton" flake the CI workflow names
+ * as having shipped twice, and why CI runs the suite a second time.
+ *
+ * Raised here rather than reset between tests, because a reset would be new
+ * production API existing only for the suite. The pacing behaviour itself is
+ * covered without any shared state by the `slotDelayMs` tests, which are pure.
+ */
+process.env.FORGE_MODEL_RPM = "100000";
+
 process.on("exit", () => rmSync(TEMP_DIR, { recursive: true, force: true }));
 
 function request(overrides: Partial<ExtractionRequest> = {}): ExtractionRequest {
@@ -292,6 +315,9 @@ test("under the ceiling nothing waits, so the limiter is invisible", async () =>
     await model.extract(request({ fileName: `paced-${index}.pdf` }));
   }
 
+  // Headroom is GUARANTEED by the limit this file sets, not hoped for; see the
+  // note at the top. Without that, this assertion is a race against whatever the
+  // tests above happened to spend.
   assert.ok(Date.now() - started < 1000, "no delay while there is headroom");
   assert.equal(model.stats.pacedWaits, 0);
   assert.equal(model.stats.rateLimitWaits, 0, "the limit is never reached, so it is never hit");

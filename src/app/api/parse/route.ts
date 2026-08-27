@@ -11,6 +11,7 @@ import {
   type RetrievalSuccess
 } from "../../../lib/retrieval";
 import { extractPartRecord } from "../../../lib/datasheet";
+import { answersFromSettings, parseSettings } from "../../../lib/settings";
 import { PdfExtractionError } from "../../../lib/pdftext";
 // The extraction layer's public surface deliberately excludes the concrete
 // models, so importing it cannot pull a networked model into the air-gapped
@@ -25,6 +26,7 @@ import {
 } from "../../../lib/extraction/budget";
 import { type PackageDrawing } from "../../../lib/packagedrawing";
 import { type ReviewItem } from "../../../lib/review";
+import type { Confirmation } from "../../../lib/confirm";
 import { type RenderedPage } from "../../../lib/pagerender";
 import { type PackageChoice } from "../../../lib/exporters";
 import { type ConfidenceCheck } from "../../../lib/confidence";
@@ -71,6 +73,16 @@ const ROUTE_BUDGET_MS = maxDuration * 1000;
 
 /** A package designator is a short printed token; anything longer is not one. */
 const MAX_PACKAGE_HINT_LENGTH = 64;
+
+/**
+ * How long the settings blob may be before this route refuses to parse it.
+ *
+ * `parseSettings` drops anything it does not recognise, so the risk is not a
+ * bad field but the JSON parse itself: an unbounded string from an untrusted
+ * caller is an unbounded parse. The real object is two numbers and a density
+ * level.
+ */
+const MAX_SETTINGS_LENGTH = 2048;
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
@@ -141,6 +153,27 @@ export async function POST(request: Request) {
     typeof chosenPackage === "string" && chosenPackage.trim().length > 0
       ? chosenPackage.trim().slice(0, MAX_PACKAGE_HINT_LENGTH)
       : undefined;
+
+  // THE INSTALLATION'S SETTINGS, so the chooser does not ask for what they
+  // already answer.
+  //
+  // Two of them are per-part questions settled up front: the formed lead span
+  // and the seated foot. `/api/export` has read them for months; this route
+  // built the package chooser as if nothing had been answered, so a ceramic flat
+  // pack was shown two questions its own settings screen had answered. Parsed
+  // through `parseSettings`, which drops anything unrecognised and bounds both
+  // numbers exactly as the export route bounds them.
+  const settingsField = formData.get("settings");
+  let settings: ReturnType<typeof parseSettings> = {};
+  if (typeof settingsField === "string" && settingsField.length > 0 && settingsField.length < MAX_SETTINGS_LENGTH) {
+    try {
+      settings = parseSettings(JSON.parse(settingsField) as unknown);
+    } catch {
+      // Malformed settings are not a reason to refuse a datasheet. The chooser
+      // simply asks for the two numbers, which is what it did before this
+      // existed.
+    }
+  }
 
   let ref;
   try {
@@ -294,7 +327,7 @@ export async function POST(request: Request) {
   // `buildReadout`: past the point where the bytes are in hand, an upload and a
   // part-number lookup are the same operation, and keeping two copies is how the
   // two came to differ.
-  const readout = await buildReadout(part, doc, ref.bytes, rendered);
+  const readout = await buildReadout(part, doc, ref.bytes, rendered, answersFromSettings(settings));
 
   return NextResponse.json<
     RetrievalSuccess & {
@@ -303,6 +336,8 @@ export async function POST(request: Request) {
       packageChoice: PackageChoice;
       checks: ConfidenceCheck[];
       review: ReviewItem[];
+      /** What a person has to check; see `confirm.ts`. */
+      toCheck: Confirmation[];
       reviewPages: RenderedPage[];
     }
   >({
@@ -315,6 +350,7 @@ export async function POST(request: Request) {
     packageChoice: readout.packageChoice,
     checks: readout.checks,
     review: readout.review,
+    toCheck: readout.toCheck,
     reviewPages: readout.reviewPages
   });
 }

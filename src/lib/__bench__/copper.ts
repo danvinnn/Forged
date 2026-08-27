@@ -35,7 +35,7 @@
 
 import { buildFootprintGeometry, FootprintUnavailableError } from "../exporters";
 import { DIMENSION_ORACLE } from "./dimension-oracle";
-import { sameOutlineCode } from "../packagevariants";
+import { declaredLeadCount, PACKAGE_FAMILY_PATTERN, sameOutlineCode } from "../packagevariants";
 import { isStitched, replayRecords } from "./replay";
 import { thermalPadNumber } from "../geometry";
 import type { Pad } from "../geometry";
@@ -105,7 +105,7 @@ function gaps(pads: Pad[], axis: "x" | "y"): number[] {
  * the printed land. Where it says IPC, the correctness question is the one the
  * ORACLE answers, and this bench's job is the arrangement.
  */
-function usesPrintedLand(source: string): boolean {
+export function usesPrintedLand(source: string): boolean {
   return source.includes("printed in this datasheet");
 }
 
@@ -117,15 +117,51 @@ function usesPrintedLand(source: string): boolean {
  * ("CASE 751-07" against "751-07") still matches, and so a DIFFERING trailing
  * character ("D0008A" against "D0014A") still does not.
  */
-function oracleFor(part: ResolvedPart) {
-  const byPart = Object.values(DIMENSION_ORACLE).find((entry) =>
-    entry.parts.some((name) => name.toUpperCase() === part.partNumber.split("#")[0].toUpperCase())
+export function oracleFor(part: ResolvedPart) {
+  const byPart = Object.values(DIMENSION_ORACLE).find(
+    (entry) =>
+      entry.parts.some((name) => name.toUpperCase() === part.partNumber.split("#")[0].toUpperCase()) &&
+      // AND IT HAS TO BE ABOUT THE PACKAGE THAT SHIPPED.
+      //
+      // A part list says "this part reads this drawing", and it is wrong the
+      // moment a multi-package datasheet resolves somewhere else. TXB0104 ships
+      // a 14-pin SOIC whose copper matches its hand-read footprint exactly, and
+      // the by-name route handed back a 14-terminal WQFN: 5.4 mm against 2.3,
+      // reported as wrong copper on a footprint that is right.
+      //
+      // Same gate `entryDescribes` applies in `pinout-oracle.ts`, added there
+      // after the identical mistake produced five false failures in one run. A
+      // bench that scores the wrong package does not report a defect, it
+      // manufactures one.
+      describesPackage(entry.packageType, part.packageType)
   );
   if (byPart) return byPart;
   const code = part.packageOutlineCode;
   if (!code) return undefined;
   const key = Object.keys(DIMENSION_ORACLE).find((name) => sameOutlineCode(name, code));
   return key ? DIMENSION_ORACLE[key] : undefined;
+}
+
+/**
+ * Is an entry's own package name about the designator a part shipped as?
+ *
+ * Compared on FAMILY and on stated lead count rather than on spelling, because
+ * an entry writes `SOIC (14)` where a record writes `SOIC (D)`. Either being
+ * silent is not a disagreement: a partial name is not evidence of a different
+ * package.
+ */
+function describesPackage(entryName: string | undefined, designator: string): boolean {
+  if (!entryName) return true;
+  const family = (value: string) => {
+    const found = [...value.toUpperCase().matchAll(new RegExp(PACKAGE_FAMILY_PATTERN, "gi"))].map((match) => match[0]);
+    return found.length > 0 ? found[found.length - 1].toUpperCase() : null;
+  };
+  const mine = family(entryName);
+  const theirs = family(designator);
+  if (mine !== null && theirs !== null && mine !== theirs) return false;
+  const myLeads = declaredLeadCount(entryName);
+  const theirLeads = declaredLeadCount(designator);
+  return myLeads === null || theirLeads === null || myLeads === theirLeads;
 }
 
 function checkPart(

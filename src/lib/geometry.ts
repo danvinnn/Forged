@@ -130,6 +130,34 @@ export function thermalPadNumber(pinCount: number): string {
 }
 
 /** What the footprint was computed from, carried through to every output. */
+/** Which reading produced the pads, and which one checked them. */
+export type LandSource =
+  /** The recommended footprint the datasheet printed, read off its own page. */
+  | "printed"
+  /** Computed by IPC-7351B from this datasheet's package outline drawing. */
+  | "ipc7351b"
+  /** Plated holes sized by IPC-7251 from the lead diameter. */
+  | "ipc7251";
+
+export interface Corroboration {
+  /** The reading the pads were built from. */
+  from: LandSource;
+  /** The independent reading they were checked against, or null when there is none. */
+  against: LandSource | null;
+  /** True only when a second source exists AND agrees. Never true on `against: null`. */
+  agrees: boolean;
+  /**
+   * A short slug naming the outcome, for grouping.
+   *
+   * Stated by the generator rather than inferred from `detail` downstream. A
+   * consumer sniffing the sentence for a word is a consumer that breaks when the
+   * sentence is reworded, and this one is user-facing prose.
+   */
+  because: string;
+  /** What the comparison found, in a reviewer's language. */
+  detail: string;
+}
+
 export interface FootprintProvenance {
   family: string;
   source: string;
@@ -164,6 +192,29 @@ export interface FootprintProvenance {
    * their package, and it is not otherwise stated anywhere in the output.
    */
   arrangement: "single" | "dual" | "quad";
+  /**
+   * THE SECOND, INDEPENDENT SOURCE FOR THIS COPPER, and what it said.
+   *
+   * The product's rule is that no value ships silently unless two independent
+   * sources agree on it, and the pads are the value that matters most. There are
+   * exactly two readings of a land pattern available in a datasheet, and they
+   * fail differently:
+   *
+   *     the RECOMMENDED FOOTPRINT the vendor printed, read off its own page
+   *     one COMPUTED by IPC-7351B from the package outline's lead dimensions
+   *
+   * Different page, different numbers, and a standard's arithmetic in between.
+   * A misread on one does not reproduce on the other, which is what makes their
+   * agreement worth anything.
+   *
+   * Until 2026-08-27 the comparison ran on one path only. `contradictsPrintedLand`
+   * checked a COMPUTED pattern against the printed page, so on the 48 of 64
+   * footprints built FROM the printed page it never ran at all: the pads that
+   * came from the strongest source were the pads nothing checked. Both patterns
+   * are now built on both paths and compared, and the answer is recorded here so
+   * the reviewer, the export gate and the bench all read the same one.
+   */
+  corroboration: Corroboration;
   /**
    * What was READ OFF THE DATASHEET and then thrown away on the way to this
    * footprint. Empty on the ordinary path.

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collectReviewItems, REVIEW_CONFIDENCE } from "../review";
+import { collectReviewItems, isRangeField, parseRange, REVIEW_CONFIDENCE } from "../review";
 import { resolveForExport, type Citation, type Extracted, type PartRecord, type PinRecord } from "../types";
 
 const CITED: Citation = { page: 2, snippet: "read from the rendered page", region: null };
@@ -207,3 +207,41 @@ test("confirming keeps the citation, because the page is still where the evidenc
   assert.equal(confirmed.pins.method, "user-confirmed", "distinct from a value someone simply typed");
 });
 
+
+/**
+ * A CORRECTION HAS TO KEEP THE FIELD'S SHAPE.
+ *
+ * A drawing prints a lead span as a tolerance pair and IPC-7351B uses both ends,
+ * so the record holds `{minMm, maxMm}`. The review panel's correction box wrote
+ * whatever `Number()` returned into any field ending `Mm`, which for those four
+ * fields produced a record `partSchema` rejects: `/api/export` then answered
+ * "Invalid part record" on every subsequent export until the page was reloaded.
+ *
+ * Found 2026-08-27 by `bench:browser --full`, on the correction the panel
+ * invites most: it offers "or the right value" beside the lead span.
+ */
+test("a range field's correction is parsed as a range", () => {
+  assert.deepEqual(parseRange("6.6"), { minMm: 6.6, maxMm: 6.6 }, "one number means the drawing states one");
+  assert.deepEqual(parseRange("5.8 to 6.2"), { minMm: 5.8, maxMm: 6.2 });
+  assert.deepEqual(parseRange("5.8-6.2"), { minMm: 5.8, maxMm: 6.2 });
+  assert.deepEqual(parseRange("5.8 6.2"), { minMm: 5.8, maxMm: 6.2 });
+});
+
+test("a range that cannot be read is refused rather than stored wrongly", () => {
+  assert.equal(parseRange(""), null);
+  assert.equal(parseRange("about six"), null);
+  assert.equal(parseRange("6.2 to 5.8"), null, "a maximum below its minimum is not a range");
+  assert.equal(parseRange("-1"), null);
+  assert.equal(parseRange("1 2 3"), null);
+});
+
+test("the four range fields are the ones the record holds as pairs", () => {
+  // Kept beside the panel because the panel is what writes them. A field added
+  // to the record as a pair and missed here is the defect above, again.
+  for (const field of ["dimensions.leadSpanMm", "dimensions.leadWidthMm", "dimensions.leadContactMm", "dimensions.leadSpanCrossMm"]) {
+    assert.equal(isRangeField(field), true, field);
+  }
+  for (const field of ["dimensions.pitchMm", "dimensions.landSpanMm", "pinCount"]) {
+    assert.equal(isRangeField(field), false, field);
+  }
+});

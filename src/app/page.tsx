@@ -19,7 +19,8 @@ import {
   settingsComplete,
   type ForgeSettings
 } from "../lib/settings";
-import { labelForField, type ReviewItem } from "../lib/review";
+import { isRangeField, labelForField, parseRange, type ReviewItem } from "../lib/review";
+import type { Confirmation } from "../lib/confirm";
 import type { ConfidenceCheck } from "../lib/confidence";
 // Type-only: `pagerender.ts` dynamically imports mupdf, which must not follow
 // the review panel into the browser bundle.
@@ -378,6 +379,15 @@ export default function HomePage() {
   const [supplied, setSupplied] = useState<Record<string, number | string>>({});
 
   const [review, setReview] = useState<ReviewItem[]>([]);
+  /**
+   * WHAT A PERSON HAS TO CHECK, and nothing else.
+   *
+   * The invariant in `confirm.ts`: a value ships silently only where two
+   * independent readings of the datasheet agree on it, and everything else is
+   * here. Distinct from `review` below, which is about how CONFIDENT one reading
+   * was; this is about whether a second one agreed.
+   */
+  const [toCheck, setToCheck] = useState<Confirmation[]>([]);
   const [pageImages, setPageImages] = useState<RenderedPage[]>([]);
   const [checks, setChecks] = useState<ConfidenceCheck[]>([]);
   const [drawingPage, setDrawingPage] = useState<number | null>(null);
@@ -721,10 +731,17 @@ export default function HomePage() {
     return {
       tone: "ready",
       headline: "Ready to build.",
+      // THE ONE NUMBER THE PRODUCT IS JUDGED ON, said plainly.
+      //
+      // Every value in the bundle was either agreed by two independent readings
+      // of this datasheet or it is in the list below. Saying "everything was
+      // read" is a weaker claim and it is the one that used to be made here: a
+      // value can be read and still be wrong, and the user had no way to know
+      // which ones nothing had checked.
       detail:
-        review.length > 0
-          ? `${review.length} ${review.length === 1 ? "value is" : "values are"} worth a look first, but nothing is blocking.`
-          : "Everything the footprint needs was read from the datasheet."
+        toCheck.length > 0
+          ? `${toCheck.length} ${toCheck.length === 1 ? "value is" : "values are"} worth a glance. Everything else was agreed by two independent readings of this datasheet.`
+          : "Every value was agreed by two independent readings of this datasheet."
     };
   }, [
     packageChoice,
@@ -733,7 +750,9 @@ export default function HomePage() {
     part.packageType.value,
     shownNeeds.length,
     blockingReview.length,
-    review.length
+    toCheck.length,
+    part.notes,
+    offeredVariants.length
   ]);
 
   // ---------------------------------------------------------------------------
@@ -744,6 +763,7 @@ export default function HomePage() {
   function absorb(payload: Record<string, unknown>, record: PartRecord, keepChoice: boolean) {
     setPart(record);
     setReview((payload.review as ReviewItem[]) ?? []);
+    setToCheck((payload.toCheck as Confirmation[]) ?? []);
     setPageImages((payload.reviewPages as RenderedPage[]) ?? []);
     setChecks((payload.checks as ConfidenceCheck[]) ?? []);
     setDrawingPage((payload.packageDrawing as { page?: number } | null)?.page ?? null);
@@ -779,7 +799,14 @@ export default function HomePage() {
         body: JSON.stringify({
           partNumber: trimmedPart,
           ...(trimmedManufacturer ? { manufacturer: trimmedManufacturer } : {}),
-          ...(options?.packageType ? { packageType: options.packageType } : {})
+          ...(options?.packageType ? { packageType: options.packageType } : {}),
+          // THE SETTINGS GO WITH THE READ, not only with the export.
+          //
+          // The package chooser is built server side and decides what this
+          // screen asks for. Sent nothing, it reports a ceramic flat pack as
+          // needing a formed lead span and foot - two numbers this user answered
+          // on the settings screen before they were allowed to parse anything.
+          settings: settingsFor()
         })
       });
       const payload = await response.json();
@@ -825,6 +852,9 @@ export default function HomePage() {
       const formData = new FormData();
       formData.append("file", file);
       if (packageType) formData.append("packageType", packageType);
+      // See the lookup call above: the chooser cannot avoid asking for what it
+      // has not been told.
+      formData.append("settings", JSON.stringify(settingsFor()));
 
       const response = await fetch("/api/parse", { method: "POST", body: formData });
       const payload = await response.json();
@@ -930,6 +960,20 @@ export default function HomePage() {
       });
     }
     setChosenPackage(designator);
+  }
+
+  /**
+   * The settings to send with a READ, which is the settings screen's values plus
+   * anything install-scoped the user has answered since.
+   *
+   * The same union `handleExport` sends, because the chooser has to reach the
+   * same answer the export does. Two of these fields are per-part questions the
+   * user settled up front, and a chooser that has not been told them shows those
+   * questions again: measured 2026-08-27 on RHF1201, RHF310A and UT54LVDS217,
+   * two questions apiece for numbers already in the store.
+   */
+  function settingsFor(): ForgeSettings {
+    return { ...settings, ...installAnswers };
   }
 
   /**
@@ -1076,9 +1120,25 @@ export default function HomePage() {
     }
     // Numeric fields must stay numeric or the export schema rejects the record at
     // the boundary, which surfaces as an unrelated-looking failure.
-    const numeric = item.field === "pinCount" || /Mm$/.test(item.field);
+    //
+    // AND A RANGE FIELD HAS TO STAY A RANGE. A drawing prints a lead span as a
+    // tolerance pair and IPC-7351B uses both ends, so the record holds
+    // `{minMm, maxMm}`; writing a bare number there produced a record
+    // `partSchema` rejects, and every export afterwards answered "Invalid part
+    // record" until the page was reloaded. Caught by `bench:browser --full` on
+    // 2026-08-27, on the correction the panel invites most.
+    //
+    // One number means the drawing states one, which is what a dimension marked
+    // TYP or BSC gives. See `parseRange`.
     let value: unknown = text;
-    if (numeric) {
+    if (isRangeField(item.field)) {
+      const range = parseRange(text);
+      if (!range) {
+        setStatus(`${item.label} is a range: enter one number, or two as "5.8 to 6.2".`);
+        return;
+      }
+      value = range;
+    } else if (item.field === "pinCount" || /Mm$/.test(item.field)) {
       const parsed = Number(text);
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setStatus(`${item.label} must be a positive number.`);
@@ -1512,24 +1572,78 @@ export default function HomePage() {
               )}
             </section>
 
-            {/* 3. REVIEW, FOLDED UNLESS SOMETHING IS BLOCKING ------------------
-                Thirteen items on an LMP7704-SP and seventeen on a DRV8825, every
-                one a row to open and judge. Presented open, this WAS the screen
-                after a read, and none of it blocks an export unless the value is
-                untraceable. Open by default only when it does. See `verdict`. */}
+            {/* 3. WHAT TO CHECK -----------------------------------------------
+                The whole product in one list. `confirm.ts` holds the rule: a
+                value ships without being mentioned only where two INDEPENDENT
+                readings of this datasheet agree on it, and everything that did
+                not clear that bar is here.
+
+                Above the review panel and never folded, because it is the
+                shorter and the more consequential of the two: the panel below
+                says how confident ONE reading was, this says whether a second
+                one agreed. Bounded at five by `MAX_FLAGGED`; past that the
+                chooser refuses the package outright rather than handing back a
+                form. */}
+            {toCheck.length > 0 && (
+              <section className="step">
+                <div className="step-head">
+                  <span className="step-eyebrow">Worth a glance</span>
+                  <h2 className="step-title">
+                    {toCheck.length} {toCheck.length === 1 ? "value" : "values"} nothing independent could check
+                  </h2>
+                </div>
+                <p className="step-note">
+                  Everything not listed here was agreed by two separate readings of this datasheet, taken by
+                  different means, so it needs no checking.
+                </p>
+                <ul className="reviews">
+                  {toCheck.map((item) => (
+                    <li key={item.id} className="rev">
+                      <div className="rev-head rev-static">
+                        <span className="rev-label">{item.label}</span>
+                        {item.page !== null && <span className="rev-where">page {item.page}</span>}
+                      </div>
+                      <div className="rev-body rev-body-plain">
+                        <p className="rev-consequence">{item.detail}</p>
+                        {item.consequence && <p className="rev-snippet">{item.consequence}</p>}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {/* 4. THE READING ITSELF, folded unless something is blocking -----
+                NOT a list of things to check. That is the section above, and it
+                is bounded at five.
+
+                This is every value a model produced, with the page it came from,
+                so a user who wants to inspect or CORRECT one can. Measured
+                2026-08-27 across the tuned corpus: 740 items over 71 parts, of
+                which exactly ONE blocks an export. Titled "worth a look" and
+                counted at seventeen, it sat beside a two-item list saying the
+                opposite, and the user is entitled to believe the smaller number.
+
+                Its two real jobs are kept: clearing a value that cannot be
+                located on a page, which is the only thing that blocks an export,
+                and correcting one the user disagrees with. */}
             {review.length > 0 && (
               <details className="step reviews-fold" open={blockingReview.length > 0}>
                 <summary className="step-head">
-                  <span className="step-eyebrow">Worth a look</span>
+                  <span className="step-eyebrow">The reading</span>
                   <h2 className="step-title">
-                    {review.length} {review.length === 1 ? "value" : "values"} read but not verified
+                    {blockingReview.length > 0
+                      ? `${blockingReview.length} ${blockingReview.length === 1 ? "value cannot" : "values cannot"} be signed off unchecked`
+                      : `All ${review.length} model-read ${review.length === 1 ? "value" : "values"}, with their pages`}
                   </h2>
                   {blockingReview.length > 0 && (
                     <span className="badge">{blockingReview.length} blocking export</span>
                   )}
                 </summary>
                 <p className="step-note">
-                  Open one to see the page it came from, then confirm it or correct it.
+                  {blockingReview.length > 0
+                    ? "These were read but could not be located on a page. Open one to confirm it against the page or correct it."
+                    : "Nothing here is outstanding. Open any value to see the page it came from, or to correct it."}
                 </p>
 
                 <ul className="reviews">

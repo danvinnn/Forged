@@ -231,6 +231,9 @@ function classify(record: PartRecord, doc?: DatasheetText): string {
  * whole reason these are settings.
  */
 import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
+import { confirmations, MAX_FLAGGED } from "../confirm";
+import { buildFootprintGeometry } from "../exporters";
+import { densityOf } from "../settings";
 
 
 
@@ -293,6 +296,15 @@ async function main(): Promise<void> {
   let ships = 0;
   /** Ships once the customer's settings and their answers to our questions are in. */
   let shipsAnswered = 0;
+  /**
+   * Flagged values per part: how much of each bundle a person has to check.
+   *
+   * The number the product is judged on now; see `confirm.ts`. Measured on the
+   * hold-out because a stranger's datasheet is the only place it means anything.
+   * Parts whose bundle only exists once a question is answered are left OUT
+   * rather than counted as zero.
+   */
+  const flagged: number[] = [];
   /** How many questions each answered part actually took, so the friction is visible. */
   const questionsAsked = new Map<string, number>();
   /** Answered every question and still refused: a broken ask, reported by name. */
@@ -380,6 +392,26 @@ async function main(): Promise<void> {
       const outcome = await shipOutcome(record, BENCH_SETTINGS);
       if (outcome.ships) ships += 1;
       else shipRefusals.set(outcome.why, [...(shipRefusals.get(outcome.why) ?? []), part.partNumber]);
+      // HOW MUCH DOES THE USER HAVE TO CHECK? See `confirm.ts`. Measured here
+      // because a stranger's datasheet is the only place the answer means
+      // anything: the tuned corpus has been read, argued with and fixed against
+      // for months and this one has never been opened.
+      if (outcome.shippedPart) {
+        try {
+          const geometry = buildFootprintGeometry(
+            outcome.shippedPart,
+            densityOf(BENCH_SETTINGS),
+            BENCH_SETTINGS.formedLeadSpanMm,
+            undefined,
+            BENCH_SETTINGS.formedLeadContactMm
+          );
+          flagged.push(confirmations(outcome.shippedPart, geometry, parsed ?? null).flagged.length);
+        } catch {
+          // A bundle that only exists once a question is answered cannot be
+          // rebuilt from the bare record here. Left out of the distribution
+          // rather than counted as zero, which would flatter it.
+        }
+      }
       if (outcome.shipsAnswered) {
         shipsAnswered += 1;
         if (!outcome.ships) questionsAsked.set(part.partNumber, outcome.asked);
@@ -408,6 +440,16 @@ async function main(): Promise<void> {
   if (answeredAndStillRefused.size > 0) {
     console.log(`\n  ANSWERED AND STILL REFUSED (${answeredAndStillRefused.size}) - a broken ask, not a hard part:`);
     for (const [partNumber, why] of answeredAndStillRefused) console.log(`    ${partNumber.padEnd(18)} ${why}`);
+  }
+  if (flagged.length > 0) {
+    const total = flagged.reduce((sum, count) => sum + count, 0);
+    const clean = flagged.filter((count) => count === 0).length;
+    const worst = Math.max(...flagged);
+    console.log(
+      `TO CHECK:  ${(total / flagged.length).toFixed(2)} values per part on average, ` +
+        `${clean}/${flagged.length} parts with nothing, worst ${worst}` +
+        `  <- gate: never above ${MAX_FLAGGED}, ${worst <= MAX_FLAGGED ? "MET" : "MISSED"}`
+    );
   }
   console.log();
 

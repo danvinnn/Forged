@@ -3831,7 +3831,17 @@ CONSEQUENCE only, per RULES.md: no decision on this page was taken from it.
     SHIPS   55/59  (93%)   45 of them asked nothing at all
     cost    $2.92 this run, $57.43 of the $75 ceiling all-time
 
-Against the last full run on 2026-08-18, which read 61% and shipped 15 of 56.
+Against the last full run, 2026-08-18: **READ 50/54 (93%), SHIPS 31/54 (57%)**.
+
+So READ barely moved, 93% to 95%, and it was ALREADY high. **The whole gain is in
+SHIPS, 57% to 93%**, which is exactly what this session changed: the 3D body no
+longer withholds a footprint, the settings reach route one, `vacantLeadSlot` is
+derived where symmetry forces it, and a complete bundle beats a partial one.
+
+(I first wrote this comparison against "61% and 15 of 56", which is the 2026-08-17
+run and wrong in both halves - that run read 88% and shipped 18 of 58. Quoting a
+stale baseline turned a 2-point reading gain into a 34-point one. Check the
+baseline before claiming a delta.)
 
 Three parts did not read: two carry no pin table the reader could get, and one is
 NOT A DATASHEET - retrieval fetched the wrong document, which is a Layer 1 fault
@@ -3904,3 +3914,336 @@ must not be opened.
 Render the page, look at it, compare against the record. That found the defect,
 sized the category, and cost nothing. It is now the third time this week the
 rendered image settled something the text layer could not or actively lied about.
+
+
+# 2026-08-27: the flaky test was the product being non-deterministic
+
+CI went red on `a pinned timestamp makes the whole ARCHIVE byte-identical`,
+`-1 !== 0`. It had failed twice locally the day before, passed on every re-run
+and in isolation, and had been filed as "one flaky test, undiagnosed" for days.
+
+**It was not flaky. The bundle was not reproducible.**
+
+`createExportZip` writes every entry through a loop that pins `{ date: entryDate }`
+- and wrote `manifest.json` above that loop with a bare `zip.file(name, content)`.
+JSZip stamps an undated entry from the WALL CLOCK, so the manifest carried a
+different modification time in each archive.
+
+The comment three lines below the bug says exactly what the bug is:
+
+    // THE ZIP'S OWN ENTRY DATES ARE PART OF THE BYTES.
+    // JSZip stamps each entry with `new Date()` unless told otherwise, so two
+    // archives of identical files still differ.
+
+That fix was applied to the loop and missed the one entry written above it.
+
+## Why it looked flaky, and why that mattered
+
+**The ZIP date field has TWO-SECOND resolution.** Two builds inside one tick are
+byte-identical; two straddling a tick are not. So the test passed roughly nine
+runs in ten. `-1` rather than `1` every time, because the first archive is always
+the earlier one.
+
+A test that fails one run in ten reads as unreliable, and an unreliable test gets
+re-run rather than read. It cost days, and CI runs the suite twice precisely to
+catch this class.
+
+## The fix, and a test that cannot pass by luck
+
+One door: `addEntry` pins the date and every entry goes through it, so a later
+entry cannot reintroduce this by forgetting an argument.
+
+The byte comparison stays, but it is a poor DETECTOR. The new test asks the
+question directly - **every entry's stored date is the pinned instant** - and was
+proved by reintroducing the bare `zip.file` and watching it go red while the byte
+comparison passed in the same run.
+
+**When a test is intermittent, ask what resolution the thing it compares has.**
+A property checked through a lossy encoding fails only when the input straddles a
+boundary.
+
+## And the rate-limiter singleton, fixed in the same pass
+
+`waitForSlot` records attempts in a module-scoped array, never reset, twelve per
+rolling minute. Every live call in `modelcache.test.ts` pushes into it, so
+`under the ceiling nothing waits` was asserting that five requests take under a
+second while carrying whatever the tests above it had spent. Crossing the ceiling
+sleeps for up to fifty-eight seconds.
+
+Order- AND timing-dependent: a fast machine finishes the earlier tests while their
+attempts are still inside the window, a slow one lets them age out. This is the
+"rate-limiter singleton" flake the CI workflow names as having shipped twice.
+
+The file now STATES the limit it wants rather than inheriting one. Not a reset
+between tests, because that would be production API existing only for the suite,
+and the pacing behaviour itself is covered with no shared state at all by the
+pure `slotDelayMs` tests.
+
+---
+
+# THE INVARIANT, 2026-08-27
+
+The product's promise was: correct, or it tells you precisely what it could not
+read and asks you for that, and the asking is rare enough that a user still saves
+time. Every metric this project had published counted what we PRODUCED - fields
+that came back non-null, parts that exported - and none of them answered the
+question the promise makes, which is *how many of these numbers does the user
+have to go and check?*
+
+The answer was "all of them or none of them, and nobody knows which".
+
+## The reframing that made it finishable
+
+The goal forbids exactly ONE thing: **a value that is wrong and silent.** It does
+not require reading perfectly. It requires classifying perfectly, which is
+achievable outright.
+
+So the whole product reduces to one invariant, now `RULES.md` rule 7 and
+`src/lib/confirm.ts`:
+
+> No value ships silently unless two INDEPENDENT sources agree on it. Everything
+> else is put in front of the user.
+
+and one number: **flagged values per part**, published by `npm run bench:confirm`.
+
+## Independent means read by different MEANS
+
+The load-bearing half, and the thing that makes agreement worth anything. A model
+that misreads a rotated figure misreads it the same way twice, so a second model
+call is not a second source. Every pairing shipped is a reading against a
+different KIND of reading: a model against text-layer geometry, a printed drawing
+against a standard's arithmetic, a pin table against a mechanical drawing.
+
+## What the number did when it was turned on
+
+```
+                         first run     after the work
+  average per part          1.72           1.53
+  parts with nothing        0%             34%
+  worst part                4              4          gate: never above 5
+```
+
+The gate Anthony set is five and it was met from the first run: **no part in the
+tuned corpus shows more than four things to check.** The average and the clean
+share are what the work moved, and they moved less than the defect list below
+suggests because two of those fixes replaced a WEAK confirmation with a stronger
+one that is available less often. That trade is the right one and it costs the
+average: the pitch went from 23 flags to 51 the day it stopped being confirmed by
+a bound that could not fail.
+
+## Four defects the number found, all of them ours rather than the datasheets'
+
+**1. The land-pattern comparison was stranded behind an `else`.**
+`contradictsPrintedLand` ran only when the printed pattern could NOT be read, so
+on every footprint built FROM a printed pattern - the strongest source we have -
+nothing checked it. Both patterns are now built on both paths and the answer is
+recorded on the footprint's own provenance, so the reviewer, the export gate and
+the bench all read the same one.
+
+**2. `asPackage` dropped the printed footprint and nothing put it back.**
+Relabelling a record to a sibling package correctly drops `vendorLandPattern`,
+because that page draws a different package's pads. Dropping it was ALL that
+happened, so every package reached through the chooser arrived with no printed
+footprint: **7 of 106 shipping parts carried one**, against documents that mostly
+draw one per package. It is the second source for the copper and for the pitch,
+so both were flagged nearly everywhere for a reason that was ours.
+
+Fixed by locating it PER PACKAGE at parse time, where the document is in hand,
+and carrying it on `packagesInThisDocument`. Not in the chooser: the chooser would
+then report a corroboration `/api/export` could not reproduce, which is the exact
+drift `optionFor` exists to prevent. 7 → 29.
+
+**3. The land-pattern reader could not read a drawing dimensioned in inches.**
+TI prints `8X (.061  )` with `[1.55]` on the next line. The callout pattern
+required a digit before the decimal point, so every inch-primary drawing read as
+a footprint with no callouts at all - and those are exactly the drawings whose
+millimetres sit in brackets a few characters later.
+
+Which of the pair is millimetres is NOT assumed and no note is parsed for it:
+1.55 is 0.061 x 25.4, and that arithmetic identifies the pair on its own. A
+callout with no twin on an inch-primary drawing is dropped rather than converted,
+because a bag of land dimensions silently scaled by 25.4 is the worst thing this
+reader could produce.
+
+**4. The drawing was matched by its CAPTION and the caption drifts.**
+DRV8825's ordering guide says `HTSSOP` and its drawing is titled `PowerPAD TSSOP`;
+LM358's `VSSOP` arrives as `TMVSSOP` because the text layer folds a superscript
+trademark back in. Both rejected the right drawing. Matched on the OUTLINE CODE
+first now, which is the drawing's own identity and does not drift. 29 → 47.
+
+## A bound that cannot fail is not a confirmation
+
+The pitch was going to be confirmed by "the lead row has to fit the body". It
+sounds like arithmetic and it is not a confirmation: measured over 94 correctly
+read parts the row spans between **0.44 and 1.03** of its body, so a bound wide
+enough to admit them all admits almost every wrong pitch, and a bound tight enough
+to mean something flagged 22 correct readings.
+
+The bound was dropped rather than tuned. The pitch is confirmed against the
+printed footprint, which states it on **29 of 29** documents that print one, or it
+is not confirmed at all and the user is told.
+
+## The second reader had to be validated before it could ship
+
+`pinevidence.ts` reads the pinout a second time from the text layer's geometry -
+number columns, and the claimed name at a constant offset from each. It is a
+VERIFICATION rather than a competing reader, which is what lets it skip the
+genuinely hard part: deciding where a name begins and ends.
+
+Scored against the 36 hand-read pinouts in `PINOUT_ORACLE`:
+
+```
+  confirmed and the oracle agrees      23
+  CONFIRMED AND THE ORACLE DISAGREES    0    <- the outcome that would sink it
+  flagged and the oracle disagrees      1
+  flagged though the oracle agrees     13    <- glances we did not have to ask for
+```
+
+Zero false confirmations is the property worth protecting and it is why the
+reader stops where it does. Three refinements were rejected for risking it.
+
+**Its accusations were dropped entirely.** An earlier version named the pin the
+page "really" said. All four conflicts it produced on the corpus were artifacts of
+reading a ROTATED figure, where a label's reported width does not cover its glyphs
+so neighbouring labels glue into one string - every one of them naming a pin the
+datasheet agrees with. The invariant does not need them: it asks for agreement,
+and a pin with no legible name is not agreed either way.
+
+## Two defects in the browser bench, one cause
+
+`bench:browser` is now in CI, which is where it found that it had been leaking a
+production server on every run. `npx next start` is a wrapper: killing the handle
+kills the wrapper and leaves the grandchild holding the port. The next run then
+found the port taken, `next start` exited, and the bench measured the STALE server
+from the previous run - serving an older build whose chunk hashes no longer
+existed on disk. Eight browser problems, none of them about the code.
+
+Both halves fixed: the server is spawned `detached` and killed as a group, and the
+bench refuses outright to run against anything already on its port. **A bench that
+silently measures a stranger cannot be trusted when it is green either.**
+
+## And a per-package join that had been dropping readings
+
+`bench:discards` found nine values on the record and unreachable. A document is
+routinely read twice for one package - once where it tabulates the pinout, once
+where it draws the outline - and the two readings arrived as two entries.
+`pinTableFor` is a `find`, so every lookup took the first. LM317's `MPDS094A` is
+read once with a pin table and no measurements and once with nine measurements,
+and the nine were invisible.
+
+Joined on the OUTLINE CODE, because a caption is recomposed on every run and one
+document can print two drawings under one caption. Joining on the caption would
+have merged two packages into a package that does not exist.
+
+The first attempt then folded LT1013's 14-lead PDIP into its 8-lead one, which
+share a code in the reading. Guarded on STATED lead counts - the caption's own
+words and the drawing's `leadCount` - and deliberately not on the number of rows
+read, because that re-split LM317's SOT-223, whose two readings returned four rows
+and three for a three-lead package with a tab. **A reading disagreeing with itself
+is not evidence of two packages.**
+
+## What is still flagged, and why
+
+Both remaining classes are honest and are named as such on the screen:
+
+- **the datasheet prints no footprint we could find** - the pads were computed by
+  IPC-7351B from the outline drawing and nothing independent checked them
+- **the pinout is drawn as artwork** - there is no text layer to read it from a
+  second time
+
+For no-lead packages there is a third, and it is a limit of the STANDARD rather
+than of the reading: IPC-7351B publishes its fillet goals per lead form and only
+the gull-wing set is transcribed here. Saying "the package outline was not read
+well enough" about a QFN would send its reader to a page that is already correct.
+
+---
+
+# WHAT "READY TO RELEASE" COST, 2026-08-27
+
+Three blockers were named against a release. Two were closable and closing them
+found four more defects, every one of them in the half of the product no
+instrument had been pointed at: **the screen**.
+
+## 1. Only half the mechanism had been validated against ground truth
+
+The pinout confirmations were scored against `PINOUT_ORACLE`. The COPPER
+confirmations were scored against nothing, so "confirmed" on a land pattern was
+an unaudited claim. `bench:confirm` now crosses the confirmation state with the
+hand-read footprints in `DIMENSION_ORACLE`:
+
+```
+  PINOUT   23 confirmed and correct, 0 false confirmations
+  COPPER   15 confirmed and correct, 0 false confirmations
+```
+
+Its first run reported one false confirmation, TXB0104, and **the product was
+right and the check was wrong**: `oracleFor` in `bench:copper` matches by part
+NAME first, and TXB0104's name is claimed by a WQFN entry while the part ships a
+SOIC. 5.4 mm scored against 2.3. The gate `entryDescribes` applies in
+`pinout-oracle.ts` - compare on family and stated lead count - now applies here
+too, and both benches got it.
+
+**A bench that scores the wrong package does not report a defect, it manufactures
+one.** Third time this file has recorded that sentence.
+
+## 2. The full journey had never been run against the current code
+
+`bench:browser -- --full` is one real model call and it earns it every time. It
+found three defects in three runs, none of which any offline instrument can see.
+
+**The settings never reached the chooser.** `/api/export` has read the
+installation's settings since 2026-08-19. `/api/parse` and `/api/lookup` sent
+`buildReadout` nothing, so the package chooser - which decides what the screen
+asks for - evaluated every package as though the user had answered nothing. Two
+of those settings ARE per-part questions settled up front. Measured: RHF1201,
+RHF310A and UT54LVDS217, two questions apiece for numbers sitting in the settings
+store. All three are ceramic flat packs, which is this product's market.
+
+The same defect `shipcheck.ts` records fixing in the BENCH nine days earlier. The
+bench was fixed; the product was not.
+
+**The screen asked for eight numbers and then built the part.** The chooser only
+represented the package the reading settled on when some harvested variant
+happened to be spelled the same way, and an ordering guide's vocabulary routinely
+differs from the drawing's - a record reading `HTSSOP (28)` against variants
+reading `HTSSOP`. Where it did not match, every option went through `asPackage`,
+which blanks every dimension because they describe another package's drawings -
+correctly - and the screen asked for all eight.
+
+**Thirteen parts that ship with no question at all were shown eight**, under a
+verdict reading "8 numbers are needed before this can be built", directly above a
+button that built it. The record's own package is now always on offer, built from
+the record as it stands, which is exactly what exporting without choosing does.
+
+**Correcting a lead span broke every subsequent export.** The correction box wrote
+`Number(text)` into any field ending `Mm`. Four of those fields are `{minMm,
+maxMm}` pairs, so the record became one `partSchema` rejects and `/api/export`
+answered "Invalid part record" until the page was reloaded. The comment directly
+above the bug said "numeric fields must stay numeric or the export schema rejects
+the record at the boundary, which surfaces as an unrelated-looking failure",
+which is precisely what happened, for the case it did not cover.
+
+Only reachable once the eight false questions were gone: the bench had been
+answering a QUESTION on that part and started taking the CORRECTION path instead.
+**Removing friction exposed a defect the friction was hiding.**
+
+## 3. The two panels were arguing with each other
+
+`toCheck` said "2 values worth a glance". The review panel beneath it said "17
+values read but not verified". Measured across the tuned corpus: **740 review
+items over 71 parts, of which exactly ONE blocks anything.**
+
+The panel is not deleted - it is the only way to clear a value that cannot be
+located on a page, and the only way to correct one - but it no longer claims to
+be a to-do list. It is titled as what it is: the reading, value by value, with
+the page each came from.
+
+## The pattern in all four
+
+Every one lived in the gap between a route handler and a browser. `tsc`, 825
+tests, and eight offline benches were green through all of them, because none of
+those load a page, and the two that could have - the settings gap and the
+chooser drift - were measurable offline and nobody had thought to ask.
+
+**When an instrument finds nothing for a while, the question is not whether the
+product is clean. It is what the instrument cannot see.**

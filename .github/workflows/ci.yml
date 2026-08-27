@@ -87,6 +87,26 @@ jobs:
       - name: Production build
         run: npm run build
 
+      # DOES THE APPLICATION ACTUALLY RUN IN A BROWSER?
+      #
+      # On 2026-08-24 this product was found to have been serving a DEAD PAGE for its whole life:
+      # the CSP blocked the inline scripts Next boots from, React never hydrated, and choosing a
+      # datasheet did nothing because the file input had no handler bound to it. Every step above
+      # this line was green throughout. Nothing in this repo had ever loaded the page.
+      #
+      # The default pass is free and makes no model call: it loads the production build, proves it
+      # hydrated, walks the settings screen and the first-run gate, and fails on any console error,
+      # uncaught exception or failed request. That is the entire class above.
+      #
+      # It does NOT cover upload, parse and export. Those need a real model call, which costs money
+      # and cannot run here; `npm run bench:browser -- --full` is the pre-release step for them and
+      # is named as such rather than pretended at.
+      - name: Install a browser for the end-to-end pass
+        run: npx playwright install --with-deps chromium
+
+      - name: The app runs in a browser
+        run: npm run bench:browser
+
       # A public repo. Committing a key is unrecoverable once pushed, so this is cheap insurance
       # rather than a judgement call left to whoever opens the PR.
       - name: Secret scan

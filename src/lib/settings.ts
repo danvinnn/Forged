@@ -217,3 +217,30 @@ export function densityOf(settings: ForgeSettings): DensityLevel {
 export function footprintSourceOf(settings: ForgeSettings): FootprintSource {
   return settings.footprintSource ?? "datasheet-first";
 }
+
+/**
+ * THE INSTALLATION'S SETTINGS, AS ANSWERS THE CHOOSER CAN USE.
+ *
+ * Two of the settings are per-part questions the user has already answered up
+ * front: the formed lead span and the seated foot, both properties of the
+ * assembler's forming die. `/api/export` has read them off the settings since
+ * 2026-08-19; the CHOOSER, which decides what the screen asks for, was built as
+ * if nothing had been answered.
+ *
+ * Measured 2026-08-27: three parts - RHF1201, RHF310A and UT54LVDS217, all
+ * ceramic flat packs and all squarely in this product's market - were shown two
+ * questions apiece for numbers sitting in the settings store. The export would
+ * have accepted them without asking.
+ *
+ * Lives here rather than in the bench that first needed it, so the product and
+ * every instrument read the settings the same way.
+ */
+export function answersFromSettings(settings: ForgeSettings): {
+  formedLeadSpanMm?: number;
+  formedLeadContactMm?: number;
+} {
+  return {
+    ...(settings.formedLeadSpanMm !== undefined ? { formedLeadSpanMm: settings.formedLeadSpanMm } : {}),
+    ...(settings.formedLeadContactMm !== undefined ? { formedLeadContactMm: settings.formedLeadContactMm } : {})
+  };
+}

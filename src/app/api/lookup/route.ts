@@ -23,10 +23,12 @@ import {
 } from "../../../lib/extraction/budget";
 import { type RenderedPage } from "../../../lib/pagerender";
 import { buildReadout } from "../../../lib/readout";
+import { answersFromSettings, parseSettings } from "../../../lib/settings";
 import { type PackageDrawing } from "../../../lib/packagedrawing";
 import { type PackageChoice } from "../../../lib/exporters";
 import { type ConfidenceCheck } from "../../../lib/confidence";
 import { type ReviewItem } from "../../../lib/review";
+import type { Confirmation } from "../../../lib/confirm";
 import { type PartRecord } from "../../../lib/types";
 
 /**
@@ -110,7 +112,13 @@ const lookupSchema = z.object({
   // could not tell which of the document's packages they hold. See
   // `buildPartRecord`; this is the argument the pin readers use to choose among
   // per-package pinouts.
-  packageType: z.string().trim().min(1).max(MAX_PACKAGE_LENGTH).optional()
+  packageType: z.string().trim().min(1).max(MAX_PACKAGE_LENGTH).optional(),
+  /**
+   * THE INSTALLATION'S SETTINGS, so the chooser does not ask for what they
+   * already answer. See `answersFromSettings`; `parseSettings` drops anything
+   * unrecognised, so this is deliberately loose here and bounded there.
+   */
+  settings: z.unknown().optional()
 });
 
 function fail(code: RetrievalErrorCode, error: string, mode: DeploymentMode, status: number) {
@@ -266,6 +274,7 @@ export async function POST(request: Request) {
     return fail("PART_NUMBER_REQUIRED", "Part number is required.", mode, 400);
   }
   const { partNumber, manufacturer, packageType } = parsed.data;
+  const settings = parseSettings(parsed.data.settings);
 
   // Air-gap gate. In air-gapped mode makeResolver returns null after failing closed, so no network
   // code is even loaded. Part-number lookup is a network operation and is unavailable here.
@@ -389,7 +398,7 @@ export async function POST(request: Request) {
   // Shared with `/api/parse` rather than copied. Past the point where the bytes
   // are in hand the two are the same operation, and two copies is exactly how
   // the second half came to exist on only one of them.
-  const readout = await buildReadout(part, doc, ref.bytes, rendered);
+  const readout = await buildReadout(part, doc, ref.bytes, rendered, answersFromSettings(settings));
 
   return NextResponse.json<
     RetrievalSuccess & {
@@ -398,6 +407,8 @@ export async function POST(request: Request) {
       packageChoice: PackageChoice;
       checks: ConfidenceCheck[];
       review: ReviewItem[];
+      /** What a person has to check; see `confirm.ts`. */
+      toCheck: Confirmation[];
       reviewPages: RenderedPage[];
     }
   >({
@@ -409,6 +420,7 @@ export async function POST(request: Request) {
     packageChoice: readout.packageChoice,
     checks: readout.checks,
     review: readout.review,
+    toCheck: readout.toCheck,
     reviewPages: readout.reviewPages
   });
 }

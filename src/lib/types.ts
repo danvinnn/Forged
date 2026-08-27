@@ -517,6 +517,16 @@ export const partSchema = z.object({
         /** Other names this document prints for the same package; see the type. */
         alsoKnownAs: z.array(z.string().min(1).max(64)).max(8).optional(),
         /**
+         * ON THE SCHEMA as well as the type. `/api/export` validates a POSTED
+         * record with this schema and zod strips keys it does not know about, so
+         * a field only the type carries is silently dropped on exactly the route
+         * that builds the footprint - which is how `drawnPackages` lost its check
+         * on every export. See the type for what this is.
+         */
+        vendorLandPattern: z
+          .object({ page: z.number().int().positive(), valuesMm: z.array(z.number().positive()).max(64) })
+          .optional(),
+        /**
          * Optional since 2026-08-18. A document routinely prints an outline
          * drawing per package while tabulating ONE pinout, and such an entry
          * carries measurements and no rows. Requiring rows discarded it whole.
@@ -726,6 +736,28 @@ export type PartRecord = {
      * both names are known and both are the document's own.
      */
     alsoKnownAs?: string[];
+    /**
+     * WHERE THIS DATASHEET PRINTS THE FOOTPRINT FOR *THIS* PACKAGE, and whatever
+     * callouts could be read off it.
+     *
+     * Per package for the same reason every measurement here is: the page draws
+     * one package's pads, and against a sibling designator it is the wrong page.
+     * The record's flat `vendorLandPattern` names the page for whichever package
+     * the READING settled on, and `asPackage` correctly drops it on a relabel.
+     *
+     * Dropping it was all that happened, so until 2026-08-27 every package
+     * reached through the chooser arrived with none: measured that day, 7 of 106
+     * shipping parts carried a printed footprint, against documents that mostly
+     * draw one per package. It is the second source for the copper and for the
+     * pitch, so both were flagged almost everywhere for a reason that was ours
+     * and not the datasheet's.
+     *
+     * Located at parse time, where the document is in hand, and carried on the
+     * record so `/api/export` sees exactly what the chooser saw. A footprint
+     * whose callouts could not be read is recorded with an empty list, which is a
+     * different statement from no footprint and is one the user can act on.
+     */
+    vendorLandPattern?: { page: number; valuesMm: number[] };
     /** Absent on an entry that carries measurements and no pinout. */
     pins?: PinRecord[];
     exposedPad?: boolean;
@@ -823,6 +855,8 @@ export interface ResolvedPart {
      * both names are known and both are the document's own.
      */
     alsoKnownAs?: string[];
+    /** See the identical field on `PartRecord`. Per package, for the same reason. */
+    vendorLandPattern?: { page: number; valuesMm: number[] };
     /** Absent on an entry that carries measurements and no pinout. */
     pins?: PinRecord[];
     exposedPad?: boolean;

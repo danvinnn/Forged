@@ -205,6 +205,56 @@ const REVIEWABLE: Array<{ field: string; label: string; consequence: string }> =
   }
 ];
 
+/**
+ * The fields the record holds as a MIN/MAX PAIR rather than a single number.
+ *
+ * A drawing prints a lead span as a tolerance range and IPC-7351B uses both
+ * ends, so the record keeps both. Anything writing one of these has to write the
+ * pair: a bare number there produces a record `partSchema` rejects, and
+ * `/api/export` answers "Invalid part record", which reads as the reading being
+ * broken rather than as the correction being the wrong shape.
+ *
+ * Found 2026-08-27 by `bench:browser --full`: correcting a lead span in the
+ * review panel made every subsequent export 400 until the page was reloaded.
+ *
+ * Lives here because this module is dependency-free and the browser renders the
+ * correction box from it; `merge.ts` imports the same list rather than keeping a
+ * second one.
+ */
+export const RANGE_FIELDS = [
+  "dimensions.leadWidthMm",
+  "dimensions.leadSpanMm",
+  "dimensions.leadSpanCrossMm",
+  "dimensions.leadContactMm"
+] as const;
+
+export function isRangeField(field: string): boolean {
+  return (RANGE_FIELDS as readonly string[]).includes(field);
+}
+
+/**
+ * A user's typed correction for a range field, as the pair the record holds.
+ *
+ * One number means the drawing states one, which is what a dimension marked TYP
+ * or BSC gives; both ends are then that number. Two, separated the way a person
+ * writes a range, are taken in the order given. Null is a value this cannot
+ * read, and the caller says so rather than storing something shaped wrongly.
+ */
+export function parseRange(text: string): { minMm: number; maxMm: number } | null {
+  // A HYPHEN IS A SEPARATOR ONLY BETWEEN TWO DIGITS. Splitting on it anywhere
+  // turned `-1` into the single value 1, so a negative number came back as a
+  // positive one rather than as a refusal.
+  const parts = text
+    .split(/\s*(?:to|\.\.|\/)\s*|(?<=\d)\s*[-–—]\s*(?=[\d.])|\s+/i)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length > 0);
+  if (parts.length === 0 || parts.length > 2) return null;
+  const numbers = parts.map(Number);
+  if (numbers.some((value) => !Number.isFinite(value) || value <= 0)) return null;
+  const [first, second = first] = numbers;
+  return second >= first ? { minMm: first, maxMm: second } : null;
+}
+
 /** Every field the panel can ask about, for tests that check nothing is missed. */
 export const REVIEWABLE_FIELDS: readonly string[] = REVIEWABLE.map((entry) => entry.field);
 

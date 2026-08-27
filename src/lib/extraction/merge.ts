@@ -2,6 +2,8 @@ import type { DatasheetText } from "../pdftext";
 import { pinElectricalTypes, type Citation, type Extracted, type ExtractionMethod, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
 import { extractionFields, type ExtractionField, type ExtractionResult, type ModelValue } from "./contracts";
 import { citableText, quarantinedRegions } from "./untrusted";
+import { RANGE_FIELDS as RANGE_FIELD_LIST } from "../review";
+import { statedLeadCount } from "../packagevariants";
 
 /**
  * MODEL-FIRST merging, and verification of what the model claims.
@@ -24,12 +26,11 @@ import { citableText, quarantinedRegions } from "./untrusted";
  * validation below correctly drops, and the test then reports the merge broken.
  * One list, both readers.
  */
-export const RANGE_FIELDS = [
-  "dimensions.leadWidthMm",
-  "dimensions.leadSpanMm",
-  "dimensions.leadSpanCrossMm",
-  "dimensions.leadContactMm"
-] as const;
+/**
+ * Re-exported so this module's callers keep their import, with ONE definition.
+ * See `review.ts`, which is dependency-free and is where the browser reads it.
+ */
+export { RANGE_FIELDS } from "../review";
 
 /** Reads the Extracted<T> currently at a dotted field path. */
 function fieldAt(part: PartRecord, field: ExtractionField): Extracted<unknown> {
@@ -1125,7 +1126,7 @@ export function mergeModelValues(
     // A range field is validated before anything else looks at it. An
     // ill-formed pair is DROPPED rather than stored uncited, for the same
     // reason a bad pin table is: these two feed the land pattern directly.
-    if ((RANGE_FIELDS as readonly string[]).includes(field)) {
+    if ((RANGE_FIELD_LIST as readonly string[]).includes(field)) {
       const range = asRange(value);
       if (!range) {
         rejected.push({ field, reason: "the value was not a positive min/max pair in millimetres" });
@@ -1521,7 +1522,82 @@ export function mergeModelValues(
         ...(dimensions ? { dimensions } : {})
       });
     }
-    if (usable.length > 0) merged.packagesInThisDocument = usable;
+    // ONE DRAWING, ONE ENTRY.
+    //
+    // A document is routinely read twice for the same package - once where it
+    // tabulates the pinout and once where it draws the outline - and the two
+    // readings arrive as two entries. Nothing joined them, so the record carried
+    // both and every lookup took the FIRST: `pinTableFor` is a `find`.
+    //
+    // Measured on LM317, 2026-08-27. Its `MPDS094A` is read twice, once with a
+    // four-row pin table and no measurements and once with nine measurements and
+    // a three-row table. The pin lookup found the first and the nine dimensions
+    // were on the record, unreachable, reported by `bench:discards` as thrown
+    // away with no reason given.
+    //
+    // Joined on the OUTLINE CODE and on nothing else. That is the drawing's own
+    // identity and it is the reason the field exists: a caption is composed and
+    // recomposed on every run and one document can print two different drawings
+    // under one caption, so joining on the caption would merge two packages into
+    // a package that does not exist. Entries with no code stay separate, which
+    // is the behaviour they have today.
+    //
+    // First reading wins per field, which is the same rule the flat record uses:
+    // a later answer never overwrites one already held.
+    // AND ONLY WHERE THEY ARE THE SAME LENGTH.
+    //
+    // A lead count is not an identity, but two entries stating DIFFERENT counts
+    // are certainly not one package, whatever code they carry. LT1013's reading
+    // files its 8-lead and 14-lead PDIPs under one drawing code, and joining on
+    // the code alone folded a fourteen-lead package into an eight-lead one and
+    // dropped its nine measurements. The count is read from whatever the entry
+    // states it with: its caption, its own `leadCount`, or the rows of its pin
+    // table.
+    //
+    // STATED counts only: the caption's own words and the drawing's `leadCount`.
+    // The number of ROWS we managed to read is not a claim about the package, and
+    // using it re-split LM317's SOT-223, whose two readings of one drawing
+    // returned four rows and three - a three-lead package with a tab, counted
+    // both ways. A reading disagreeing with itself is not evidence of two
+    // packages.
+    const leadsOf = (entry: (typeof usable)[number]): number | null => {
+      const stated = statedLeadCount(entry.packageType);
+      if (stated !== null) return stated;
+      const counted = entry.dimensions?.leadCount?.value;
+      return typeof counted === "number" ? counted : null;
+    };
+    const byDrawing = new Map<string, (typeof usable)[number]>();
+    const joined: typeof usable = [];
+    for (const entry of usable) {
+      const code = entry.outlineCode?.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const candidate = code ? byDrawing.get(code) : undefined;
+      const mine = leadsOf(entry);
+      const theirs = candidate ? leadsOf(candidate) : null;
+      const seen = candidate && (mine === null || theirs === null || mine === theirs) ? candidate : undefined;
+      if (!seen) {
+        // The first entry under a code keeps it; a second one of a different
+        // length is a different package and is kept separately rather than
+        // overwriting the map, so a third of the FIRST length still joins.
+        if (code && !candidate) byDrawing.set(code, entry);
+        joined.push(entry);
+        continue;
+      }
+      if (seen.pins === undefined && entry.pins !== undefined) {
+        seen.pins = entry.pins;
+        seen.exposedPad = entry.exposedPad;
+        seen.citation = entry.citation;
+      }
+      if (entry.dimensions) {
+        seen.dimensions = { ...entry.dimensions, ...(seen.dimensions ?? {}) };
+      }
+      const names = new Set([...(seen.alsoKnownAs ?? []), ...(entry.alsoKnownAs ?? [])]);
+      // The other entry's CAPTION is another name this document prints for the
+      // same drawing, which is exactly what `alsoKnownAs` is for. Losing it would
+      // cost the chooser a name a user may be looking the package up under.
+      if (entry.packageType !== seen.packageType) names.add(entry.packageType);
+      if (names.size > 0) seen.alsoKnownAs = [...names];
+    }
+    if (joined.length > 0) merged.packagesInThisDocument = joined;
   }
 
   // Which packages the document actually DRAWS. Stored unfiltered: it is checked
@@ -1569,7 +1645,7 @@ function packageDimensions(
     if (!claimed || claimed.value === null || claimed.value === undefined) continue;
 
     let value: ModelValue["value"] = claimed.value;
-    if ((RANGE_FIELDS as readonly string[]).includes(field)) {
+    if ((RANGE_FIELD_LIST as readonly string[]).includes(field)) {
       const range = asRange(value);
       if (!range) continue;
       value = range;

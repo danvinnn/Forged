@@ -163,6 +163,7 @@ function onePadGeometry(): FootprintGeometry {
       centreToCentreMm: 5.4,
       pitchMm: 1.27,
       arrangement: "dual" as const,
+      corroboration: { from: "printed" as const, against: null, agrees: false, because: "fixture", detail: "fixture" },
       discards: []
     }
   };

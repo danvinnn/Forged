@@ -567,6 +567,23 @@ button:disabled {
   font-family: var(--mono);
 }
 
+/* A `What to check` row is read, not opened: there is no page image beside it
+   and no control in it, so the two-column body below would leave half the row
+   empty. */
+.rev-static {
+  cursor: default;
+}
+
+.rev-static:hover {
+  background: transparent;
+}
+
+.rev-body-plain {
+  grid-template-columns: 1fr !important;
+  gap: 0.35rem !important;
+  padding-left: 0.9rem !important;
+}
+
 .rev-body {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(300px, 1.1fr);
