@@ -39,8 +39,21 @@ export interface PinoutOracleEntry {
   packageType?: string;
   /** Where a person read these names. */
   source: string;
-  /** Pin number to name, as printed. Partial is fine. */
-  pins: Record<string, string>;
+  /**
+   * Pin number to name, as printed. Partial is fine.
+   *
+   * A LIST where the document prints the same pin under more than one name, and
+   * both are its own words. ST does this throughout: Table 5 of STM32F103C8
+   * names pin 5 `OSC_IN` while Figure 8 draws it `PD0-OSC_IN`, because the pin
+   * defaults to the oscillator and can be remapped to port D bit 0. Neither is
+   * wrong and neither is a different pin.
+   *
+   * This is not a licence to soften a comparison. It records a fact about the
+   * DOCUMENT - here are the names it prints for this pin - and a reading that
+   * matches none of them is still a mismatch. `VSS` against `VCAP_1` is a
+   * different net and would never be listed together.
+   */
+  pins: Record<string, string | readonly string[]>;
 }
 
 /**
@@ -48,7 +61,28 @@ export interface PinoutOracleEntry {
  * vendor's `IN1–` (en dash) and `IN1-` (hyphen) are the same pin and a PDF's
  * choice between them is typography rather than data. Everything else must match.
  */
-export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
+/**
+ * ONE PART MAY HAVE SEVERAL HAND-READ PINOUTS, because a datasheet may print
+ * several and they may disagree.
+ *
+ * OPA2277 is the case that forced it. Page 4 draws two figures side by side and
+ * its Pin Functions table states both columns outright:
+ *
+ *     Out B    7 (SOIC/PDIP)    8 (VSON)
+ *     V+       8 (SOIC/PDIP)    7 (VSON)
+ *
+ * Both are correct pinouts of the same device in different packages. A single
+ * entry recorded the SOIC assignment, named no package, and was therefore
+ * applied to whichever package shipped - so when the part shipped as the VSON,
+ * the bench reported pins 7 and 8 as a WRONG NETLIST on a reading that is right.
+ * That very nearly went down as a live defect.
+ *
+ * An entry that names its package is checked only against that package; see
+ * `entryDescribes`. Where several are listed the first that describes the
+ * shipped package wins, and if none does, nothing is claimed rather than the
+ * wrong column being scored.
+ */
+export const PINOUT_ORACLE: Record<string, PinoutOracleEntry | readonly PinoutOracleEntry[]> = {
   ADS8688: {
     packageType: "TSSOP-38 (DBT)",
     source:
@@ -116,6 +150,16 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
     }
   },
   OPA333: {
+    // THE PACKAGE IS NAMED because this document's packages DISAGREE.
+    //
+    // An entry naming none is applied to whatever package ships, which is how
+    // OPA2277's correct VSON reading was reported as a wrong netlist. Audited
+    // over every entry on 2026-08-26: three documents print same-size pin tables
+    // that differ between packages, and all three had an unnamed entry.
+    //
+    // The package below is not new evidence - it is what this entry's own
+    // `source` line has always said it was read from.
+    packageType: "SOIC (8)",
     source: "page 3, OPA333 D Package 8-Pin SOIC Top View figure",
     pins: {
       "1": "NC", "2": "-IN", "3": "+IN", "4": "V-",
@@ -140,6 +184,16 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
     }
   },
   ADG5412: {
+    // THE PACKAGE IS NAMED because this document's packages DISAGREE.
+    //
+    // An entry naming none is applied to whatever package ships, which is how
+    // OPA2277's correct VSON reading was reported as a wrong netlist. Audited
+    // over every entry on 2026-08-26: three documents print same-size pin tables
+    // that differ between packages, and all three had an unnamed entry.
+    //
+    // The package below is not new evidence - it is what this entry's own
+    // `source` line has always said it was read from.
+    packageType: "16-Lead TSSOP",
     source: "page 9, TSSOP pin configuration figure (left of the two drawn)",
     pins: {
       "1": "IN1", "2": "D1", "3": "S1", "4": "VSS", "5": "GND", "6": "S4",
@@ -193,17 +247,41 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
     }
   },
   SN74LVC1G08: {
+    // THE PACKAGE IS NAMED because this document's packages DISAGREE.
+    //
+    // An entry naming none is applied to whatever package ships, which is how
+    // OPA2277's correct VSON reading was reported as a wrong netlist. Audited
+    // over every entry on 2026-08-26: three documents print same-size pin tables
+    // that differ between packages, and all three had an unnamed entry.
+    //
+    // The package below is not new evidence - it is what this entry's own
+    // `source` line has always said it was read from.
+    packageType: "X2SON (DSF)",
     source:
       "page 3, DSF package figure and the Pin Functions table agreeing. VCC is drawn as V with a CC subscript on the line below.",
     pins: { "1": "A", "2": "B", "3": "GND", "4": "Y", "5": "NC", "6": "VCC" }
   },
-  OPA2277: {
-    source: "page 4, Table Pin Functions: OPA2277",
-    pins: {
-      "1": "Out A", "2": "-In A", "3": "+In A", "4": "V-",
-      "5": "+In B", "6": "-In B", "7": "Out B", "8": "V+"
+  // TWO PINOUTS, DIFFERING AT 7 AND 8, both printed on page 4 and both stated in
+  // the Pin Functions table's two columns. See the note on `PINOUT_ORACLE`.
+  OPA2277: [
+    {
+      packageType: "SOIC (D, 8)",
+      source: "page 4, Table 5-2 Pin Functions: OPA2277, the D (SOIC) / P (PDIP) column. Figure 5-3 draws the same.",
+      pins: {
+        "1": "Out A", "2": "-In A", "3": "+In A", "4": "V-",
+        "5": "+In B", "6": "-In B", "7": "Out B", "8": "V+"
+      }
+    },
+    {
+      packageType: "VSON (DRM, 8)",
+      source:
+        "page 4, Table 5-2 Pin Functions: OPA2277, the DRM (VSON) column. Figure 5-4 draws the same, and it SWAPS 7 and 8 against the SOIC.",
+      pins: {
+        "1": "Out A", "2": "-In A", "3": "+In A", "4": "V-",
+        "5": "+In B", "6": "-In B", "7": "V+", "8": "Out B"
+      }
     }
-  },
+  ],
   TXB0104: {
     source: "page 3, Pin Functions",
     pins: {
@@ -254,7 +332,11 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
     source: "pages 28-33, Table 5 Medium-density pin definitions, LQFP48/UFQFPN48 column",
     pins: {
       "1": "VBAT", "2": "PC13-TAMPER-RTC", "3": "PC14-OSC32_IN", "4": "PC15-OSC32_OUT",
-      "5": "OSC_IN", "6": "OSC_OUT", "7": "NRST", "8": "VSSA", "9": "VDDA",
+      // Table 5 names these by their default function; Figure 8 draws them
+      // `PD0-OSC_IN` and `PD1-OSC_OUT`, because the pin defaults to the
+      // oscillator and remaps to port D. Both are this datasheet's own words for
+      // the same pin, and the reader takes the figure.
+      "5": ["OSC_IN", "PD0-OSC_IN"], "6": ["OSC_OUT", "PD1-OSC_OUT"], "7": "NRST", "8": "VSSA", "9": "VDDA",
       "10": "PA0-WKUP", "11": "PA1", "12": "PA2", "18": "PB0", "19": "PB1", "20": "PB2",
       "23": "VSS_1", "24": "VDD_1", "29": "PA8", "34": "PA13", "35": "VSS_2", "36": "VDD_2",
       "37": "PA14", "44": "BOOT0", "45": "PB8", "46": "PB9", "47": "VSS_3", "48": "VDD_3"
@@ -472,21 +554,53 @@ export const PINOUT_ORACLE: Record<string, PinoutOracleEntry> = {
   },
   STM32F407VG: {
     packageType: "LQFP100",
-    // Read off a RENDER of Figure 13, which is a FOUR-SIDED figure: 1..25 down
-    // the left, 26..50 across the bottom, 51..75 up the right and 76..100 back
-    // across the top. Both horizontal rows are set ROTATED, and those are the
-    // entries that matter here, because nothing about a rotated run's reported
-    // width says where it sits on the page.
+    // READ COMPLETE off a render of Figure 13 on 2026-08-26, all 100 pins.
     //
-    // Pin 70 is the other one to keep: the figure prints it `PA 11`, with a
-    // space, between `PA10` and `PA12` that have none.
-    source: "page 44, Figure 13 STM32F40xxx LQFP100 pinout (rendered)",
+    // It was a partial entry of about twenty spot checks, and its spot checks
+    // happened to fall either side of the defect: everything up to 27 and
+    // everything from 50 on. It reported ONE wrong pin, 49, and the truth is
+    // that the reader drops pin 28 and shifts the WHOLE BOTTOM ROW by one.
+    //
+    // A partial oracle does not report a smaller version of a defect. It reports
+    // whichever pins it happens to cover, and there is no way to tell a one-pin
+    // slip from a twenty-two-pin shift without covering the run. Where a figure
+    // can be read completely, it is.
+    //
+    // The figure is FOUR-SIDED: 1..25 down the left, 26..50 across the bottom,
+    // 51..75 up the right, 76..100 back across the top. Both horizontal runs are
+    // set rotated, which is where the reader loses its place.
+    //
+    // Pin 70 is printed `PA 11`, with a space, between `PA10` and `PA12` that
+    // have none. Recorded as printed; the oracle's job is to say what the vendor
+    // wrote.
+    //
+    // Pins 12 and 76 carry a second printed name: Table 7's "pin name (function
+    // after reset)" column prints `PH0/OSC_IN` with `(PH0)` below, and `PA14`
+    // with `(JTCK/SWCLK)`. Both are this document's own words. See
+    // `PinoutOracleEntry.pins`.
+    source: "page 44, Figure 13 STM32F40xxx LQFP100 pinout (rendered), all 100 pins; the alternates on 12 and 76 from Table 7 on pages 50 and 58",
     pins: {
-      "1": "PE2", "6": "VBAT", "10": "VSS", "12": "PH0", "14": "NRST",
-      "20": "VSSA", "21": "VREF+", "25": "PA2", "26": "PA3", "27": "VSS",
-      "49": "VCAP_1", "50": "VDD", "51": "PB12", "67": "PA8", "70": "PA11",
-      "73": "VCAP_2", "75": "VDD", "76": "PA14", "88": "PD7", "94": "BOOT0",
-      "97": "PE0", "98": "PE1", "99": "VSS", "100": "VDD"
+      "1": "PE2", "2": "PE3", "3": "PE4", "4": "PE5", "5": "PE6",
+      "6": "VBAT", "7": "PC13", "8": ["PC14", "PC14/OSC32_IN (PC14)"], "9": ["PC15", "PC15/OSC32_OUT (PC15)"], "10": "VSS",
+      "11": "VDD", "12": ["PH0", "PH0/OSC_IN (PH0)"], "13": ["PH1", "PH1/OSC_OUT (PH1)"], "14": "NRST", "15": "PC0",
+      "16": "PC1", "17": "PC2", "18": "PC3", "19": "VDD", "20": "VSSA",
+      "21": "VREF+", "22": "VDDA", "23": ["PA0", "PA0/WKUP (PA0)"], "24": "PA1", "25": "PA2",
+      // THE BOTTOM ROW, and the run the reader gets wrong. 28 is VDD.
+      "26": "PA3", "27": "VSS", "28": "VDD", "29": "PA4", "30": "PA5",
+      "31": "PA6", "32": "PA7", "33": "PC4", "34": "PC5", "35": "PB0",
+      "36": "PB1", "37": ["PB2", "PB2/BOOT1 (PB2)"], "38": "PE7", "39": "PE8", "40": "PE9",
+      "41": "PE10", "42": "PE11", "43": "PE12", "44": "PE13", "45": "PE14",
+      "46": "PE15", "47": "PB10", "48": "PB11", "49": "VCAP_1", "50": "VDD",
+      "51": "PB12", "52": "PB13", "53": "PB14", "54": "PB15", "55": "PD8",
+      "56": "PD9", "57": "PD10", "58": "PD11", "59": "PD12", "60": "PD13",
+      "61": "PD14", "62": "PD15", "63": "PC6", "64": "PC7", "65": "PC8",
+      "66": "PC9", "67": "PA8", "68": "PA9", "69": "PA10", "70": "PA 11",
+      "71": "PA12", "72": ["PA13", "PA13 (JTMS-SWDIO)"], "73": "VCAP_2", "74": "VSS", "75": "VDD",
+      "76": ["PA14", "PA14 (JTCK/SWCLK)"], "77": ["PA15", "PA15 (JTDI)"], "78": "PC10", "79": "PC11", "80": "PC12",
+      "81": "PD0", "82": "PD1", "83": "PD2", "84": "PD3", "85": "PD4",
+      "86": "PD5", "87": "PD6", "88": "PD7", "89": ["PB3", "PB3 (JTDO/TRACESWO)"], "90": ["PB4", "PB4 (NJTRST)"],
+      "91": "PB5", "92": "PB6", "93": "PB7", "94": "BOOT0", "95": "PB8",
+      "96": "PB9", "97": "PE0", "98": "PE1", "99": "VSS", "100": "VDD"
     }
   },
   STM32H743ZI: {
@@ -773,6 +887,19 @@ export interface NameMismatch {
  * is normal: an entry claiming a pin the shipped package does not have is about
  * a different package whatever it is called.
  */
+/**
+ * Every hand-read pinout recorded for a part, as a list whether one or several.
+ *
+ * One reader rather than two: a caller that handles the single-entry case and
+ * forgets the list would silently check only the first package, which is the
+ * shape of defect this file exists to catch.
+ */
+export function pinoutEntriesFor(partNumber: string): readonly PinoutOracleEntry[] {
+  const found = PINOUT_ORACLE[partNumber];
+  if (!found) return [];
+  return Array.isArray(found) ? found : [found as PinoutOracleEntry];
+}
+
 export function entryDescribes(entry: PinoutOracleEntry, designator: string | null, pinCount: number): boolean {
   // A pin this package does not have. An entry may be PARTIAL - covering some of
   // a hundred pins - but it may never reach past the end.
@@ -804,13 +931,18 @@ export function checkPinNames(
   const byNumber = new Map(pins.map((pin) => [String(pin.number), pin.name]));
   const wrong: NameMismatch[] = [];
 
-  for (const [number, want] of Object.entries(entry.pins)) {
+  for (const [number, printed] of Object.entries(entry.pins)) {
+    const accepted = Array.isArray(printed) ? printed : [printed as string];
+    const want = accepted.join(" or ");
     const got = byNumber.get(number);
     if (got === undefined) {
       wrong.push({ pin: number, got: "(absent)", want });
       continue;
     }
-    if (normalizePinName(got) !== normalizePinName(want)) wrong.push({ pin: number, got, want });
+    // ANY NAME THE DOCUMENT PRINTS FOR THIS PIN. See `PinoutOracleEntry.pins`.
+    if (!accepted.some((name) => normalizePinName(got) === normalizePinName(name))) {
+      wrong.push({ pin: number, got, want });
+    }
   }
 
   return wrong;

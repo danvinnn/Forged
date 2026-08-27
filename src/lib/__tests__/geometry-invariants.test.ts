@@ -514,6 +514,84 @@ test("a gapped pin table cannot ship a footprint with more lands than the symbol
   await createExportZip(to220(), "kicad", {});
 });
 
+/** TI's DBV0005A, a five-lead SOT-23: three leads one side, two the other. */
+function sot23Five() {
+  return {
+    id: "s", partNumber: "ACME-SOT23-5", manufacturer: "ACME", packageType: "SOT-23 (DBV)",
+    packageOutlineCode: null, jedecOutline: null, vendorLandPattern: null, pinCount: 5,
+    pins: Array.from({ length: 5 }, (_, index) => ({
+      number: String(index + 1),
+      name: `P${index + 1}`,
+      electricalType: "passive" as const
+    })),
+    exposedPad: false,
+    dimensions: {
+      bodyLengthMm: 2.9, bodyWidthMm: 1.6, bodyHeightMm: 1.45, pitchMm: 0.95, leadLengthMm: null,
+      leadCount: 5, leadWidthMm: { minMm: 0.3, maxMm: 0.5 }, leadSpanMm: { minMm: 2.6, maxMm: 3.0 },
+      leadSpanCrossMm: null, leadContactMm: { minMm: 0.3, maxMm: 0.6 },
+      thermalPadLengthMm: null, thermalPadWidthMm: null,
+      landPadLengthMm: 1.0, landPadWidthMm: 0.6, landSpanMm: 2.6, landSpanCrossMm: null,
+      leadSides: 2, leadForm: "gullwing", mounting: "smd", leadDiameterMm: null,
+      vacantLeadSlot: null, leadsPerSide: null, solderMaskExpansionMm: null,
+      solderMaskDefined: null, thermalViaDiameterMm: null, thermalViaPitchMm: null
+    },
+    radiation: { tid: null, see: null, sel: null, qmlClass: null },
+    sourceFileName: "sot23.pdf", notes: []
+  } as never as import("../types").ResolvedPart;
+}
+
+test("a five-lead dual derives its empty position instead of asking for it", async () => {
+  // An odd lead count leaves the short row one lead short, and this used to be a
+  // flat question on every such package. On an ODD number of grid positions it
+  // is not a question: the leads sit on the pitch grid and the package is
+  // symmetric about the centre line between its rows, so the only arrangement
+  // that stays symmetric puts the gap in the MIDDLE.
+  //
+  // Corroborated by TI's DBV0005A rather than assumed: it prints `2X 0.95` down
+  // the three-lead side and `1.9` across the two-lead side, and 1.9 is exactly
+  // two pitches. It cites JEDEC MO-178, which defines the arrangement.
+  //
+  // This covers SOT-23-5, SC70-5, SOT-353 and every other five-lead dual, which
+  // is one of the most common packages there is.
+  const { buildFootprintGeometry } = await import("../exporters");
+  const part = sot23Five();
+  const geometry = buildFootprintGeometry(part, "B");
+
+  const at = (number: string) => geometry.pads.find((pad) => pad.number === number)!.centre;
+  assert.equal(geometry.pads.length, 5, "five leads, five lands and no sixth");
+  // Pin 5 sits opposite pin 1 and pin 4 opposite pin 3, which is the whole point:
+  // filling the short row from the top instead would put pin 4 where the package
+  // has nothing and pin 5 where pin 4 belongs, and the board would be miswired
+  // while looking correct in CAD.
+  assert.equal(at("5").yMm, at("1").yMm, "pin 5 faces pin 1");
+  assert.equal(at("4").yMm, at("3").yMm, "pin 4 faces pin 3");
+  assert.ok(at("5").xMm > 0 && at("1").xMm < 0, "and they are on opposite rows");
+  assert.ok(
+    !geometry.pads.some((pad) => pad.number !== "" && pad.centre.xMm > 0 && pad.centre.yMm === at("2").yMm),
+    "the middle position on the short row carries no land"
+  );
+});
+
+test("a seven-lead dual still asks, because its gap is not forced", async () => {
+  // FOUR grid positions with one empty has two equally symmetric answers, so
+  // there is nothing to derive and the question is real. Without this the
+  // derivation above would look general when it is only true for odd slot
+  // counts, and a wrong lead position is a miswired board.
+  const { buildFootprintGeometry, FootprintUnavailableError } = await import("../exporters");
+  const part = sot23Five();
+  part.pinCount = 7;
+  part.pins = Array.from({ length: 7 }, (_, index) => ({
+    number: String(index + 1),
+    name: `P${index + 1}`,
+    electricalType: "passive" as const
+  }));
+
+  assert.throws(
+    () => buildFootprintGeometry(part, "B"),
+    (error: Error) => error instanceof FootprintUnavailableError && /vacantLeadSlot/.test(JSON.stringify((error as InstanceType<typeof FootprintUnavailableError>).needs))
+  );
+});
+
 test("a through-hole package whose row count was never read still refuses", async () => {
   // Widening the type must not turn null into a default. Null means nobody read
   // it, and that is the state the two-row bug came from.

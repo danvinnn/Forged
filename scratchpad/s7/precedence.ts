@@ -3,7 +3,7 @@ loadBenchEnv();
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promptFingerprint } from "../../src/lib/__bench__/modelcache";
-import { PINOUT_ORACLE, checkPinNames, entryDescribes } from "../../src/lib/__bench__/pinout-oracle";
+import { PINOUT_ORACLE, pinoutEntriesFor, checkPinNames, entryDescribes } from "../../src/lib/__bench__/pinout-oracle";
 
 // WHEN THE TWO PASSES DISAGREE ABOUT ONE PACKAGE'S PIN TABLE, WHICH IS RIGHT?
 //
@@ -36,7 +36,7 @@ let pass2Right = 0;
 let neither = 0;
 
 for (const part of Object.keys(PINOUT_ORACLE)) {
-  const oracle = PINOUT_ORACLE[part];
+  const oracle = pinoutEntriesFor(part)[0];
   const passes = passesFor(part);
   if (passes.length < 2) continue;
   const [first, second] = passes;

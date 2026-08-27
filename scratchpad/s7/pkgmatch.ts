@@ -1,7 +1,7 @@
 import { loadBenchEnv } from "../../src/lib/__bench__/env";
 loadBenchEnv();
 import { buildCachedParts } from "../../src/lib/__bench__/oracle-match";
-import { PINOUT_ORACLE } from "../../src/lib/__bench__/pinout-oracle";
+import { pinoutEntriesFor } from "../../src/lib/__bench__/pinout-oracle";
 import { BENCH_SETTINGS, shipOutcome } from "../../src/lib/__bench__/shipcheck";
 import { recordForPackage } from "../../src/lib/exporters";
 
@@ -18,10 +18,10 @@ async function main() {
     const designator = outcome.shippedAs?.designator ?? null;
     const rec = designator ? recordForPackage(e.record, designator) : e.record;
     const pins = rec.pins.value ?? [];
-    const entry = PINOUT_ORACLE[e.part];
+    const entry = pinoutEntriesFor(e.part)[0];
     console.log(
       `${e.part.padEnd(18)} ships "${String(designator).padEnd(26)}" ${String(pins.length).padStart(3)} pins   ` +
-        `oracle says "${entry.packageType ?? "(unstated)"}" ${Object.keys(entry.pins).length} pins`
+        `oracle says "${entry?.packageType ?? "(unstated)"}" ${Object.keys(entry?.pins ?? {}).length} pins`
     );
   }
 }

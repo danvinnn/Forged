@@ -242,6 +242,8 @@ export async function shipOutcome(
   // nothing either, "the reading is missing pins" is still the truest thing to
   // say about the part.
   let held: string | null = null;
+  /** A route-one bundle that shipped WITHOUT its 3D solid, kept as the fallback. */
+  let partial: Awaited<ReturnType<typeof shipOutcome>> | null = null;
   if (!resolved.ok) {
     held =
       resolved.untraceable && resolved.untraceable.length > 0
@@ -249,19 +251,58 @@ export async function shipOutcome(
         : `held: missing ${resolved.missing.join(",")}`;
   } else {
     try {
-      await createExportZip(resolved.part, "kicad", { densityLevel: densityOf(settings) });
+      // THE SETTINGS GO WITH IT, exactly as `/api/export` sends them.
+      //
+      // This passed the density level alone, so route one asked LMP7704-SP and
+      // REF5025 for a formed lead span and foot that the user had ALREADY
+      // answered on the settings screen, and the bench counted them as not
+      // shipping. `/api/export` reads both off the parsed settings and always
+      // has; the measurement was of a product that does not exist.
+      //
+      // Same failure as the ten parts reported "held: missing pins" while route
+      // two held their pinouts, and the reason `shipOutcome` was written: one
+      // definition, matching the route.
+      const bundle = await createExportZip(resolved.part, "kicad", {
+        densityLevel: densityOf(settings),
+        ...(settings.formedLeadSpanMm !== undefined ? { formedLeadSpanMm: settings.formedLeadSpanMm } : {}),
+        ...(settings.formedLeadContactMm !== undefined
+          ? { formedLeadContactMm: settings.formedLeadContactMm }
+          : {})
+      });
       // ROUTE ONE built from the record itself, so the record's own code is the
       // drawing - the one case where `packageOutlineCode` is the right answer.
-      return {
+      const fromRecord = {
         ships: true,
         shipsAnswered: true,
         why: "",
         asked: 0,
         brokeWhenAnswered: null,
         shippedAs: { designator: resolved.part.packageType, outlineCode: resolved.part.packageOutlineCode },
-        asks: [],
+        asks: [] as RequiredInput[],
         asksFor: null
       };
+      // AND IT WINS OUTRIGHT ONLY WHEN IT IS COMPLETE.
+      //
+      // The record ships as it stands, and on a document that never named the
+      // package that bundle is labelled "Unknown package" and carries no 3D
+      // solid, because the body dimensions were not read. Route two may offer
+      // the SAME part under its real designator with everything built. A user
+      // looking at both would not choose the first, and this returned it the
+      // moment it succeeded.
+      //
+      // Measured on MC33063A the moment the body stopped blocking the export:
+      // its flat record has no body dimensions, so route one used to refuse and
+      // route two shipped `SOIC (D)`. Once route one could ship without the
+      // solid it won by arriving first, and PACKAGE FAMILY fell to 27/28.
+      //
+      // So an incomplete route one is HELD and route two is tried first. A
+      // complete route one still returns immediately, which is every part whose
+      // document names one package.
+      // Read off the bundle rather than re-derived. `stepSupported` is the
+      // export's own answer to "was everything built", so this cannot drift from
+      // it the way a second copy of `askForBody` would.
+      if (bundle.stepSupported) return fromRecord;
+      partial = fromRecord;
     } catch (error) {
       // ONE PART MUST NEVER KILL THE RUN.
       //
@@ -296,7 +337,26 @@ export async function shipOutcome(
   // ROUTE TWO: whatever the chooser offers. Empty when the document names no
   // alternatives, which is why route one's refusal is kept rather than replaced.
   const choice = packageOptions(record, installAnswers(settings));
-  const offered = choice.ok ? choice.options.find((option) => option.status === "ships") : undefined;
+  // A COMPLETE BUNDLE BEATS A PARTIAL ONE, where both ship.
+  //
+  // `ships` now covers two outcomes: everything built, or everything except the
+  // 3D solid, whose three body dimensions were not read. Both give the user
+  // files with no question answered, so both are `ships`; they are not equally
+  // good, and this took the FIRST in document order.
+  //
+  // Measured the moment the body stopped blocking: STM32F103C8 switched from
+  // shipping its UFQFPN48, whose drawing is hand-read and whose solid builds, to
+  // a QFN36 that merely came earlier in the list - and PACKAGE FAMILY and
+  // VERIFIED both fell as a result. A user choosing by hand would not make that
+  // trade, and neither should this.
+  //
+  // `needs` on a `ships` option is exactly the outstanding-extras list, so
+  // "nothing outstanding" is the whole rule; see `PackageOption.needs`.
+  const shipping = choice.ok ? choice.options.filter((option) => option.status === "ships") : [];
+  const offered = shipping.find((option) => option.needs.length === 0) ?? shipping[0];
+  // A complete route one already returned. An incomplete one is still better
+  // than an incomplete route two, so it only loses to a COMPLETE option.
+  if (partial && !shipping.some((option) => option.needs.length === 0)) return partial;
   if (offered) {
     return {
       ships: true,

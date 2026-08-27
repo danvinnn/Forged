@@ -864,6 +864,86 @@ export function citeRenderedPage(
  * pattern whose rows meet, whose lands touch their neighbours, or which falls
  * outside the IPC-7351B band for the leads this same drawing states.
  */
+/**
+ * A seated foot read off a package that has none.
+ *
+ * ## What the drawing actually prints
+ *
+ * `leadContactMm` is the foot that lies on the land, and the prompt names it as
+ * "drawing dimension L". On a gull-wing package that is right: the lead arrives
+ * already formed and L is the flat under the bend.
+ *
+ * On a package whose leads leave the body STRAIGHT, L is a different quantity.
+ * RHF310A's Ceramic Flat-8 table prints `L 6.51 7.38` against a body `D/E 6.35
+ * 6.61`: that is the whole lead, tip to tip, on a part 6.5 mm across. A foot as
+ * long as the package it folds under is not a foot, and the model returned it
+ * because the prompt asked for L by name and this drawing letters its full lead
+ * L.
+ *
+ * ## Why dropping it is the answer rather than correcting it
+ *
+ * There is nothing to correct it to. A flat pack ships untrimmed and the
+ * assembler forms the leads, so the seated foot is made by their forming die and
+ * NO datasheet can print it. The product already holds that position twice over:
+ * `leadFromDrawing` ignores this field entirely for a straight lead and takes
+ * `formedLeadContactMm` from the settings screen, and that setting is REQUIRED
+ * before a first run precisely because no published source answers it.
+ *
+ * So this changes no copper - the generator was already ignoring the value. What
+ * it changes is the RECORD, which is the thing a reviewer signs off. A number
+ * that is not the quantity its field names, sitting cited on a page, is worse
+ * than a blank: the blank is honest and this was not.
+ *
+ * ## The category, not the instance
+ *
+ * Stated as "a straight lead has no seated foot", which is a fact about how flat
+ * packs are supplied rather than about one datasheet. Measured over the corpus:
+ * ten parts read `straight`, and NINE of them already carry a null contact
+ * length. The drawings do not print it; RHF310A's is the one that was read
+ * anyway.
+ */
+function dropStraightLeadContact(
+  record: PartRecord,
+  dimensions: Partial<PartRecord["dimensions"]>,
+  modelName: string,
+  label: string,
+  /**
+   * The merge's own refusal channel, which this MUST report into.
+   *
+   * Written without it first, and `bench:discards` went from 0 silent discards to
+   * 1 on the next run. A note on the record is what the USER reads; `rejected` is
+   * what every instrument reads, and a drop that appears in one and not the other
+   * is exactly the half-recorded decision this file has three other comments
+   * about. See `forge-discards-bench`.
+   */
+  rejected: Array<{ field: ExtractionField; reason: string }>
+): void {
+  const form = (dimensions.leadForm ?? record.dimensions.leadForm)?.value;
+  if (form !== "straight") return;
+  const held = dimensions.leadContactMm ?? record.dimensions.leadContactMm;
+  if (!held || held.value === null) return;
+
+  const range = held.value as { minMm?: number; maxMm?: number };
+  const shown =
+    typeof range?.minMm === "number" ? `${range.minMm}-${range.maxMm} mm` : String(held.value);
+  const blanked = { value: null, confidence: null, method: null, citation: null };
+  if (dimensions.leadContactMm) dimensions.leadContactMm = blanked;
+  else record.dimensions.leadContactMm = blanked;
+
+  rejected.push({
+    field: "dimensions.leadContactMm",
+    reason:
+      `${label}leads leave the body straight, so the drawing prints no seated foot and the ` +
+      `${shown} read is the whole lead. The foot comes from the formed-lead setting`
+  });
+  record.notes.push(
+    `${modelName} read a ${label}seated foot of ${shown}, and this package's leads leave the body ` +
+      `STRAIGHT. A flat pack ships untrimmed and the assembler forms the leads, so its drawing prints ` +
+      `no seated foot and the dimension read is the whole lead. The foot comes from the formed-lead ` +
+      `setting instead, which is why that setting is required before a first run.`
+  );
+}
+
 function correctInnerGapSpans(record: PartRecord, dimensions: Partial<PartRecord["dimensions"]>, modelName: string, label: string): void {
   const held = (field: keyof PartRecord["dimensions"]): number | null => {
     const value = (dimensions[field] ?? record.dimensions[field]) as { value?: unknown } | undefined;
@@ -1195,6 +1275,8 @@ export function mergeModelValues(
 
   // THE INNER GAP READ AS THE CENTRE SPAN. See `correctInnerGapSpans`.
   correctInnerGapSpans(merged, merged.dimensions, modelName, "");
+  // A FOOT READ OFF A PACKAGE THAT HAS NONE. See `dropStraightLeadContact`.
+  dropStraightLeadContact(merged, merged.dimensions, modelName, "", rejected);
 
   if (filled.length > 0) {
     merged.notes = [
@@ -1420,7 +1502,10 @@ export function mergeModelValues(
       // The same correction, on the numbers that actually build a family
       // datasheet's copper. A rule applied to the flat block alone is a rule
       // that does not run on most of this corpus.
-      if (dimensions) correctInnerGapSpans(merged, dimensions, modelName, `${table.packageType}'s `);
+      if (dimensions) {
+        correctInnerGapSpans(merged, dimensions, modelName, `${table.packageType}'s `);
+        dropStraightLeadContact(merged, dimensions, modelName, `${table.packageType}'s `, rejected);
+      }
       if (pins === undefined && dimensions === undefined) continue;
       usable.push({
         packageType: table.packageType,

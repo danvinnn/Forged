@@ -1860,6 +1860,40 @@ function assemble(
   // The two rules that decide whether the pads can be PLACED at all. They were
   // below the table lookup and are now above both paths, because they are facts
   // about arranging pins, not about which table an entry came from.
+  // WHERE THE ROW CAN ONLY BE ONE SHAPE, DERIVE IT INSTEAD OF ASKING.
+  //
+  // An odd lead count in two rows leaves the short row one lead short, and which
+  // grid position is empty is a fact about the package. On most counts it has to
+  // be read. On one family of counts it is FORCED, and asking there is friction
+  // for a question with a single possible answer.
+  //
+  // The forcing argument: the leads sit on the pitch grid, and a package is
+  // symmetric about the centre line running between its two rows - it is a
+  // moulded body placed by its own centroid, and every drawing dimensions its
+  // leads from that centre. With an ODD number of grid positions and exactly one
+  // of them empty, the only arrangement that stays symmetric is the empty one
+  // being the MIDDLE. Removing any other leaves the row lopsided.
+  //
+  // Corroborated by the drawing that prompted the check rather than assumed from
+  // it: TI's DBV0005A prints `2X 0.95` across the three-lead side and `1.9`
+  // across the two-lead side. 1.9 is exactly two pitches, so those two leads sit
+  // at plus and minus one pitch with the centre position empty, which is what
+  // this derives. The drawing also cites JEDEC MO-178, where the arrangement is
+  // defined.
+  //
+  // Only where the slot count is odd. `pinCount` 5 gives three positions and is
+  // forced; 7 gives four and is not, because two different four-position rows
+  // with one gap are equally symmetric. So SOT-23-5, SC70-5, SOT-353 and every
+  // other five-lead dual stop asking, and a seven-lead one still asks.
+  const perSideSlots = Math.ceil(part.pinCount / 2);
+  const forcedVacancy =
+    definition.arrangement === "dual" && part.pinCount % 2 !== 0 && perSideSlots % 2 === 1
+      ? (perSideSlots + 1) / 2
+      : null;
+  if (forcedVacancy !== null && !part.dimensions.vacantLeadSlot) {
+    part = { ...part, dimensions: { ...part.dimensions, vacantLeadSlot: forcedVacancy } };
+  }
+
   if (definition.arrangement === "dual" && part.pinCount % 2 !== 0 && !part.dimensions.vacantLeadSlot) {
     throw new FootprintUnavailableError(
       `${definition.family} is described here as two opposing rows, and ${part.pinCount} is an odd number of leads, so one row is a lead short. Which position it leaves empty is drawn on the pinout but was not read, and guessing it would put a lead where the package has none. No footprint is generated.`,
@@ -2496,8 +2530,16 @@ type Generator = (
   baseName: string,
   symbol: SymbolGeometry,
   footprint: FootprintGeometry,
-  /** The package solid, for formats that can carry it inside the library. */
-  step: { name: string; text: string }
+  /**
+   * The package solid, for formats that can carry it inside the library.
+   *
+   * ABSENT when the body size was not read. The footprint and symbol are built
+   * from the pitch and the land pattern and never from the body, so a missing
+   * solid does not withhold them; see the note in `createExportZip`. A format
+   * that embeds the solid links nothing rather than linking a file that is not
+   * in the bundle.
+   */
+  step?: { name: string; text: string }
 ) => GeneratedFile[];
 
 /**
@@ -2513,14 +2555,19 @@ const GENERATORS: Partial<Record<ExportFormat, Generator>> = {
   // it the nickname `baseName` by default, which is exactly the nickname the
   // symbol's Footprint property names, so the link resolves without the user
   // typing anything.
-  kicad: (baseName, symbol, footprint) => [
+  kicad: (baseName, symbol, footprint, step) => [
     {
       name: `${baseName}.kicad_sym`,
       content: emitKicadSymbol(symbol, { footprintRef: `${baseName}:${footprint.name}` })
     },
     {
       name: `${baseName}.pretty/${footprint.name}.kicad_mod`,
-      content: emitKicadFootprint(footprint, { modelPath: `\${KIPRJMOD}/${baseName}.step` })
+      // NO MODEL LINK WHERE THERE IS NO MODEL. This wrote the path
+      // unconditionally, so a bundle without a solid would have carried a
+      // footprint pointing at a file that is not in it - KiCad reports that as a
+      // broken 3D reference on every placement, which is worse than the honest
+      // absence of one.
+      content: emitKicadFootprint(footprint, step ? { modelPath: `\${KIPRJMOD}/${baseName}.step` } : {})
     }
   ],
   // Altium embeds the 3D body inside the footprint library, so the one file
@@ -2639,16 +2686,54 @@ export async function createExportZip(
     needs.push(...error.needs);
     reason = error.reason;
   }
-  needs.push(...askForBody(part));
+  // THE 3D BODY IS NOT ALLOWED TO WITHHOLD THE FOOTPRINT.
+  //
+  // `askForBody` wants three dimensions that ONLY the STEP solid consumes: the
+  // land pattern is placed from the pitch and the printed footprint, and the
+  // silkscreen falls back to the land extents where the body was not read. Yet
+  // its questions were pushed onto the same `needs` list as the footprint's and
+  // thrown together, so a part whose copper built perfectly produced NO FILES AT
+  // ALL because one of three outputs could not be made.
+  //
+  // Live on STM32G071RB: its LQFP64 land pattern is read, checked and correct,
+  // and the whole bundle was refused for an overall height. An engineer who
+  // uploads a datasheet to get a footprint and a symbol, and is told "nothing,
+  // because the 3D solid is missing", has been served badly by a tool that was
+  // holding their footprint the entire time.
+  //
+  // So the two are separated by what they BLOCK rather than by where they came
+  // from. A footprint that cannot be built still fails the export, because the
+  // footprint is the deliverable; a solid that cannot be built is omitted and
+  // NAMED, in the response, in the manifest and in the record's own JSON.
+  //
+  // Named, not quiet. The comment below about a bundle that "quietly ships a
+  // symbol and a 3D body while omitting the footprint" is the case this must not
+  // become: a file list a reader has to audit to discover what is missing. The
+  // question is still returned so the caller can offer it, and answering it
+  // still produces the solid.
+  const bodyNeeds = askForBody(part);
   if (needs.length > 0) {
     throw new FootprintUnavailableError(
       reason ??
         `${part.partNumber} is complete apart from its package body size, which the 3D model is built from.`,
-      needs
+      [...needs, ...bodyNeeds]
     );
   }
 
-  const stepModel = buildStepModel(part, options.generatedAt ?? new Date());
+  const stepModel =
+    bodyNeeds.length === 0
+      ? buildStepModel(part, options.generatedAt ?? new Date())
+      : {
+          content: "",
+          supported: false,
+          fileName: "",
+          note:
+            `No 3D body is included. It is built from the package's real size and never from an ` +
+            `approximation, and ${bodyNeeds.map((need) => need.label.toLowerCase()).join(", ")} ` +
+            `${bodyNeeds.length === 1 ? "was" : "were"} not read from this datasheet. The footprint and ` +
+            `symbol are unaffected: neither is built from these. Supply the missing ` +
+            `${bodyNeeds.length === 1 ? "dimension" : "dimensions"} and the solid is generated too.`
+        };
   const files: GeneratedFile[] = [];
 
   // A footprint that cannot be built to the standard fails the export rather
@@ -2672,9 +2757,16 @@ export async function createExportZip(
   if (!generator) {
     throw new GeneratorUnavailableError(format, Object.keys(GENERATORS) as ExportFormat[]);
   }
-  files.push(...generator(baseName, symbol, footprint, { name: stepModel.fileName, text: stepModel.content }));
+  files.push(
+    ...generator(
+      baseName,
+      symbol,
+      footprint,
+      stepModel.supported ? { name: stepModel.fileName, text: stepModel.content } : undefined
+    )
+  );
 
-  files.push({ name: stepModel.fileName, content: stepModel.content });
+  if (stepModel.supported) files.push({ name: stepModel.fileName, content: stepModel.content });
   files.push({
     name: `${baseName}.json`,
     content: JSON.stringify(
@@ -2707,6 +2799,11 @@ export async function createExportZip(
         exportFormat: format,
         generatedAt: (options.generatedAt ?? new Date()).toISOString(),
         checks: { summary: summariseChecks(checks), detail: checks },
+        // WHAT IS NOT IN THIS BUNDLE AND WHY. A reader should not have to
+        // compare the file list against an expectation to find out.
+        stepSupported: stepModel.supported,
+        stepNote: stepModel.note,
+        ...(bodyNeeds.length > 0 ? { omitted: { "3D body": bodyNeeds.map((need) => need.field) } } : {}),
         // The footprint is the file someone will fabricate from, so the manifest
         // states what it was computed from rather than making them open it.
         footprint: footprint.provenance,
@@ -2789,7 +2886,20 @@ export interface PackageOption {
   family: string;
   leadCount: number | null;
   status: PackageOptionStatus;
-  /** Populated for `needs-input`, empty otherwise. */
+  /**
+   * The questions attached to this option.
+   *
+   * On `needs-input` these BLOCK: no files come out until they are answered.
+   *
+   * On `ships` they are OPTIONAL EXTRAS: the bundle is produced without them and
+   * answering adds something to it. The only case today is the package body
+   * size, which builds the 3D solid and nothing else - the footprint comes off
+   * the pitch and the printed land pattern, and the silkscreen falls back to the
+   * land extents. Withholding a correct footprint for it made STM32G071RB
+   * deliver no files at all over an overall height.
+   *
+   * Empty on `unsupported`, where there is no question to ask.
+   */
   needs: RequiredInput[];
   /** Populated for `unsupported`, null otherwise. */
   reason: string | null;
@@ -3007,9 +3117,18 @@ function optionFor(
     // function exists: a click's outcome must not differ from the export's.
     validateGeometry(geometry, withSupplied(candidate, answers.supplied));
     validateSymbol(buildSymbolGeometry(candidate), candidate);
-    return body.length > 0
-      ? { ...base, status: "needs-input", needs: body, reason: null }
-      : { ...base, status: "ships", needs: [], reason: null };
+    // A MISSING BODY SIZE IS AN OMISSION, NOT A BLOCKER, and this must say the
+    // same thing the export says.
+    //
+    // `createExportZip` now builds the footprint and symbol without the 3D solid
+    // and names the omission, because the body dimensions feed only the solid.
+    // This still reported `needs-input`, so the chooser withheld a package the
+    // export would have delivered - the same drift this function exists to
+    // prevent, running in the opposite direction.
+    //
+    // The questions are still carried, so the caller can offer them and unlock
+    // the solid. See `PackageOption.needs`.
+    return { ...base, status: "ships", needs: body, reason: null };
   } catch (error) {
     if (error instanceof FootprintUnavailableError) {
       return error.needs.length > 0

@@ -1086,10 +1086,24 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     leadWidthMm: { minMm: 0.1524, maxMm: 0.254 },
     // e, 0.025 TYP over 46 places. 0.025 in = 0.635 mm.
     pitchMm: 0.635,
-    // 0.335 SQ, printed once and marked square, so both axes. 0.335 in = 8.509 mm
-    // exactly, and the drawing gives it no tolerance.
-    bodyLengthMm: { minMm: 8.509, maxMm: 8.509 },
-    bodyWidthMm: { minMm: 8.509, maxMm: 8.509 },
+    // NO BODY, AND THAT IS A RETRACTION.
+    //
+    // This read `0.335 SQ` off the rendered figure and recorded 8.509 mm on both
+    // axes. THE ENTRY'S OWN NEIGHBOURS DISPROVE IT: 48 leads on two sides is 24
+    // a side, and the pitch recorded two lines above is 0.635 mm over "46
+    // places", so one lead row spans 23 x 0.635 = 14.605 mm. A body 8.509 mm
+    // long cannot carry a 14.6 mm row of leads coming out of it.
+    //
+    // So `0.335 SQ` is some other square on that drawing - a lid, a cavity, a
+    // seal ring - and which one cannot be settled without the figure. The
+    // product reads 16.002 x 9.652, which IS consistent with a 14.605 mm row,
+    // but swapping those in would be recording the product's answer as the
+    // oracle's and would make this file agree with the thing it exists to check.
+    //
+    // Left unclaimed, which is this file's rule where a hand read does not
+    // settle a value: absence means a person looked and could not tell, and that
+    // is worth more than a confident wrong expectation. It cost two rows of
+    // `bench:dimensions` reporting a defect nobody could act on.
     // A, 0.104 +/- 0.011 in. 0.093 in = 2.3622 mm, 0.115 in = 2.921 mm.
     bodyHeightMm: { minMm: 2.3622, maxMm: 2.921 },
     leadSides: 2
@@ -2264,6 +2278,18 @@ export const DIMENSION_ORACLE: Record<string, DimensionOracleEntry> = {
     // 0.813 x 0.50 on the bottom view. The 0.50 is the terminal across the axis
     // the two columns run, which is what the land is widened from.
     leadWidthMm: { minMm: 0.5, maxMm: 0.5 },
+    // AND 0.813 IS THE OTHER HALF OF THAT SAME PAIR, which this entry quoted and
+    // then did not record.
+    //
+    // An absent `leadContactMm` is hard-coded in this file as a CLAIM that the
+    // drawing prints no seated foot, so leaving it out asserted that a figure
+    // whose terminal size is printed `0.813 x 0.50` states no contact length -
+    // in an entry whose own comment quotes the number. `bench:dimensions`
+    // reported the product WRONG for reading it correctly.
+    //
+    // A no-lead terminal IS the contact: it lies flat on the land with no bend,
+    // so its length along the land is what a fillet is computed from.
+    leadContactMm: { minMm: 0.813, maxMm: 0.813 },
     // 0.80 BSC.
     pitchMm: 0.8,
     // 5.00 BSC, along the axis the two terminal columns run.

@@ -44,6 +44,7 @@ import { packageOptions, recordForPackage } from "../exporters";
 import {
   PINOUT_ORACLE,
   entryDescribes,
+  pinoutEntriesFor,
   PACKAGE_ORACLE,
   checkPinNames,
   checkPackageFamily,
@@ -356,8 +357,8 @@ function checkNames(
    */
   shippedAs: string | null
 ): { nameMismatches: NameMismatch[]; namesChecked: boolean } {
-  const entry = PINOUT_ORACLE[partNumber];
-  if (!entry) return { nameMismatches: [], namesChecked: false };
+  const entries = pinoutEntriesFor(partNumber);
+  if (entries.length === 0) return { nameMismatches: [], namesChecked: false };
   const built = shippedAs !== null ? recordForPackage(record, shippedAs) : record;
   const pins = built.pins.value ?? record.pins.value ?? [];
   if (pins.length === 0) return { nameMismatches: [], namesChecked: false };
@@ -365,7 +366,13 @@ function checkNames(
   // `entryDescribes`: scoring the wrong package manufactures defects rather than
   // finding them, which is how five false failures appeared the moment this
   // check could see per-package pinouts at all.
-  if (!entryDescribes(entry, shippedAs, pins.length)) return { nameMismatches: [], namesChecked: false };
+  //
+  // SEVERAL ENTRIES where the document prints several pinouts, and the first
+  // that describes the shipped package is the one scored. OPA2277's SOIC and
+  // VSON differ at pins 7 and 8, both correctly, and one unnamed entry covering
+  // both reported the VSON as a wrong netlist for months.
+  const entry = entries.find((candidate) => entryDescribes(candidate, shippedAs, pins.length));
+  if (!entry) return { nameMismatches: [], namesChecked: false };
   return { nameMismatches: checkPinNames(entry, pins), namesChecked: true };
 }
 

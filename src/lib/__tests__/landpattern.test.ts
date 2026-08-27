@@ -544,19 +544,51 @@ test("an unread package body is a question, not a guess", async () => {
   // authoritative, and nothing in the file said the numbers were invented. It is
   // the same arithmetic the footprint path deleted long ago; it survived because
   // nobody looked in the STEP builder.
-  const error = await refusal(
-    withDimensions({ ...DRAWN_SOIC8, bodyLengthMm: null, bodyWidthMm: null, bodyHeightMm: null })
-  );
+  // THE PROPERTY IS "NEVER GUESSED", NOT "ALWAYS REFUSED".
+  //
+  // This used to assert a refusal of the whole bundle. That refusal was wrong for
+  // a different reason: the three body dimensions feed ONLY the solid, and
+  // withholding a correct footprint and symbol over them delivered no files at
+  // all for a part whose copper was right. The export now ships what it can and
+  // names what it could not; see `createExportZip`.
+  //
+  // So the guarantee is asserted where it actually lives: no solid is emitted, no
+  // invented number reaches one, and the question is still offered.
+  const { buildStepModel } = await import("../exporters");
+  const part = withDimensions({ ...DRAWN_SOIC8, bodyLengthMm: null, bodyWidthMm: null, bodyHeightMm: null });
 
-  assert.deepEqual(
-    error.needs.map((need) => need.field).sort(),
-    ["bodyHeightMm", "bodyLengthMm", "bodyWidthMm"],
-    "all three are asked for, because all three are dimensioned on the outline"
+  const bundle = await createExportZip(part, "kicad");
+  const zip = await JSZip.loadAsync(bundle.buffer);
+  assert.ok(
+    !Object.keys(zip.files).some((file) => file.endsWith(".step")),
+    "no solid is written, because no solid could be built from what was read"
   );
-  for (const need of error.needs) {
-    assert.equal(need.unit, "mm");
-    assert.match(need.why, /mechanical check|real size/i, "the reason says why an approximation will not do");
-  }
+  assert.ok(
+    Object.keys(zip.files).some((file) => file.endsWith(".kicad_mod")),
+    "and the footprint, which is built from none of these three, is delivered"
+  );
+  assert.equal(bundle.stepSupported, false);
+  assert.match(bundle.stepNote, /body length, body width, body height/i, "the omission is named, not silent");
+
+  // AND THE BUILDER ITSELF STILL REFUSES TO INVENT ONE. This is the guarantee the
+  // test was written for: the STEP builder once filled an unread dimension with
+  // `Math.max(pinCount * 0.8, 4.0)`.
+  assert.throws(
+    () => buildStepModel(part),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError);
+      assert.deepEqual(
+        error.needs.map((need) => need.field).sort(),
+        ["bodyHeightMm", "bodyLengthMm", "bodyWidthMm"],
+        "all three are asked for, because all three are dimensioned on the outline"
+      );
+      for (const need of error.needs) {
+        assert.equal(need.unit, "mm");
+        assert.match(need.why, /mechanical check|real size/i, "the reason says why an approximation will not do");
+      }
+      return true;
+    }
+  );
 });
 
 test("supplying the body size builds the solid from it", async () => {

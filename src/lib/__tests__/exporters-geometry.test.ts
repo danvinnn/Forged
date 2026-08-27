@@ -403,7 +403,13 @@ test("an odd lead count refuses rather than mis-placing the shorter row", async 
   // The designator has to declare nine too. It read "8-pin SOIC" while the
   // record carried nine pins, so the lead-count guard refused it first and this
   // test passed on a refusal about the wrong thing.
-  const part = soicPart({ packageType: "9-pin SOIC", pinCount: 9, pins: pins(9) });
+  // SEVEN, not nine. Nine leads give the short row FIVE grid positions, an odd
+  // number, and one gap in an odd number of positions is forced to the centre by
+  // the package's own symmetry - so it is now derived rather than asked, and this
+  // test would be asserting a refusal that no longer exists for a good reason.
+  // Seven gives FOUR positions, where two arrangements are equally symmetric and
+  // there is genuinely nothing to derive.
+  const part = soicPart({ packageType: "7-pin SOIC", pinCount: 7, pins: pins(7) });
 
   await assert.rejects(
     () => createExportZip(part, "kicad"),
@@ -927,12 +933,18 @@ test("only the MISSING numbers are asked for", async () => {
 });
 
 test("an odd lead count is refused on the datasheet path too, not just the table path", async () => {
-  // SOT-23-5. Which position the short row leaves empty is drawn on the page and
-  // is not implied by the pitch, so this refuses rather than misplacing a pad.
+  // Which position the short row leaves empty is drawn on the page and is not
+  // implied by the pitch, so this refuses rather than misplacing a pad.
+  //
+  // SEVEN leads, not the five this used to use. A five-lead dual has THREE grid
+  // positions on its short row and one gap in an odd number of positions is
+  // forced to the centre, so SOT-23-5 is now derived; see the derivation test in
+  // `geometry-invariants.test.ts`. Seven has four positions and is genuinely
+  // ambiguous, which is the case this test is about.
   const odd = soicPart({
-    packageType: "SOT-23",
-    pinCount: 5,
-    pins: pins(5),
+    packageType: "7-pin SOT",
+    pinCount: 7,
+    pins: pins(7),
     dimensions: {
       ...soicPart().dimensions,
       pitchMm: 0.95,
@@ -1110,7 +1122,9 @@ test("a five-lead package places its leads around the gap the pinout shows", asy
 });
 
 test("an odd count with no vacant slot read still refuses, and asks", async () => {
-  const odd = { ...drawnPart(), pinCount: 5, pins: pins(5) };
+  // Seven, for the reason given on the two tests above: a five-lead dual's gap is
+  // forced to the centre of a three-position row and is derived now.
+  const odd = { ...drawnPart(), pinCount: 7, pins: pins(7) };
   await assert.rejects(
     () => createExportZip(odd, "kicad"),
     (error: Error) => {

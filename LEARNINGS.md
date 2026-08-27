@@ -3499,3 +3499,408 @@ defect and watching them go red:
   are a 5-lead SOT-23 asking which grid position is empty, and a 14-lead QFN
   asking how the leads divide between four sides. Both are well-formed questions
   the pinout answers. Neither is a defect.
+
+
+# 2026-08-26: reading all seventeen misreads against their drawings
+
+Every one of the seventeen values `bench:dimensions` called WRONG, opened against
+the page it came from. Four resolved. **Three of the four were the ORACLE, not the
+product.**
+
+## The oracle was wrong three more times
+
+**ADXL345's seated foot.** The entry records `leadWidthMm` from the pair
+`0.813 x 0.50` printed on the bottom view, and quotes that pair in its own
+comment. It does not record the 0.813 half. An absent `leadContactMm` is
+hard-coded in this file as a CLAIM that the drawing prints none, so the entry
+asserted silence about a number it had just quoted. The product read 0.813 and
+was marked wrong for it. A no-lead terminal IS the contact: it lies flat with no
+bend.
+
+**UT54LVDS217's body, twice.** The entry read `0.335 SQ` off the rendered figure
+and recorded 8.509 mm on both axes. **Its own neighbours disprove it**: 48 leads
+on two sides is 24 a side, and the pitch recorded two lines above is 0.635 mm
+over "46 places", so one lead row spans `23 x 0.635 = 14.605 mm`. A body 8.509 mm
+long cannot carry it. Retracted rather than replaced with the product's 16.002 x
+9.652 - recording the product's answer as the oracle's would make this file agree
+with the thing it exists to check.
+
+That is now **four oracle defects in two days**, after STM32G071RB's "this
+datasheet prints no footprint" beside two printed footprints. Every one of them
+reported a correct reading as a defect.
+
+**Check an oracle entry against its own neighbouring fields.** Pitch times lead
+count against body length would have caught UT54LVDS217 the day it was written.
+
+## The one product fix, and where it came from
+
+**RHF310A read a 6.51-7.38 mm seated foot on a 6.48 mm body.** The prompt asks for
+`leadContactMm` as "drawing dimension L", which is right on a gull-wing package
+and wrong on a ceramic flat pack, where L is the whole lead tip to tip. The model
+did exactly what it was told.
+
+Dropped rather than corrected, because there is nothing to correct it to: a flat
+pack ships untrimmed, the assembler forms the leads, and no datasheet can print
+the foot their die makes. **The product already held that position twice** -
+`leadFromDrawing` ignores this field entirely for a straight lead and takes
+`formedLeadContactMm` from settings, and that setting is required before a first
+run for exactly this reason. So the value was never in the copper; it was sitting
+wrong on the record a reviewer signs.
+
+Measured before writing it: ten corpus parts read `straight`, and **nine already
+carry a null contact length**. The drawings do not print it.
+
+## And the fix was silently discarding, on the first try
+
+`bench:discards` went 0 to 1 on the next run. The drop pushed a NOTE, which is
+what the user reads, and did not report into `rejected`, which is what every
+instrument reads. Half-recorded is the same failure this file already has three
+comments about, committed while fixing an instance of it.
+
+**A drop reports into the merge's own `rejected` channel, not just into a note.**
+
+## The thirteen that remain, by root cause
+
+Five independent causes, not thirteen:
+
+- **1 needs a feature.** AD590's TO-52 prints `0.100 (2.54) T.P.` and `45 deg
+  T.P.` - true position on a bolt circle, and an angle. There is no pitch.
+  `leadSides` admits 1, 2 or 4, so "leads on a circle" is unsayable and the model
+  answers 1. Same shape as `leadForm` offering two of three values.
+- **4 need the prompt, which cannot be verified without spending.** NCP1200
+  returned `(1.35 + 1.75) / 2`; RHF1201 returned the Typ column of `2.18 | 2.47 |
+  2.72`. The field says MAXIMUM SEATED HEIGHT and never says which column of a
+  Min/Typ/Max table that is. LTC3105 took the lead THICKNESS where the prompt
+  says "where the drawing letters them, take b" and Linear's drawing letters
+  neither. TLV9061 took D for E on a SOT-23 where both are about 2.9 mm.
+- **7 are readings of vector artwork with no text layer, and no deterministic
+  arbiter exists.** STM32F103C8's Figure 44 prints 7.30, 6.20, 5.80, 5.60, 0.75
+  and 0.55, and BOTH readings are self-consistent: `(0.55, 6.75)` and
+  `(0.75, 6.55)` each reproduce a printed outer and inner extent. Only following
+  the leaders settles it. TSV911 is the identical shape, with the model landing
+  on 0.45 next to a terminal length of 0.425.
+- **1 is ambiguous and silkscreen-only.** RHFL4913's TO-257 table prints A 10.54,
+  B 10.54 and C 16.64; the model took A and B, the oracle says C is the body.
+
+## Three ideas measured and rejected, so nobody rebuilds them
+
+- **Tighten `verifyCitation` to demand more than a bare numeral.** Bare-numeral
+  citations are wrong **0.6%** of the time - 171 correct against 1 wrong. It
+  would destroy 171 good readings to catch one.
+- **Refuse a land whose pad length is shorter than the terminal it sits on.**
+  Both the right and wrong readings clear it on both parts.
+- **Refuse a lead span that matches the body length.** Catches TLV9061 and gives
+  no correct value to put there, so it converts a wrong number into a refusal
+  rather than into a right answer.
+
+
+# 2026-08-26: making more parts ship, without asking for more
+
+Aimed at the friction rather than the defects: which parts do NOT ship on one
+click, and why. Twelve of fifty-seven. Four general fixes took it to eight, and
+the questions asked fell from eighteen across seven parts to twelve across three.
+
+    SHIPS UNAIDED   45/57 (79%)  ->  49/57 (86%)
+    questions       18 on 7 parts -> 12 on 3 parts
+    false questions 1 -> 0
+
+## The 3D body was withholding the footprint
+
+`askForBody` wants three dimensions that ONLY the STEP solid consumes. The land
+pattern comes off the pitch and the printed footprint; the silkscreen falls back
+to the land extents. Yet its questions were pushed onto the same `needs` list as
+the footprint's and thrown together, so **a part whose copper built perfectly
+produced no files at all** because one of three outputs could not be made.
+
+STM32G071RB was the live case: LQFP64 land pattern read, checked, correct, and
+the whole bundle refused for an overall height.
+
+Now the two are separated by what they BLOCK. A footprint that cannot be built
+still fails the export, because the footprint is the deliverable. A solid that
+cannot be built is omitted and NAMED, in the response, the manifest and the
+record JSON, with the question still offered so answering adds it.
+
+Two follow-ons that would otherwise have shipped broken:
+
+- the KiCad footprint wrote a `${KIPRJMOD}/<part>.step` model path
+  unconditionally, so a bundle without a solid would carry a reference to a file
+  that is not in it, which KiCad reports on every placement
+- `packageOptions` still called it `needs-input`, so the CHOOSER withheld a
+  package the export would have delivered. Same drift this function exists to
+  prevent, running the other way.
+
+## A question the user had already answered
+
+`shipOutcome`'s route one passed only the density level to `createExportZip`, so
+LMP7704-SP and REF5025 were asked for a formed lead span and foot **that the user
+answers once on the settings screen**, and were counted as not shipping.
+`/api/export` has always read both off the parsed settings. The measurement was of
+a product that does not exist, for the third time.
+
+## A question with only one possible answer
+
+An odd lead count leaves the short row one lead short, and where the gap sits was
+always asked. On an ODD number of grid positions it is not a question: the leads
+sit on the pitch grid and the package is symmetric about the centre line between
+its rows, so the only arrangement that stays symmetric puts the gap in the
+MIDDLE. Any other position leaves the row lopsided.
+
+Corroborated by the drawing rather than assumed from it: TI's DBV0005A prints
+`2X 0.95` down the three-lead side and `1.9` across the two-lead side, and 1.9 is
+exactly two pitches. It cites JEDEC MO-178, where the arrangement is defined.
+
+**Only where the slot count is odd.** Five leads give three positions and are
+forced; seven give four, where two arrangements are equally symmetric and there
+is nothing to derive. So SOT-23-5, SC70-5 and SOT-353 stop asking and a seven-lead
+dual still asks. Three existing tests asserted the refusal on a five-lead part
+and were moved to seven, which is the count they were actually about.
+
+## Unblocking created a silent quality loss, and the checks caught it
+
+The moment the body stopped blocking, `SHIPS` rose and **PACKAGE FAMILY fell 28/28
+to 26/28 and VERIFIED 52/52 to 51/52.**
+
+`ships` now covers two outcomes - everything built, or everything except the solid
+- and both routes took the FIRST success. STM32F103C8 switched from its
+hand-read UFQFPN48 to a QFN36 that merely came earlier in the list, and MC33063A
+from `SOIC (D)` to an unnamed record bundle. A user choosing by hand would not
+make either trade.
+
+**A complete bundle beats a partial one, and this has to be said explicitly once
+"ships" stops meaning one thing.** Both numbers returned to 100%.
+
+Worth noting how it was caught: not by the SHIPS figure, which went up, but by two
+checks measuring something else entirely. A headline that only moves in the good
+direction is not evidence.
+
+## And a refusal I looked at and left alone
+
+Three of the remaining eight are no-lead packages whose datasheet prints no
+footprint: AD8232, LIS3DH, LM139AQML-SP. `ipc7351.ts` refuses these, and the
+refusal is right. Both published IPC tables were tried against two vendors'
+hand-read printed patterns and **neither reproduces both**: TI's pad length
+matches 3-18 and ADI's matches 3-15, and under 3-15 the centre span is 0.3 to
+0.6 mm too far out on both. Picking the table that fits one of them is exactly
+what got the previous no-lead rule retired.
+
+QFN, DFN, SON and LGA are the largest modern family, so this is the single
+biggest coverage gap in the product. It stays open until Altium's own IPC wizard
+can settle it, because the alternative is one vendor's house rule applied to
+everyone's parts.
+
+
+# 2026-08-26: the wrong netlist that was not one
+
+I told Anthony OPA2277 was "shipping with pins 7 and 8 swapped" and put it at the
+top of the list as the most serious open defect. **It reads all four of its
+pinouts correctly.**
+
+Page 4 draws two figures side by side and states both columns outright:
+
+    Out B    7 (SOIC/PDIP)    8 (VSON)
+    V+       8 (SOIC/PDIP)    7 (VSON)
+
+The VSON really does swap them. The product reads SOIC 7=Out B, PDIP 7=Out B,
+VSON 7=V+ and the 14-pin OPA4277 as well: four packages, four correct
+assignments.
+
+`PINOUT_ORACLE` held ONE entry per part. OPA2277's recorded the SOIC assignment
+and named no package, so `entryDescribes` applied it to whatever shipped - and
+the part ships as the VSON. **A correct reading was reported as a wrong netlist
+for as long as the entry has existed.**
+
+Fixed by letting a part hold SEVERAL hand-read pinouts, each naming its package,
+with the first that describes the shipped package being the one scored.
+
+## The same shape, four more times
+
+The remaining pin-name mismatches were the document printing TWO NAMES for one
+pin, both its own words:
+
+- STM32F103C8 pin 5: Table 5 prints `OSC_IN`, Figure 8 draws `PD0-OSC_IN`. The
+  pin defaults to the oscillator and remaps to port D bit 0.
+- STM32F407VG pin 12: Figure 13 draws `PH0`, Table 7's "Pin name (function after
+  reset)" column prints `PH0/OSC_IN` with `(PH0)` on the line below.
+- Same for pin 76: `PA14` in the figure, `PA14` + `(JTCK/SWCLK)` in the table.
+
+The oracle read the figures; the reader takes the table cell. `pins` now accepts
+a LIST of printed names, which records a fact about the document rather than
+softening a comparison: a name matching none of them is still a mismatch, and
+`VSS` against `VCAP_1` would never be listed together.
+
+    PIN NAMES  36/39  ->  38/39
+
+## The one I could not settle, and did not touch
+
+STM32F407VG pin 49. The entry says VCAP_1; the product reads 48 VCAP_1, 49 VSS;
+both agree 50 is VDD. I went to Table 7 to arbitrate and **its text layer is
+mangled at that row** - names split across lines, six package columns run
+together - and reading it gave a THIRD answer.
+
+Left exactly as it was. The entry was taken from a deliberate hand read of the
+render, with notes on which runs are rotated; a mangled text layer is weaker
+evidence, not stronger. Copying the product's answer in would be how an oracle
+stops being one.
+
+## The rule
+
+**Three of the last four "product defects" I have chased were the oracle**, and
+this one I had already announced as the most serious open defect in the product.
+
+Before reporting a reading as wrong, open the page and check that the ORACLE is
+right. It is the cheaper half of the check and it has been wrong more often than
+the product this week.
+
+
+# 2026-08-26: the oracle audit, and the wrong netlist it found
+
+Audited every hand-read entry after three of four "product defects" this week
+turned out to be the oracle.
+
+## Self-consistency: eight checks, all proved able to fire, zero findings
+
+An entry that contradicts its OWN neighbouring fields is wrong before anyone
+opens a PDF. Checked over 56 dimension entries and 49 pinout parts:
+
+    ROW-EXCEEDS-BODY        pitch x leads-a-side against the body it leaves
+    SPAN-INSIDE-BODY        a gullwing span must reach past its body
+    LAND-PAST-LEADS         a land centre span sits inside the lead tips
+    LAND-SHORTER-THAN-FOOT  a land is at least as long as the terminal on it
+    LEAD-WIDER-THAN-PITCH   a lead cannot fill the gap to its neighbour
+    PAD-PAST-BODY           a thermal pad fits inside its own body
+    CLAIM-CONTRADICTED      "prints no footprint" beside a land block
+    UNNAMED-AMONG-MANY      an unnamed pinout entry among named ones
+
+Every one was forced to fire against injected entries before the clean sheet was
+believed. UT54LVDS217 would have tripped the first the day it was written.
+
+## The two failures that actually happened, checked over every entry
+
+**`printsNothingFor: ["land"]` against the whole document.** One lead:
+LM139AQML-SP, whose entry claims no printed footprint while the document has
+footprint captions on pages 29 and 31. Both checked: page 29 is J0014A and page
+31 is NAC0014A, neither of which is this entry's NAJ0020A. **The claim is
+correct.**
+
+**A pinout entry naming no package on a document whose packages DISAGREE.** Three
+found, all the OPA2277 hole latent: ADG5412 (TSSOP against LFCSP, rotated by
+two), OPA333 (SOT-23 against SOT, and SOIC against VSON) and SN74LVC1G08 (X2SON
+swaps A and B). Each entry's own `source` line already named the figure it was
+read from, so naming the package added no new evidence and closed all three.
+
+## And then the real one
+
+STM32F407VG's entry reported ONE wrong pin, 49, VSS against VCAP_1. I could not
+settle it from Table 7 - its text layer is mangled at that row and gave a third
+answer - so I rendered Figure 13 and looked at it.
+
+The bottom row reads `26 PA3, 27 VSS, 28 VDD, 29 PA4, ...`. **The reader drops
+pin 28's VDD and shifts every pin from 28 to 49 by one position.** Twenty-two
+wrong pins on a part that ships, under a real part number, invisible to every
+geometric check.
+
+The entry was a partial one of about twenty spot checks, and they happened to
+fall either side of the run: everything up to 27, and everything from 50 on.
+
+**A partial oracle does not report a smaller version of a defect. It reports
+whichever pins it happens to cover, and there is no way to tell a one-pin slip
+from a twenty-two-pin shift without covering the run.** Where a figure can be
+read completely, it is; that entry is now all 100 pins.
+
+Eight more mismatches on the same part were ST's "pin name (function after
+reset)" form - `PC14/OSC32_IN (PC14)`, `PA13 (JTMS-SWDIO)` - each verified as
+printed before being recorded as an alternate. One of them was invisible to a
+whitespace-stripped search because Table 7 wraps the cell around a footnote
+marker.
+
+## The four refusals I had never opened
+
+All well-founded, and none a downstream defect: DF13-4P-1.25DSA is a connector
+whose document carries no pin-function table, L7805 is an unbadged part number
+with six package drawings and no pinout, RTAX2000S is an FPGA whose pinouts ship
+as separate files, and VA41630's is in artwork the reader did not get. Three of
+the four say so in their own words in the refusal.
+
+
+# 2026-08-26: hold-out run
+
+Full 59-part run against the corpus nothing here is ever tuned on. Reported as a
+CONSEQUENCE only, per RULES.md: no decision on this page was taken from it.
+
+    READ    56/59  (95%)
+    SHIPS   55/59  (93%)   45 of them asked nothing at all
+    cost    $2.92 this run, $57.43 of the $75 ceiling all-time
+
+Against the last full run on 2026-08-18, which read 61% and shipped 15 of 56.
+
+Three parts did not read: two carry no pin table the reader could get, and one is
+NOT A DATASHEET - retrieval fetched the wrong document, which is a Layer 1 fault
+and has been seen before.
+
+Four read and produced no bundle, and every one of them is the SAME GAP the tuned
+corpus already names: a no-lead package whose datasheet prints no footprint, so
+the four land values are asked for. `ipc7351.ts` refuses to compute those because
+neither published IPC table reproduces two vendors' printed patterns. This run is
+the second, independent statement that it is the largest coverage limit in the
+product.
+
+Ten more shipped after answering a median of four questions.
+
+## What the number is and is not
+
+95% READ is the fraction of hold-out parts whose pinout and package resolved well
+enough to build from, on documents chosen before any of this week's work and
+never opened. It is the honest predictor for a stranger's datasheet, and it is
+the first time it has been measured since the downstream audit, the shipping
+fixes and the oracle corrections.
+
+It is NOT a statement about correctness of the numbers read. Nothing in the
+hold-out has a hand-read drawing, so a shifted netlist of the kind found on
+STM32F407VG today would be invisible here. `bench:dimensions` is the instrument
+for that and it only covers the tuned corpus.
+
+
+# 2026-08-26: is the shifted netlist a class? Measured: no
+
+STM32F407VG drops pin 28 and shifts pins 28-49. The mechanism looked general -
+a rotated run in a four-sided figure - and a general mechanism would have made it
+the most serious thing in the product and justified spending on the prompt. Rule
+4 says enumerate the category before fixing the instance, so I did.
+
+## The category
+
+Of 25 parts shipping a quad pinout, most read it from a TEXT PIN TABLE, which has
+no rotated runs and is not this shape. **Six read theirs from a FIGURE**, and
+three of those are hold-out and stayed closed. That leaves three to check:
+
+    MSP430F5529   80-pin LQFP, 20 a side    PERFECT
+    LIS3DH        16-terminal LGA, 3-5 a side  PERFECT
+    STM32F407VG   100-pin LQFP, 25 a side   28-49 shifted
+
+MSP430F5529 is the strong result. Its figure has two rotated runs of twenty, one
+of them numbered BACKWARDS (61 at the right, 80 at the left), and all forty pins
+match the page exactly - `21:P1.0/TA0CLK/ACLK` through `40:P3.3/UCA0TXD/UCA0SIMO`
+and `61:VSSU` back to `80:P6.3/CB3/A3`.
+
+LIS3DH is a bottom view whose numbering runs counterclockwise from the top right,
+and all sixteen are right.
+
+**So rotated runs are not broken. One part in three is wrong, and it is the
+largest and densest of them.**
+
+## What this decides
+
+**Do not spend on a general quad-figure fix.** The category has one member out of
+three and the mechanism is not the one it looked like. A prompt change costs the
+whole cache and would be aimed at a defect whose shape is still unknown.
+
+What is known: the failure is on the biggest figure in the set, 25 labels to a
+rotated run. Whether it scales with run length cannot be settled here - the three
+hold-out parts of this shape sit between MSP430F5529 and STM32F407VG in size and
+must not be opened.
+
+## The method is the reusable part
+
+Render the page, look at it, compare against the record. That found the defect,
+sized the category, and cost nothing. It is now the third time this week the
+rendered image settled something the text layer could not or actively lied about.
