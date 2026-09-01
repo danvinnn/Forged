@@ -25,6 +25,22 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   typedRoutes: true,
   /**
+   * WHERE THE PROJECT ROOT IS, said rather than inferred.
+   *
+   * This repository sits inside a directory of the same name, and Next infers a
+   * workspace root by walking up looking for lockfiles. When it is unsure it
+   * prints a warning as the FIRST thing on the console at boot:
+   *
+   *   Warning: Next.js inferred your workspace root, but it may not be correct.
+   *
+   * Nothing is wrong, and that is the problem. Found on 2026-09-01 by starting
+   * the app the way somebody who had just cloned it would: the first line a new
+   * user sees should not look like a fault, because they cannot tell it from
+   * one, and it teaches them to ignore the console that carries the preflight
+   * warnings underneath it.
+   */
+  outputFileTracingRoot: import.meta.dirname,
+  /**
    * Node libraries that must be REQUIRED at runtime rather than bundled.
    *
    * Without this, `next dev` fails to start and every page 500s. The chain is:
