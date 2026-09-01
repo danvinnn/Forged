@@ -3,3 +3,16 @@
 # cannot be committed by accident. Adding a part here must be a deliberate edit and the part
 # must be publicly available. Blank lines and lines starting with # are ignored.
 LMP7704-SP
+
+# NOT A VENDOR DOCUMENT. Three pages of the public NCP1200 datasheet, rendered to
+# JPEG and wrapped in a PDF with no text layer at all - 3 pages, 0 characters.
+#
+# Built 2026-08-30 for `bench:badinput`, whose report had said for a day
+# "NOT COVERED: a scanned page with no text layer. No PDF writer on this machine
+# and no scanned datasheet in the caches, so it is named rather than faked."
+# Both halves were true and neither made the case go away: an older mil-spec part
+# is frequently a photocopy, and this product's market is older mil-spec parts.
+#
+# The product reads it. The model works off the rendered page, so the missing
+# text layer costs nothing: 8 pins, on a document with no text in it.
+scanned-no-text-layer

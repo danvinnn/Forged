@@ -1378,3 +1378,35 @@ test("a square quad still places both axes on the one span it has", async () => 
   assert.equal(at.get("1")?.x, -2);
   assert.equal(at.get("16")?.y, 2, "with no cross span, the second axis uses the first");
 });
+
+test("a seated span smaller than the body asks for one for this package", async () => {
+  // LIVE, found by the audit on 2026-08-29. The seated span is asked ONCE PER
+  // ASSEMBLER because it is a property of their forming die, and one number
+  // cannot cover a 5 mm package and a 24 mm one. `spanCoversBody` exists to
+  // catch a span ending inside its own body and cannot see this: it reads the
+  // DRAWING's span, which is null on exactly the packages whose span comes from
+  // the settings screen, so it reported "unavailable" while every land was laid
+  // out underneath the part.
+  const wide = cfpPart();
+  // The package name keeps its own lead count: a designator that states 48 leads
+  // beside a 14-row pin table is refused earlier, for a different reason.
+  const part = {
+    ...wide,
+    dimensions: { ...wide.dimensions, bodyLengthMm: 24.13, bodyWidthMm: 24.13 }
+  } as ResolvedPart;
+
+  await assert.rejects(
+    () => createExportZip(part, "kicad", { formedLeadSpanMm: 7.62, formedLeadContactMm: 0.6 }),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError);
+      assert.deepEqual(error.needs.map((need) => need.field), ["formedLeadSpanMm"]);
+      assert.equal(error.needs[0].scope, "part", "the install-wide answer is what is impossible here");
+      assert.match(error.needs[0].why, /24\.13/, "names the body that makes it impossible");
+      return true;
+    }
+  );
+
+  // And a span that does reach across the same body still builds.
+  const bundle = await createExportZip(part, "kicad", { formedLeadSpanMm: 27.94, formedLeadContactMm: 0.6 });
+  assert.ok(bundle.buffer.byteLength > 0);
+});

@@ -69,6 +69,7 @@ import { isGapFreeSequence, normalizeModelPins } from "../extraction/merge";
 import { extractionFields } from "../extraction/contracts";
 import { loadBenchEnv } from "./env";
 import { promptFingerprint } from "./modelcache";
+import { defect } from "./inject";
 import { buildCachedParts } from "./oracle-match";
 import type { PartRecord } from "../types";
 
@@ -322,7 +323,27 @@ async function fieldPass(): Promise<boolean> {
   const named = new Map<string, number>();
   const silent: Silent[] = [];
 
-  for (const entry of built) {
+  for (const raw of built) {
+    // A VALUE THE MODEL ANSWERED, GONE FROM THE RECORD WITH NOTHING SAYING SO,
+    // which is the only thing the "SILENTLY DISCARDED 0" line claims. That claim
+    // has never been shown to be capable of being false: the count sits at zero
+    // and the path that increments it has never run.
+    //
+    // Every land-pattern dimension is stripped off the record and out of the
+    // rejection list, so the model's answer is on neither side of the ledger.
+    const entry = defect("discards.rejected", raw, (one) => ({
+      ...one,
+      rejected: one.rejected.filter((item) => !item.field.startsWith("dimensions.land")),
+      record: {
+        ...one.record,
+        dimensions: Object.fromEntries(
+          Object.entries(one.record.dimensions).map(([field, held]) => [
+            field,
+            field.startsWith("land") ? { ...(held as object), value: null } : held
+          ])
+        )
+      } as typeof one.record
+    }));
     // THE PER-PACKAGE TABLE FIRST, because it is the path with no reason
     // channel and so the one where a discard can only be found by looking.
     for (const held of perPackageAnswered(entry.part)) {

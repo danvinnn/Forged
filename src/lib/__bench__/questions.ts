@@ -51,6 +51,7 @@ import type { RequiredInput } from "../exporters";
 import { loadBenchEnv } from "./env";
 import { DIMENSION_ORACLE, type DimensionOracleEntry } from "./dimension-oracle";
 import { promptFingerprint } from "./modelcache";
+import { defect } from "./inject";
 import { buildCachedParts, type OracleValues } from "./oracle-match";
 import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
 
@@ -197,7 +198,31 @@ async function main(): Promise<void> {
   let asking = 0;
   let asked = 0;
 
-  for (const entry of built) {
+  for (const raw of built) {
+    // A QUESTION THE DATASHEET ALREADY ANSWERS, which is the whole complaint
+    // this bench exists to settle - and the two columns that carry it, DROPPED
+    // and UNREAD, both sit at zero and have never been shown able to move.
+    //
+    // Blanking the land dimensions makes the export ask for them on parts whose
+    // hand-read drawing prints them, which is a false question by construction.
+    const entry = defect("questions.needs", raw, (one) => ({
+      ...one,
+      values: Object.fromEntries(
+        Object.entries(one.values).map(([field, held]) => [
+          field,
+          field.includes("land") ? { ...held, value: null } : held
+        ])
+      ),
+      record: {
+        ...one.record,
+        dimensions: Object.fromEntries(
+          Object.entries(one.record.dimensions).map(([field, held]) => [
+            field,
+            field.startsWith("land") ? { ...(held as object), value: null } : held
+          ])
+        )
+      } as typeof one.record
+    }));
     const outcome = await shipOutcome(entry.record, BENCH_SETTINGS);
     if (outcome.asks.length === 0) continue;
     asking += 1;

@@ -117,6 +117,50 @@ const EXTRACTION_AIR_GAP_SAFE = [
   "index.ts"
 ];
 
+/**
+ * MODULES OUTSIDE BOTH SUBTREES THAT AN AIR-GAP-SAFE ONE STATICALLY IMPORTS.
+ *
+ * The two scans above walk `retrieval/` and `extraction/` and nothing else, so a
+ * safe module could reach the network through an import one directory up and
+ * neither would notice.
+ *
+ * `spend.ts` is the first: `extraction/factory.ts` imports it statically to meter
+ * every billed call, and the factory is the module the whole air-gap guarantee
+ * turns on. It reads and writes one local file and must never do more.
+ *
+ * Added 2026-08-30 with the spend ceiling. A list is the weaker form of this
+ * check - the strong form would follow every static import - but a list that is
+ * WRONG fails loudly here, and no list at all fails silently in a customer's
+ * secure facility.
+ */
+const SHARED_AIR_GAP_SAFE = ["spend.ts"];
+
+test("shared modules an air-gapped path imports contain no networking", () => {
+  const { readFileSync: read } = require("node:fs") as typeof import("node:fs");
+  for (const file of SHARED_AIR_GAP_SAFE) {
+    const src = stripComments(read(join(process.cwd(), "src", "lib", file), "utf8"));
+    assert.doesNotMatch(src, /\bfetch\s*\(/, `${file} must not call fetch`);
+    assert.doesNotMatch(src, /https?:\/\//, `${file} must not contain an external URL`);
+  }
+});
+
+test("every module the extraction factory statically imports is scanned", () => {
+  // The list above is only worth something if it is complete. This reads the
+  // factory's own imports and insists each one is either inside a scanned
+  // subtree or named in the shared list.
+  const src = extractionCode("factory.ts");
+  const imported = [...src.matchAll(/^import[^"']*["']([^"']+)["']/gm)].map((m) => m[1]);
+  for (const path of imported) {
+    if (path.startsWith("./")) continue;
+    if (path.startsWith("../retrieval/")) continue;
+    const base = `${path.split("/").pop()}.ts`.replace(/\.ts\.ts$/, ".ts");
+    assert.ok(
+      SHARED_AIR_GAP_SAFE.includes(base),
+      `extraction/factory.ts imports ${path}, which no air-gap scan covers. Add it to SHARED_AIR_GAP_SAFE.`
+    );
+  }
+});
+
 test("air-gap-safe extraction modules contain no fetch call", () => {
   for (const file of EXTRACTION_AIR_GAP_SAFE) {
     assert.doesNotMatch(extractionCode(file), /\bfetch\s*\(/, `${file} must not call fetch`);

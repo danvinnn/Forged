@@ -36,8 +36,9 @@
 import { buildFootprintGeometry, FootprintUnavailableError } from "../exporters";
 import { DIMENSION_ORACLE } from "./dimension-oracle";
 import { declaredLeadCount, PACKAGE_FAMILY_PATTERN, sameOutlineCode } from "../packagevariants";
+import { defect } from "./inject";
 import { isStitched, replayRecords } from "./replay";
-import { thermalPadNumber } from "../geometry";
+import { isGridAddressed, thermalPadNumber } from "../geometry";
 import type { Pad } from "../geometry";
 import type { ResolvedPart } from "../types";
 
@@ -194,6 +195,66 @@ function checkPart(
       !(part.exposedPad && pad.number === padNumber)
   );
   if (lands.length === 0) return findings;
+
+  // EVERY LAND SITS IN A FULL ROW, which is the check this bench was missing.
+  //
+  // Found 2026-08-30 by moving one land 0.9 mm along x on every footprint and
+  // watching the bench report 14 of 80. PITCH and SPAN below both examine only
+  // the groups whose membership equals `widest`, and a land that has moved OUT
+  // of its row shrinks that row below `widest`. So both checks skip the row
+  // containing the defect, and the displaced land itself is examined by nothing.
+  // A single land out of position is the likeliest emitter defect there is, and
+  // the instrument written to catch it looked away from exactly that case.
+  //
+  // WHICH AXIS COUNTS is decided by which one carries the rows, because on a
+  // two-sided package the other axis carries no information: eight lands in two
+  // rows of four give four y-lines of two, and a land dragged along x keeps its
+  // y-line intact. A first attempt required every land to lie on an extreme x or
+  // y line and passed 46 of 80 for exactly that reason - pin 1 is a corner, so
+  // its y is extreme whatever its x does.
+  //
+  // A quad ties, and there the union is right: a land belongs to a full row on
+  // one axis or the other. A top-row land dragged along x keeps its full y-row
+  // and is left to the PITCH check below, which measures that row's gaps and
+  // does see it. Grid arrays are excluded; their lands fill a lattice.
+  if (!isGridAddressed(part.pins)) {
+    const lines = { x: rows(lands, "x"), y: rows(lands, "y") };
+    const full = {
+      x: Math.max(...[...lines.x.values()].map((group) => group.length)),
+      y: Math.max(...[...lines.y.values()].map((group) => group.length))
+    };
+    const sizeOn = (pad: Pad, axis: "x" | "y") =>
+      [...lines[axis].values()].find((group) => group.includes(pad))?.length ?? 0;
+    // A QUAD TIES, and there the shared-coordinate test is too weak on its own:
+    // the left and right rows hold the same y values, so a side land dragged
+    // along x still shares its y with its mirror and passes. On a quad the rows
+    // are the four EXTREME lines, so a land has to sit on one of them and have
+    // company there. That test is wrong for a two-sided package, where pin 1 is
+    // a corner and its y is extreme however far along x it has been dragged,
+    // which is why the axis is chosen first and the rule second.
+    const edges = {
+      x: [Math.min(...lands.map((pad) => pad.centre.xMm)), Math.max(...lands.map((pad) => pad.centre.xMm))],
+      y: [Math.min(...lands.map((pad) => pad.centre.yMm)), Math.max(...lands.map((pad) => pad.centre.yMm))]
+    };
+    const onEdge = (pad: Pad, axis: "x" | "y") =>
+      edges[axis].some((line) => near(axis === "x" ? pad.centre.xMm : pad.centre.yMm, line));
+    const inFullRow = (pad: Pad) =>
+      full.x > full.y
+        ? sizeOn(pad, "x") >= 2
+        : full.y > full.x
+          ? sizeOn(pad, "y") >= 2
+          : (onEdge(pad, "x") && sizeOn(pad, "x") >= 2) || (onEdge(pad, "y") && sizeOn(pad, "y") >= 2);
+    const stray = lands.filter((pad) => !inFullRow(pad));
+    if (stray.length > 0 && full.x > 1 && full.y > 1) {
+      const worst = stray[0];
+      record(
+        "ROW",
+        `land ${worst.number} at (${worst.centre.xMm.toFixed(4)}, ${worst.centre.yMm.toFixed(4)}) is not in a full ` +
+          `row (rows hold ${Math.max(full.x, full.y)})` +
+          (stray.length > 1 ? `, and ${stray.length - 1} more` : "")
+      );
+    }
+  }
 
   // WHICH AXIS THE ROWS RUN ALONG, decided from the copper rather than assumed.
   //
@@ -423,7 +484,17 @@ function main(): void {
     }
     built += 1;
     if (usesPrintedLand(source)) printed += 1;
-    findings.push(...checkPart(part, pads, source, declined, stitched));
+    // A LAND IN THE WRONG PLACE, which is the failure this bench exists for: the
+    // record is untouched, so only the copper moved. Placed after the build and
+    // before the check, exactly where an emitter defect would land.
+    const seen = defect("copper.pads", pads, (all) =>
+      all.map((pad, index) =>
+        index === 0
+          ? { ...pad, centre: { ...pad.centre, xMm: pad.centre.xMm + 0.9 } }
+          : pad
+      )
+    );
+    findings.push(...checkPart(part, seen, source, declined, stitched));
   }
 
   console.log(`\nMeasured the emitted pads of ${built} footprints. No network, no spend.`);

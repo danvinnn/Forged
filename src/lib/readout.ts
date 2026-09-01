@@ -145,7 +145,16 @@ export function withPrintedFootprint(part: PartRecord, doc: DatasheetText): Part
       packagesInThisDocument: part.packagesInThisDocument.map((entry) =>
         entry.vendorLandPattern
         ? entry
-        : { ...entry, ...printedFootprintFor(doc, entry.packageType, entry.alsoKnownAs, entry.outlineCode) }
+        : {
+            ...entry,
+            ...printedFootprintFor(
+              doc,
+              entry.packageType,
+              entry.alsoKnownAs,
+              entry.outlineCode,
+              part.packagesInThisDocument!.length
+            )
+          }
       )
     };
   }
@@ -169,7 +178,9 @@ function printedFootprintFor(
   packageType: string,
   alsoKnownAs: readonly string[] | undefined,
   /** The drawing's own code, which identifies it where the caption drifts. */
-  outlineCode: string | undefined
+  outlineCode: string | undefined,
+  /** How many packages this document describes. See `findUnreadableFootprint`. */
+  packagesInDocument: number
 ): { vendorLandPattern?: { page: number; valuesMm: number[] } } {
   // EVERY NAME THIS DOCUMENT PRINTS FOR THE PACKAGE, because the footprint's
   // caption and the pinout's caption are routinely different words for one
@@ -186,7 +197,10 @@ function printedFootprintFor(
     }
   }
   for (const name of [packageType, ...(alsoKnownAs ?? [])]) {
-    const unreadable = findUnreadableFootprint(doc, name);
+    // THE CODE AND THE PACKAGE COUNT GO WITH THE NAME. Without them this handed
+    // ONE page to every package a family datasheet describes; see the fallback
+    // in `findUnreadableFootprint`.
+    const unreadable = findUnreadableFootprint(doc, name, { outlineCode, packagesInDocument });
     if (unreadable !== null) return { vendorLandPattern: { page: unreadable, valuesMm: [] } };
   }
   return {};

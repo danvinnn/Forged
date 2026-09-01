@@ -1,9 +1,11 @@
 import type { DatasheetText } from "../pdftext";
-import { pinElectricalTypes, type Citation, type Extracted, type ExtractionMethod, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
+import { pinTypeFrom, type Citation, type Extracted, type ExtractionMethod, type PartRecord, type PinElectricalType, type PinRecord } from "../types";
 import { extractionFields, type ExtractionField, type ExtractionResult, type ModelValue } from "./contracts";
 import { citableText, quarantinedRegions } from "./untrusted";
 import { RANGE_FIELDS as RANGE_FIELD_LIST } from "../review";
 import { statedLeadCount } from "../packagevariants";
+import { gridPosition, isGridAddressed } from "../geometry";
+import { labelForField } from "../review";
 
 /**
  * MODEL-FIRST merging, and verification of what the model claims.
@@ -181,15 +183,39 @@ export function asciiSigns(name: string): string {
  */
 const PAD_NAME = /^\s*(?:e-?pad|exposed\s*(?:thermal\s*)?pad|thermal\s*pad|die\s*attach\s*pad|dap|tab|pad|ep)\s*$/i;
 
+
+
 /**
  * Exported for `bench:discards`, which runs every cached model response through
  * THIS function rather than a copy of its rules. A second implementation of a
  * gate drifts from the first, and then the instrument measures a gate that does
  * not exist. See `forge-validate-the-instrument`.
  */
+/**
+ * Bracketed bus-range notation, as every datasheet writes it: `[7:0]`, `[1:0]`,
+ * occasionally `[7..0]`. Anchored on the brackets rather than on the letters
+ * before them, because the prefix is the part that varies.
+ */
+const BUS_RANGE = /\[\s*\d+\s*(?::|\.\.)\s*\d+\s*\]/;
+
 export function normalizeModelPins(
   rows: unknown
-): { ok: true; pins: PinRecord[]; exposedPad: boolean } | { ok: false; reason: string } {
+):
+  | {
+      ok: true;
+      pins: PinRecord[];
+      exposedPad: boolean;
+      /**
+       * Names dropped because they were bus ranges rather than nets.
+       *
+       * Returned rather than swallowed. A value the reader supplied and this
+       * code threw away has to be named on the record: `bench:discards` counts
+       * silent discards and the answer has been zero since the day it was
+       * written, which is a property worth keeping.
+       */
+      unnamed: string[];
+    }
+  | { ok: false; reason: string } {
   if (!Array.isArray(rows) || rows.length === 0) {
     return { ok: false, reason: "the pin table was empty" };
   }
@@ -270,12 +296,31 @@ export function normalizeModelPins(
     // that mattered is untouched: no footprint is ever emitted missing a
     // mandatory pad. What changes is that the symbol, the pin list and the
     // review panel no longer die with it.
-    if (!/^\d+$/.test(raw)) {
+    // A GRID COORDINATE IS A PIN DESIGNATOR, not a thermal pad.
+    //
+    // A ball- or land-grid array addresses every terminal by row letter and
+    // column number - `A1`, `B2`, `M12` - and this branch used to sweep all of
+    // them into `skipped` and set `exposedPad`, so a perfectly read BGA pinout
+    // reached the record as NO PINS AT ALL and a false thermal pad. The screen
+    // then told the user their datasheet could not be read, which was untrue:
+    // the reading was correct and this line threw it away.
+    //
+    // Recorded exactly as printed. Nothing about a pinout requires the
+    // designator to be an integer - a schematic symbol is a box with named pins
+    // and does not care how the part is soldered - and the one thing that does
+    // care, the footprint, refuses in `buildFootprintGeometry` where the
+    // arrangement is actually chosen. That is the same move the exposed pad made
+    // on 2026-08-10, for the same reason and with the same guarantee: no
+    // footprint is ever emitted for a package this generator cannot place.
+    //
+    // Matched on the SHAPE rather than a package name, so it covers any
+    // grid-addressed part rather than the one that prompted it.
+    if (!/^\d+$/.test(raw) && gridPosition(raw) === null) {
       exposedPad = true;
       skipped.push(raw);
       continue;
     }
-    const number = raw;
+    const number = raw.toUpperCase();
 
     const raw_name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : null;
     if (raw_name === null) return { ok: false, reason: `pin ${number} carried no name` };
@@ -284,50 +329,87 @@ export function normalizeModelPins(
     // An unrecognised or absent type is recorded as unspecified rather than
     // rejecting the row: the type is metadata on the symbol, not geometry, and
     // no pad moves because of it.
-    const electricalType: PinElectricalType =
-      typeof entry.electricalType === "string" &&
-      (pinElectricalTypes as readonly string[]).includes(entry.electricalType)
-        ? (entry.electricalType as PinElectricalType)
-        : "unspecified";
+    //
+    // THROUGH `pinTypeFrom`, which is the SECOND place this had to change. The
+    // strict enum test that used to be here accepted only this project's own
+    // spellings, and the model answers in the datasheet's - `I`, `O`, `P`, `G`,
+    // `I/O`. So fixing the parser in `prompt.ts` alone changed nothing: the
+    // value survived one gate and was dropped by the next. Two gates asking one
+    // question in two vocabularies.
+    const electricalType: PinElectricalType = pinTypeFrom(entry.electricalType);
 
     const description = typeof entry.description === "string" ? entry.description : undefined;
     pins.push({ number, name, electricalType, ...(description ? { description } : {}) });
   }
 
+  // A BUS RANGE IS NOT A PIN NAME.
+  //
+  // `nQ[1:0]`, `DS[1:0]` and `A[7:0]` name a SET of nets. A pin is one terminal
+  // and carries one net, so a range in that position is a template the reader
+  // copied out of a pin-DESCRIPTION table, where one row legitimately covers
+  // several pins, instead of the specific name the pinout figure prints beside
+  // each number.
+  //
+  // Found 2026-08-28 on UT7R995, a Frontgrade 48-lead ceramic flat pack read
+  // blind. Its Figure 1 prints `4F0` at pin 1, `4F1` at pin 2, `3Q1` at pin 8
+  // and `DS0` at pin 22. Eighteen of its forty-eight names came back as three
+  // range templates instead, so eight outputs shared one name and a schematic
+  // built from that symbol would have shorted them together.
+  //
+  // THE NAME IS DROPPED, NOT THE TABLE. Thirty of the forty-eight names are
+  // right and a reader who is shown thirty correct names and eighteen blanks
+  // knows exactly which pins to look up; one who is shown a refusal has to redo
+  // all forty-eight. The blanks then flow into the pinout confirmation as
+  // unread, so the part cannot ship claiming a checked netlist.
+  //
+  // Cannot be repaired by expanding the range, and that was the first idea: the
+  // template is `nQ[1:0]` where `n` is the bank, so `3Q1` is not recoverable
+  // from it. The information is not in the string.
+  //
+  // Measured across both corpora on the live pipeline before shipping: 1 of 89
+  // records with a pinout carries one, and it is this part. Zero correct records
+  // are touched.
+  const ranged = pins.filter((pin) => BUS_RANGE.test(pin.name));
+  const unnamed = [...new Set(ranged.map((pin) => pin.name))];
+  for (const pin of ranged) pin.name = "";
+
+  // ONE ADDRESSING SCHEME PER TABLE.
+  //
+  // A pinout is numbered or it is gridded; a table holding both is a reading
+  // that has merged two packages, or one that lost the row letters from half its
+  // rows. Either way the result would be a footprint with pads it cannot place
+  // beside pads it can, so it is refused whole rather than half kept.
+  const gridded = pins.filter((pin) => gridPosition(pin.number) !== null).length;
+  if (gridded > 0 && gridded !== pins.length) {
+    return {
+      ok: false,
+      reason:
+        `the pin table mixes grid positions with plain numbers (${pins.length - gridded} numbered, ` +
+        `${gridded} gridded), so it describes more than one package or lost the row letters from some rows`
+    };
+  }
+
   // Dropping the pad row must not leave an empty table.
   //
-  // But "no numbered rows" is not always a failure to READ, and saying so blamed
-  // the document for our own scope. A ball- or land-grid array addresses every
-  // terminal by grid position, `A1`, `B2`, `C3`, so a perfectly read BGA pinout
-  // arrives here with every row skipped and used to be reported as an unreadable
-  // pin table. TXB0104 in the corpus is one.
+  // This used to catch grid arrays too, and reported a perfectly read BGA pinout
+  // as an unreadable pin table. It no longer can: a grid position is a pin
+  // designator above and is kept, so anything still reaching here is a row this
+  // reader genuinely could not use.
   //
-  // Stated as the SHAPE of the designators rather than as a package name, so it
-  // covers any grid-addressed part rather than the one that prompted it: a row
-  // letter followed by a column number is the addressing scheme, whatever the
-  // vendor calls the package.
+  // The message says what was SEEN rather than what the document lacks, for the
+  // reason `document-claims.test.ts` enforces everywhere: we read a handful of
+  // pages, and an absence in our reading is not an absence in the datasheet.
   if (pins.length === 0) {
-    const grid = skipped.length > 0 && skipped.every((designator) => /^[A-Za-z]{1,2}\d{1,3}$/.test(designator));
-    if (grid) {
-      return {
-        ok: false,
-        reason:
-          `the pinout was read correctly, but every terminal is addressed by grid position ` +
-          `(${skipped.slice(0, 3).join(", ")}), which is a ball- or land-grid array. Forge builds ` +
-          `packages with leads on two or four sides and has no grid arrangement, so this pinout ` +
-          `cannot be turned into a footprint`
-      };
-    }
     return {
       ok: false,
       reason:
         skipped.length > 0
-          ? `the pin table had no numbered rows, only ${skipped.slice(0, 4).join(", ")}`
-          : "the pin table had no numbered rows"
+          ? `the pin table had no usable designators, only ${skipped.slice(0, 4).join(", ")}`
+          : "the pin table had no usable designators"
     };
   }
 
-  return { ok: true, pins, exposedPad };
+  return { ok: true, pins, exposedPad, unnamed };
 }
 
 /**
@@ -400,6 +482,22 @@ export function lastRowIsNumberedThermalPad(record: {
  * full marks because every name genuinely is on the page.
  */
 export function isGapFreeSequence(pins: PinRecord[]): boolean {
+  // A GRID IS PROVEN DIFFERENTLY, because 1..N is not what it looks like.
+  //
+  // `A1, A2, B1, B2` has no first pin called 1 and no last pin called N, so the
+  // run test rejects every grid array outright. The equivalent proof is that no
+  // position is claimed twice: a grid is routinely DEPOPULATED - a BGA leaves
+  // balls out of the middle for routing or under the die - so demanding a
+  // complete rectangle would refuse correct pinouts.
+  //
+  // That is a weaker proof than the numbered one and it is said plainly here
+  // rather than hidden: a grid pinout missing a corner cannot be detected from
+  // its designators alone. What protects the copper is that nothing places a
+  // grid yet, and when something does, the row and column extents on the
+  // drawing are the second source that closes this.
+  if (isGridAddressed(pins)) {
+    return new Set(pins.map((pin) => pin.number.toUpperCase())).size === pins.length;
+  }
   const numbers = pins.map((pin) => Number(pin.number));
   if (numbers.some((value) => !Number.isInteger(value) || value < 1)) return false;
   const distinct = new Set(numbers);
@@ -906,7 +1004,6 @@ export function citeRenderedPage(
 function dropStraightLeadContact(
   record: PartRecord,
   dimensions: Partial<PartRecord["dimensions"]>,
-  modelName: string,
   label: string,
   /**
    * The merge's own refusal channel, which this MUST report into.
@@ -938,14 +1035,14 @@ function dropStraightLeadContact(
       `${shown} read is the whole lead. The foot comes from the formed-lead setting`
   });
   record.notes.push(
-    `${modelName} read a ${label}seated foot of ${shown}, and this package's leads leave the body ` +
+    `The reader read a ${label}seated foot of ${shown}, and this package's leads leave the body ` +
       `STRAIGHT. A flat pack ships untrimmed and the assembler forms the leads, so its drawing prints ` +
       `no seated foot and the dimension read is the whole lead. The foot comes from the formed-lead ` +
       `setting instead, which is why that setting is required before a first run.`
   );
 }
 
-function correctInnerGapSpans(record: PartRecord, dimensions: Partial<PartRecord["dimensions"]>, modelName: string, label: string): void {
+function correctInnerGapSpans(record: PartRecord, dimensions: Partial<PartRecord["dimensions"]>, label: string): void {
   const held = (field: keyof PartRecord["dimensions"]): number | null => {
     const value = (dimensions[field] ?? record.dimensions[field]) as { value?: unknown } | undefined;
     return typeof value?.value === "number" && Number.isFinite(value.value) && value.value > 0 ? value.value : null;
@@ -976,7 +1073,7 @@ function correctInnerGapSpans(record: PartRecord, dimensions: Partial<PartRecord
     const existing = target[field] as { value: unknown; confidence: unknown; method: unknown; citation: unknown };
     (target as Record<string, unknown>)[field] = { ...existing, value: corrected };
     record.notes.push(
-      `${modelName} read ${span} mm for ${label}${field}, which is less than the ${body} mm body it has to reach ` +
+      `The reader read ${span} mm for ${label}${field}, which is less than the ${body} mm body it has to reach ` +
         `past: a gull-wing package's lands sit under feet that project beyond the body. That is the INNER GAP ` +
         `between the two rows, which this drawing dimensions instead of the centre span, so the centre span is ` +
         `the gap plus one ${padLengthMm} mm land: ${corrected} mm.`
@@ -1052,6 +1149,18 @@ export function mergeModelValues(
   part: PartRecord,
   doc: DatasheetText,
   result: ExtractionResult,
+  /**
+   * WHICH MODEL, for the record and for exactly ONE note.
+   *
+   * It used to open every sentence on the review panel:
+   * "vertex:gemini-3.6-flash read a seated foot of...". An engineer testing the
+   * product on 2026-08-28 counted it five times on one screen and said so - on
+   * an internal tool for a satellite company, the vendor's model id is not what
+   * they are reading the panel to find out.
+   *
+   * It is still provenance and it is still recorded, once, as its own note. The
+   * prose below says "the reader", which is what the sentences are about.
+   */
   modelName: string,
   /**
    * Pages that were RENDERED and sent as images. Empty means text-only, in
@@ -1115,7 +1224,7 @@ export function mergeModelValues(
       const stated = statedMaxHeightMm(doc, claimed.page);
       if (stated !== null && Math.abs(stated - value) >= 0.02) {
         merged.notes.push(
-          `${modelName} read a ${value} mm overall height for this package; the drawing on page ` +
+          `The reader read a ${value} mm overall height for this package; the drawing on page ` +
             `${claimed.page} states ${stated} mm max height in its own title, which is the figure used. ` +
             `The smaller reading is usually the body thickness rather than the seated envelope.`
         );
@@ -1148,7 +1257,7 @@ export function mergeModelValues(
         // a code defect survived from 2026-08-10 to 2026-08-25 while being
         // reported as a bad read. See `bench:discards`.
         merged.notes.push(
-          `${modelName} returned a pin table that was discarded rather than recorded: ${normalized.reason}.`
+          `The reader returned a pin table that was discarded rather than recorded: ${normalized.reason}.`
         );
         continue;
       }
@@ -1160,6 +1269,23 @@ export function mergeModelValues(
         continue;
       }
       value = normalized.pins;
+      // NAMED, because a value the reader supplied and this code dropped is a
+      // discard, and a silent discard is what `bench:discards` exists to keep at
+      // zero. See the bus-range rule in `normalizeModelPins`.
+      if (normalized.unnamed.length > 0) {
+        rejected.push({
+          field,
+          reason:
+            `${normalized.unnamed.join(", ")} name a group of pins rather than one net, so those pins are ` +
+            `recorded without a name`
+        });
+        merged.notes.push(
+          `The reader gave ${normalized.unnamed.length} pin name(s) as bus ranges (${normalized.unnamed.join(", ")}), ` +
+            `which name a group of pins rather than one net each. Those pins are recorded with their numbers and ` +
+            `no name, so nothing is wired to a name that does not identify a single terminal. The pinout figure ` +
+            `prints a specific name beside each number.`
+        );
+      }
       // Set before the citation checks below, because the pad is a fact about the
       // PACKAGE and stays true whether or not this particular table survives them.
       if (normalized.exposedPad) merged.exposedPad = true;
@@ -1275,14 +1401,14 @@ export function mergeModelValues(
   }
 
   // THE INNER GAP READ AS THE CENTRE SPAN. See `correctInnerGapSpans`.
-  correctInnerGapSpans(merged, merged.dimensions, modelName, "");
+  correctInnerGapSpans(merged, merged.dimensions, "");
   // A FOOT READ OFF A PACKAGE THAT HAS NONE. See `dropStraightLeadContact`.
-  dropStraightLeadContact(merged, merged.dimensions, modelName, "", rejected);
+  dropStraightLeadContact(merged, merged.dimensions, "", rejected);
 
   if (filled.length > 0) {
     merged.notes = [
       ...merged.notes,
-      `${modelName} filled ${filled.length} field(s) the text pass could not resolve: ${filled.join(", ")}.`
+      `The reader filled ${filled.length} field(s) the text pass could not resolve: ${filled.map((field) => labelForField(field)).join(", ")}.`
     ];
   }
   if (uncited.length > 0) {
@@ -1296,7 +1422,7 @@ export function mergeModelValues(
       ...merged.notes,
       ...rejected.map(
         (entry) =>
-          `${modelName} answered ${entry.field} but it was discarded, so the field stays honestly unknown: ${entry.reason}.`
+          `The reader answered ${labelForField(entry.field)} but it was discarded, so the field stays honestly unknown: ${entry.reason}.`
       )
     ];
   }
@@ -1374,15 +1500,7 @@ export function mergeModelValues(
   // Summarised, not enumerated per field, because the honest declines are
   // routine: a package with no exposed pad declines both thermal pad dimensions
   // every time, and a note each would bury the interesting ones.
-  const declined = result.declined ?? [];
-  if (declined.length > 0) {
-    merged.notes = [
-      ...merged.notes,
-      `${modelName} looked for ${declined.length} field(s) and reported the document does not state them: ${declined.join(", ")}.`
-    ];
-  }
-
-  for (const note of result.notes ?? []) merged.notes.push(`${modelName}: ${note}`);
+  for (const note of result.notes ?? []) merged.notes.push(note);
 
   // A document that addresses the reader as an agent is reported, whether or not
   // the injection changed any value. Silence here would mean the one case where
@@ -1454,7 +1572,7 @@ export function mergeModelValues(
         const normalized = normalizeModelPins(table.pins);
         if (!normalized.ok) {
           merged.notes.push(
-            `${modelName} returned a ${table.packageType} pin table that was discarded, so that package stays ` +
+            `The reader returned a ${table.packageType} pin table that was discarded, so that package stays ` +
               `honestly unread: ${normalized.reason}.`
           );
         } else if (!isGapFreeSequence(normalized.pins)) {
@@ -1504,8 +1622,8 @@ export function mergeModelValues(
       // datasheet's copper. A rule applied to the flat block alone is a rule
       // that does not run on most of this corpus.
       if (dimensions) {
-        correctInnerGapSpans(merged, dimensions, modelName, `${table.packageType}'s `);
-        dropStraightLeadContact(merged, dimensions, modelName, `${table.packageType}'s `, rejected);
+        correctInnerGapSpans(merged, dimensions, `${table.packageType}'s `);
+        dropStraightLeadContact(merged, dimensions, `${table.packageType}'s `, rejected);
       }
       if (pins === undefined && dimensions === undefined) continue;
       usable.push({
@@ -1606,6 +1724,99 @@ export function mergeModelValues(
   if (result.drawnPackages && result.drawnPackages.length > 0) {
     merged.drawnPackages = result.drawnPackages;
   }
+
+  // PUSHED HERE, AFTER THE PACKAGE TABLES ARE MERGED, and this position is
+  // load-bearing.
+  //
+  // The note below distinguishes a document that is silent from a document that
+  // answers PER PACKAGE, and it decides which by counting the located package
+  // tables. It used to sit two hundred lines up, where `packagesInThisDocument`
+  // has not been filled in yet, so the count was always zero and the family
+  // sentence could never fire. On OPA333 that printed a list of thirty-five
+  // fields "not found in this document" on a record holding five fully cited
+  // package tables.
+  //
+  // A DRAWING THAT STATES D2 AND E2 IS A DRAWING OF A PACKAGE WITH A PAD.
+  //
+  // `exposedPad` was set from ONE source only: a row in the pin table that named
+  // itself a pad. Most no-lead drawings do not give the pad a numbered row -
+  // they print it on the bottom view and dimension it D2 x E2 - so the flag
+  // stayed false while the two dimensions sat on the record beside it, read
+  // correctly and cited.
+  //
+  // Measured 2026-08-28 over five no-lead parts in the blind corpus:
+  //
+  //   dac81404    thermalPad 3.45 x 3.45   exposedPad false   land emitted NONE
+  //   di-AP7361C  thermalPad 2.25 x 1.50   exposedPad false   land emitted NONE
+  //   ti-lp5890   thermalPad 6.30 x 6.30   exposedPad false   land emitted NONE
+  //   ti-tps1663  thermalPad 2.70 x 2.70   exposedPad false   land emitted NONE
+  //   lmk04828    thermalPad 7.20 x 7.20   exposedPad false   land emitted NONE
+  //
+  // Five of five. On a QFN the exposed pad is the heat path and usually a
+  // required ground connection, so every one of those footprints was
+  // unsolderable as the part intends. `forge-we-had-it-and-threw-it-away`: the
+  // answer was on the record and nothing joined it up.
+  //
+  // The implication is not an inference, it is the same fact stated twice. This
+  // file already enforces the converse - `thermalPadLengthMm`'s own doc comment
+  // says "`exposedPad` without these is still a refusal" - and a boolean that
+  // contradicts two cited dimensions off the same drawing is simply wrong.
+  //
+  // CITED dimensions only, so a value the reader produced and could not place
+  // cannot conjure a pad. That is the same gate `citedDimensions` applies before
+  // any number reaches copper.
+  if (!merged.exposedPad) {
+    const padLength = merged.dimensions.thermalPadLengthMm;
+    const padWidth = merged.dimensions.thermalPadWidthMm;
+    const stated = (field: typeof padLength) =>
+      typeof field.value === "number" && field.value > 0 && field.citation !== null;
+    if (stated(padLength) && stated(padWidth)) {
+      merged.exposedPad = true;
+      merged.notes.push(
+        `This package's drawing dimensions its underside pad as ${padLength.value} x ${padWidth.value} mm, so the ` +
+          `footprint carries a thermal land even though the pin table does not list the pad as a numbered pin.`
+      );
+    }
+  }
+
+  // WHICH READER, once. See the note on `modelName`.
+  merged.notes.push(`Read by ${modelName}.`);
+
+  const declined = result.declined ?? [];
+  if (declined.length > 0) {
+    // A STATEMENT ABOUT THE READER, NOT ABOUT THE DOCUMENT.
+    //
+    // This said "reported the document does not state them" and listed raw
+    // schema paths. An engineer read that on OPA333 on 2026-08-28, beside page 3
+    // which prints a pin table and page 44 which prints a full dimension table,
+    // and beside this same panel's own notes quoting corrected land spans for
+    // four packages. Their words: "presenting a model's blanket shrug as a fact
+    // about the document is exactly backwards."
+    //
+    // They are right, and it is the `forge-false-claims-about-documents` shape
+    // again: a confident sentence about what a datasheet contains, printed
+    // beside the evidence that it contains more. What is actually known is that
+    // the reader declined, so that is what this now says.
+    //
+    // AND THE FAMILY CASE IS NAMED. A document describing several packages has
+    // no single body size or pitch to state, and the prompt tells the reader not
+    // to pick one: it answers per package instead, which is exactly what those
+    // five OPA333 entries are. Declining the flat field is then correct
+    // behaviour and reads as failure unless it is said out loud.
+    const perPackage = (merged.packagesInThisDocument ?? []).filter((entry) => entry.citation).length;
+    const named = declined.map((field) => labelForField(field)).join(", ");
+    merged.notes = [
+      ...merged.notes,
+      perPackage > 1
+        ? `The reader did not answer ${declined.length} field(s) for the part as a whole: ${named}. This ` +
+          `datasheet describes ${perPackage} packages, and a body size, a pitch and a land pattern belong to ` +
+          `one package rather than to the part number, so they were read per package instead. Choose a package ` +
+          `to see its own numbers.`
+        : `The reader looked for ${declined.length} field(s) and did not find them in this document: ${named}. ` +
+          `That is what the reader reported, not a guarantee the document is silent.`
+    ];
+  }
+
 
   return { part: merged, filled, uncited, rejected };
 }

@@ -92,8 +92,82 @@ const DEFAULT_PDFS = [
   // A FAMILY DATASHEET, so the package chooser is actually exercised. Without
   // one, `package-chosen` and `re-read-warned` went unreached every run and the
   // screen where 2026-08-24's chooser defect lived was never opened.
-  join(ROOT, ".bench-cache", "AD8628.pdf")
+  join(ROOT, ".bench-cache", "AD8628.pdf"),
+  // A PART THAT ASKS A QUESTION, so the answering half is exercised every run.
+  //
+  // RHF1201's ceramic SO48 has a body wider than the assembler's install-wide
+  // seated span, so the export refuses and asks for a span for that package.
+  // Without a part like it in this list the question flow is never driven, and
+  // on 2026-08-29 that hid two defects at once: the bench's selector for the
+  // answer boxes matched nothing, and behind it the screen was overwriting the
+  // user's answer with the very number that could not work.
+  join(ROOT, ".bench-cache", "RHF1201.pdf")
 ];
+
+/**
+ * WHICH OF THE VERDICT CARD'S SEVEN OUTCOMES IS ON SCREEN.
+ *
+ * Matched on the headline rather than the DOM class, because two of the seven
+ * share a tone: `check` covers "a pinout was refused", "not enough was read",
+ * "values need checking" and "no package can be built", and those are four
+ * different screens with four different next actions. A tone would report them
+ * as one and hide three.
+ *
+ * Kept in the order `page.tsx` tests them, so a headline that could match two
+ * lands on the one the product would have shown.
+ */
+const VERDICT_STATES: Array<{ id: string; test: RegExp }> = [
+  { id: "refused-pinout", test: /pinout was read and then refused/i },
+  { id: "not-enough-read", test: /Not enough was read to build anything/i },
+  { id: "which-package", test: /Which package\?/i },
+  { id: "needs-numbers", test: /numbers? (?:is|are) needed before this can be built/i },
+  { id: "needs-checking", test: /values? (?:needs|need) checking first/i },
+  { id: "nothing-buildable", test: /No package in this datasheet can be built yet/i },
+  { id: "ready", test: /Ready to build/i }
+];
+
+/**
+ * A PLAUSIBLE ANSWER, not the same number every time.
+ *
+ * This typed `10.16` into every box. On VA10820 - a 128-pin ceramic LQFP whose
+ * body is about 14 mm across - the screen asks for a formed lead span and says,
+ * in the question's own text, that a span shorter than the body would put every
+ * land underneath the part. 10.16 is shorter than the body, so the product
+ * refused it, said exactly why, and this bench reported "asked for a value, was
+ * answered, and still did not build" - a false finding against correct
+ * behaviour, and a whole run failed on it.
+ *
+ * An instrument that ignores what the screen tells it is not testing the screen.
+ * So the question's own text is read, and where it names a size the answer is
+ * comfortably clear of it.
+ */
+async function answerFor(_page: import("playwright").Page, box: import("playwright").Locator): Promise<string> {
+  const why = await box
+    .locator("xpath=ancestor::div[contains(@class,'ask-row-full')]")
+    .innerText()
+    .catch(() => "");
+  // A STATED MINIMUM WINS OVER EVERY OTHER FIGURE IN THE TEXT.
+  //
+  // The corner-lands refusal names half a dozen millimetre values - the pitch,
+  // the land width, the length, the span in hand - and only one of them is the
+  // bound the answer has to clear. Taking the largest picked the wrong one and
+  // this bench reported an answerable question as an unanswerable loop, four
+  // rounds deep, on VA10820. Offline the same refusal ships on the first try
+  // when it is given a number just over its stated minimum.
+  //
+  // A person reads the sentence. So does this.
+  const stated = /more than ([\d.]+)\s*mm/.exec(why);
+  if (stated) return (Number(stated[1]) * 1.1).toFixed(2);
+  // Otherwise the largest figure the question mentions, which on a question that
+  // states one size is the dimension the answer has to clear.
+  const sizes = [...why.matchAll(/([\d.]+)\s*mm/g)].map((match) => Number(match[1])).filter(Number.isFinite);
+  const largest = sizes.length > 0 ? Math.max(...sizes) : 0;
+  return largest > 0 ? (largest * 1.3).toFixed(2) : "10.16";
+}
+
+function verdictState(text: string): string {
+  return VERDICT_STATES.find((state) => state.test.test(text))?.id ?? "UNRECOGNISED";
+}
 
 function datasheets(): string[] {
   const chosen = PARTS.length > 0 ? PARTS.map((name) => join(ROOT, ".bench-cache", `${name}.pdf`)) : DEFAULT_PDFS;
@@ -106,6 +180,16 @@ function datasheets(): string[] {
 
 /** Everything the browser complained about, in the order it complained. */
 const problems: string[] = [];
+
+/**
+ * Open only across the stage that posts a deliberately invalid file.
+ *
+ * The response listener treats every 4xx as a finding, and one stage causes a
+ * 400 on purpose. Scoping the exemption to the stage rather than to the MODE
+ * keeps that honest: the previous version exempted it only on the free pass, so
+ * a full pass failed on its own test fixture while all fourteen stages passed.
+ */
+let expectingJunkUpload = false;
 /** How many times the page has actually asked the server to build a library. */
 let exportRequests = 0;
 /** Stages that were supposed to happen. A stage that did not is a failure. */
@@ -237,12 +321,72 @@ async function waitForServer(timeoutMs: number): Promise<boolean> {
     if (/must be between/.test(refusal)) reached.add("range-explained");
     else problems.push("[silent] an out-of-range setting was dropped without saying why");
 
-    // 4. THE GATE OPENS, AND RUNS WHAT IT TURNED AWAY.
+    // 4. AN ACCEPTED SAVE CLOSES THE PANEL, A REFUSED ONE DOES NOT.
+    //
+    // Both halves, because each has been wrong. Closing on a refusal puts the
+    // explanation on a screen the box is no longer on; not closing on success
+    // strands the user in the settings.
+    if (await page.locator("#settings-title").isVisible()) reached.add("refusal-keeps-panel-open");
+    else problems.push("[silent] a refused value closed the settings panel, hiding the box it was about");
+
     await numbers.nth(1).fill("1.2");
     await page.getByRole("button", { name: "Save settings" }).click();
     await page.waitForTimeout(300);
     if (!(await page.locator("#settings-title").isVisible())) reached.add("settings-saved");
-    else problems.push("[gate] complete settings did not open the gate");
+    else problems.push("[gate] an accepted save did not close the settings panel");
+
+    // 5. BLANK SETTINGS DO NOT BLOCK A DATASHEET.
+    //
+    // Until 2026-08-28 they did, for every part, and the refusal was a line of
+    // grey text at the foot of the window while the button stayed bright blue.
+    // An engineer testing the product on a plastic SOT-23 invented two ceramic
+    // flat pack forming dimensions to get past it. Nothing here presses Read -
+    // that spends a model call - so this asserts the two things that are free:
+    // the panel closes with the fields empty, and choosing a file offers a
+    // button rather than a rebuff.
+    await page.getByRole("button", { name: "Assembly line settings" }).click().catch(() => {});
+    await page.waitForTimeout(200);
+    for (const index of [0, 1]) await numbers.nth(index).fill("").catch(() => {});
+    await page.getByRole("button", { name: "Save settings" }).click();
+    await page.waitForTimeout(300);
+    if (await page.locator("#settings-title").isVisible()) {
+      problems.push("[gate] blank forming-die numbers still hold the settings panel open");
+    }
+    // PRESSED, NOT MERELY OFFERED, AND THIS IS THE WHOLE POINT.
+    //
+    // The first version of this stage checked that the button appeared and that
+    // the status line did not carry the gate message. It passed with the gate
+    // deliberately put back, because the gate fires inside `handleFile` when the
+    // button is CLICKED and not when a file is chosen: it was asserting a moment
+    // before the one that could fail. Found by reinstating the defect and
+    // watching the bench say OK, which is the only way to know a check can fail.
+    //
+    // Clicking normally starts a real parse and spends a model call. A file that
+    // is not a PDF cannot: `/api/parse` refuses it on the bytes, before any
+    // model is reached. So the two states are told apart for nothing - the gate
+    // answers "set up your assembly line first" and no gate answers with the
+    // route's own complaint about the file.
+    const junk = join(ROOT, "scratchpad", "not-a-datasheet.pdf");
+    writeFileSync(junk, "this is not a PDF");
+    expectingJunkUpload = true;
+    await page.setInputFiles("#datasheet-upload", junk);
+    await page.waitForTimeout(300);
+    const start = page.getByRole("button", { name: "Read this datasheet", exact: true });
+    if (!(await start.isVisible().catch(() => false))) {
+      problems.push("[gate] with the forming-die numbers blank, a chosen datasheet offered nothing to press");
+    } else {
+      await start.click();
+      await page.waitForTimeout(2500);
+      const said = await page.locator("footer.status").innerText();
+      if (/set up your assembly line/i.test(said)) {
+        problems.push(`[gate] a datasheet was turned away for unset settings: ${JSON.stringify(said)}`);
+      } else {
+        reached.add("blank-settings-accept-a-datasheet");
+        note(`  blank settings, datasheet accepted: ${JSON.stringify(said.slice(0, 80))}`);
+      }
+    }
+    // The window closes here. Every 4xx after this point is a finding again.
+    expectingJunkUpload = false;
 
     if (!FULL) {
       note("  (skipping the upload and export: --full makes a real model call)");
@@ -300,6 +444,14 @@ async function waitForServer(timeoutMs: number): Promise<boolean> {
       if (verdict.trim().length === 0) problems.push(`[verdict] ${name}: the screen states no outcome`);
       else {
         reached.add("verdict-shown");
+        // WHICH OF THE SEVEN OUTCOMES THIS WAS, recorded so the run can say
+        // which screens nobody has ever looked at.
+        //
+        // The card has seven distinct headlines and the bench had no idea which
+        // it was seeing. A state driven by no datasheet in this list is a screen
+        // that ships unopened, and two of the defects found on 2026-08-25 were
+        // in exactly that kind of screen.
+        reached.add(`verdict:${verdictState(verdict)}`);
         note(`  verdict: ${JSON.stringify(verdict.replace(/\s+/g, " ").slice(0, 88))}`);
       }
       if ((await page.locator(".result").count()) !== 1) {
@@ -468,9 +620,48 @@ async function waitForServer(timeoutMs: number): Promise<boolean> {
         reached.add("package-chosen");
       }
 
+      // 7b. THE PICTURE, AND WHETHER IT IS THE RIGHT ONE.
+      //
+      // A preview is worth having only if it draws what ships. Counting the
+      // lands in the DOM against the lands the record holds is the cheapest
+      // statement of that: a drawing with the wrong number of pads is a drawing
+      // of a different part, and it is the failure a preview built by a second
+      // code path produces.
+      const preview = page.locator(".fp-preview svg");
+      if (await preview.isVisible().catch(() => false)) {
+        const drawn = await preview.getAttribute("aria-label");
+        const lands = Number(/(\d+) lands?/.exec(drawn ?? "")?.[1] ?? "-1");
+        // THE PIN COUNT THE SCREEN ITSELF SHOWS, from the identity block's
+        // "Pins" row. The first version read `.record dd` and got whatever
+        // happened to be first, which is not a number: the comparison silently
+        // never ran, and this stage would have reported a drawing of the wrong
+        // part as clean. Located by its own label so it cannot drift onto
+        // another row.
+        const pinsCell = page.locator(".identity-facts div", { has: page.locator("dt", { hasText: /^Pins$/ }) }).locator("dd");
+        const pinsText = await pinsCell.innerText().catch(() => "");
+        const pinCount = Number(/^(\d+)/.exec(pinsText.trim())?.[1] ?? "-1");
+        if (!Number.isFinite(pinCount) || pinCount <= 0) {
+          problems.push(`[preview] ${name}: could not read the pin count off the screen to check the drawing against (${JSON.stringify(pinsText)})`);
+        }
+        note(`  preview: ${lands} lands drawn, screen says ${pinCount} pins`);
+        if (lands <= 0) {
+          problems.push(`[preview] ${name}: the footprint drawing has no lands in it`);
+        } else if (Number.isFinite(pinCount) && pinCount > 0 && lands !== pinCount && lands !== pinCount + 1) {
+          // pinCount + 1 is allowed: an exposed pad is a land and not a pin.
+          problems.push(`[preview] ${name}: the drawing shows ${lands} lands and the record reads ${pinCount} pins`);
+        }
+        reached.add("preview-drawn");
+      }
+
       // 8. THE QUESTION FLOW. A refusal the user can ANSWER is a different thing
       // from one they cannot, and the answering half had never been exercised.
-      const asks = page.locator(".ask input");
+      // `.ask-group input`, not `.ask input`. NO ELEMENT HAS THE CLASS `ask`:
+      // the markup is `.ask-group > .ask-list > .ask-row-full > .ask-row >
+      // input`, so this selector matched nothing on every run this bench has
+      // ever made and the stage could not fire. It reported
+      // "question-answered NOT exercised" and that was read as "these
+      // datasheets did not ask anything" rather than "this check does not work".
+      const asks = page.locator(".ask-group input");
       const askCount = await asks.count();
       if (askCount > 0) {
         note(`  questions asked: ${askCount}`);
@@ -515,7 +706,13 @@ async function waitForServer(timeoutMs: number): Promise<boolean> {
           // under a card saying nothing can be built", so the bench must not
           // then report the fix as a fault. Withheld for any OTHER reason is
           // still a finding.
-          if (/Not enough was read/i.test(verdict)) {
+          // TWO HONEST REASONS TO WITHHOLD IT, not one. The second was added on
+          // 2026-08-30 with the verdict that goes with it: a document offering
+          // several packages of which none can be built. Before that the card
+          // said "Which package?" over three unbuildable cards and the button
+          // stayed live; now the button is withheld and this bench has to know
+          // that is the fix rather than report it as a fault.
+          if (/Not enough was read|No package in this datasheet can be built yet/i.test(verdict)) {
             note(`  ${label}: withheld, and the card says why. Correct.`);
             reached.add("build-withheld-honestly");
           } else {
@@ -563,6 +760,119 @@ async function waitForServer(timeoutMs: number): Promise<boolean> {
           // A refusal the product MEANS is not a browser failure. Recorded, and
           // not counted as an export.
           note(`  ${label}: refused, ${JSON.stringify(outcome)}`);
+
+          // AND THEN ANSWER IT, WHICH IS THE HALF THAT WAS NEVER EXERCISED.
+          //
+          // Stage 8 above looks for `.ask input` BEFORE pressing Build, and the
+          // question boxes only appear once the export has refused and named
+          // what it needs. So on every run the count was zero, the stage
+          // reported "question-answered NOT exercised", and the path that 10 of
+          // the hold-out's 55 shipping parts depend on had never been driven in
+          // a browser at all.
+          //
+          // Answering here drives it for real: fill what the refusal asked for,
+          // press Use this, and press Build again.
+          // ANSWERED UNTIL IT BUILDS OR STOPS MOVING, which is what a person
+          // does. One round was not enough to judge the flow: VA10820 asks for a
+          // formed span, and answering it reveals the two centre spans that were
+          // behind it. Reporting that as "answered and still did not build"
+          // describes a user who gave up after one question, not the product.
+          //
+          // Bounded, because the thing that would be a real defect is a flow
+          // that never converges - and a bench that answers forever cannot see
+          // one.
+          const MAX_ROUNDS = 4;
+          const asked = page.locator(".ask-group input");
+          if ((await asked.count()) > 0) {
+            let built: import("playwright").Download | null = null;
+            let round = 0;
+            let lastAsked = -1;
+            while (round < MAX_ROUNDS) {
+              const count = await asked.count();
+              if (count === 0) break;
+              // NOT MOVING IS THE REAL DEFECT. The same questions coming back
+              // unchanged after an answer is a loop the user cannot leave;
+              // DIFFERENT questions are progress, however tiresome.
+              if (count === lastAsked && round > 0) {
+                problems.push(
+                  `[question] ${name}: ${label} asked for the same ${count} value(s) again after they were answered: ` +
+                    JSON.stringify((await page.locator("footer.status").innerText()).slice(0, 120))
+                );
+                break;
+              }
+              lastAsked = count;
+              // NAME WHAT IT ASKED FOR. "asks for 1 value(s)" is not something
+              // anybody can act on when the run then fails.
+              const labels = await page.locator(".ask-row-full label").allInnerTexts().catch(() => []);
+              note(
+                `  ${label}: round ${round + 1}, asks for ${count} value(s): ` +
+                  `${labels.map((one) => one.replace(/\s+/g, " ").trim()).join("; ") || "unnamed"}`
+              );
+              // ONE AT A TIME, AND EACH WITH ITS OWN BUTTON. There is a "Use
+              // this" per question row, bound to that need; filling every box
+              // and clicking the first one submits ONE answer and loses the
+              // rest, which is what this bench did until 2026-08-30 and is why
+              // it reported a two-question part as an unanswerable loop.
+              const rows = page.locator(".ask-row-full");
+              for (let field = 0; field < count; field += 1) {
+                const row = rows.nth(0);
+                const box = row.locator("input").first();
+                if (!(await box.isVisible().catch(() => false))) break;
+                await box.fill(await answerFor(page, box));
+                const use = row.getByRole("button", { name: "Use this", exact: true }).first();
+                if (!(await use.isVisible().catch(() => false))) break;
+                await use.click();
+                await settle(page, PARSE_MS);
+                // The answer re-runs the export, so the list re-renders with
+                // whatever is STILL missing. Taking row 0 again each time walks
+                // it down rather than indexing into a list that has moved.
+                if ((await rows.count()) === 0) break;
+              }
+              reached.add("question-answered");
+
+              const retry = page.waitForEvent("download", { timeout: EXPORT_MS }).catch(() => null);
+              const again = page.getByRole("button", { name: "Build library", exact: true });
+              if (await again.isEnabled().catch(() => false)) {
+                await again.evaluate((element) => (element as HTMLButtonElement).click());
+                await settle(page, EXPORT_MS);
+              }
+              built = await Promise.race([
+                retry,
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000))
+              ]);
+              if (built) break;
+              round += 1;
+            }
+
+            if (built) {
+              // AN EXPORT IS AN EXPORT, whichever door it came through. Without
+              // this the required stage `exported:kicad` went unreached on a run
+              // where KiCad exported perfectly well, one question later.
+              reached.add(`exported:${label.toLowerCase()}`);
+              reached.add("answered-then-exported");
+              // AND THE DRAWING MUST NOW EXIST. A part that had to be asked
+              // something has no chooser geometry, so before 2026-08-29 it was
+              // answered blind and downloaded blind - on exactly the packages
+              // this product is for.
+              const after = page.locator(".fp-preview svg");
+              if (await after.isVisible().catch(() => false)) {
+                note(`  ${label}: and now draws ${JSON.stringify((await after.getAttribute("aria-label"))?.slice(0, 60))}`);
+                reached.add("preview-after-answer");
+              } else {
+                problems.push(`[preview] ${name}: answered, built, and still no drawing of what was built`);
+              }
+              note(`  ${label}: after answering, ${await built.suggestedFilename()}`);
+            } else if ((await asked.count()) > 0) {
+              // The one outcome that matters here: the product kept asking for
+              // numbers, was given every one of them, and still would not build
+              // after four rounds. That is a flow the user cannot get through,
+              // which RULES.md forbids.
+              problems.push(
+                `[question] ${name}: ${label} was answered ${MAX_ROUNDS} times over and still did not build: ` +
+                  JSON.stringify((await page.locator("footer.status").innerText()).slice(0, 120))
+              );
+            }
+          }
           // BUT THE CARD MUST NOT HAVE PROMISED OTHERWISE.
           //
           // On 2026-08-25 the verdict read "Ready to build" and both formats
@@ -735,6 +1045,11 @@ async function main() {
       const text = message.text();
       if (message.type() !== "error") return;
       if (/Failed to load resource.*422/.test(text)) return;
+      // Same allowance, for the console's echo of the deliberate 400 above, and
+      // scoped to the stage rather than to the mode for the same reason as
+      // `expectingJunkUpload` itself: a full pass was failing on the echo of its
+      // own test fixture after the HTTP-level exemption had already been fixed.
+      if (expectingJunkUpload && /Failed to load resource.*400/.test(text)) return;
       problems.push(`[console] ${text}`);
     });
     page.on("pageerror", (error) => problems.push(`[uncaught] ${error.message}`));
@@ -755,7 +1070,19 @@ async function main() {
       // is still a finding, and an export that refuses for a reason the screen
       // does not handle is caught below by its outcome rather than its status.
       const designedRefusal = response.status() === 422 && response.url().endsWith("/api/export");
-      if (response.status() >= 400 && !designedRefusal) {
+      // AND THE ONE THIS BENCH CAUSES ON PURPOSE. Stage 5 posts a file that is
+      // not a PDF, because that is the only way to press Read and learn whether
+      // blank settings block it without spending a model call. The route
+      // refusing that file is the route working.
+      // AND IT IS EXEMPT IN BOTH MODES, which it was not.
+      //
+      // This read `&& !FULL`, and the junk upload runs in both: so a full pass
+      // reported its own deliberate 400 as a browser problem and failed a run in
+      // which all fourteen stages passed and every datasheet exported. Scoped by
+      // a flag around the stage instead, which exempts exactly that request and
+      // leaves every other 4xx on any pass a finding.
+      const junkUpload = expectingJunkUpload && response.status() === 400 && response.url().endsWith("/api/parse");
+      if (response.status() >= 400 && !designedRefusal && !junkUpload) {
         problems.push(`[http ${response.status()}] ${response.url()}`);
       }
     });
@@ -777,7 +1104,9 @@ async function main() {
         "hydrated",
         "settings-shown",
         "range-explained",
+        "refusal-keeps-panel-open",
         "settings-saved",
+        "blank-settings-accept-a-datasheet",
         "read-is-explicit",
         "progress-shown",
         "parsed",
@@ -787,7 +1116,14 @@ async function main() {
         "verdict-shown",
         "not-a-wall"
       ]
-    : ["hydrated", "settings-shown", "range-explained", "settings-saved"];
+    : [
+        "hydrated",
+        "settings-shown",
+        "range-explained",
+        "refusal-keeps-panel-open",
+        "settings-saved",
+        "blank-settings-accept-a-datasheet"
+      ];
   const optional = FULL
     ? [
         "review-confirmed",
@@ -795,6 +1131,9 @@ async function main() {
         "package-chosen",
         "re-read-warned",
         "question-answered",
+        "answered-then-exported",
+        "preview-drawn",
+        "preview-after-answer",
         "lookup-ran",
         "unready-format-disabled"
       ]
@@ -809,6 +1148,20 @@ async function main() {
     console.log(`Paths these datasheets exercised: ${seen.length}/${optional.length}`);
     const unseen = optional.filter((stage) => !reached.has(stage));
     if (unseen.length > 0) console.log(`  NOT exercised by this run: ${unseen.join(", ")}`);
+
+    // THE SEVEN VERDICT SCREENS, and which of them nobody has looked at.
+    //
+    // Reported rather than failed: driving all seven needs a datasheet for each,
+    // and some states (a record short of a value no package can supply) need a
+    // document this corpus may simply not hold. Naming the unseen ones is what
+    // stops a screen shipping unopened.
+    const seenStates = VERDICT_STATES.filter((state) => reached.has(`verdict:${state.id}`)).map((s) => s.id);
+    const unseenStates = VERDICT_STATES.filter((state) => !reached.has(`verdict:${state.id}`)).map((s) => s.id);
+    console.log(`  Verdict screens seen: ${seenStates.length > 0 ? seenStates.join(", ") : "none"}`);
+    if (unseenStates.length > 0) console.log(`  Verdict screens NOT opened: ${unseenStates.join(", ")}`);
+    if (reached.has("verdict:UNRECOGNISED")) {
+      problems.push("[verdict] the card showed a headline this bench does not know, so a screen changed without the check");
+    }
   }
   console.log(`Browser problems: ${problems.length}`);
   for (const problem of [...new Set(problems)]) console.log(`  ${problem}`);

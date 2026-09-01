@@ -66,7 +66,14 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error:
-            "This part record uses the old flat format. Every extracted field is now an object: { value, confidence, method, citation }. Re-parse the datasheet to produce a current record.",
+            // WHAT TO DO, not what shape the record is in. The user sees this
+            // string verbatim - `page.tsx` renders `payload.error` - and the
+            // internal field shape is not something they can act on. The way to
+            // reach this is a browser tab left open across a deploy, which is
+            // exactly the state a person is in when they are least interested in
+            // our data model.
+            "This page was loaded before the reading was made and is out of date. Read the datasheet again, " +
+            "then export. Reloading the page first is safest.",
           code: "LEGACY_RECORD_FORMAT"
         },
         { status: 400 }
@@ -365,6 +372,26 @@ export async function POST(request: Request) {
   // did not, and the two claims are not interchangeable to anyone signing off a
   // board.
   const exportNote = `Native ${format} library. Lands: ${bundle.footprint.source}.`;
+
+  // A PREVIEW IS THE SAME BUILD, ASKED FOR DIFFERENTLY.
+  //
+  // The screen draws the footprint the user is about to take, and for a part
+  // that had to be asked a question there is no chooser geometry to draw until
+  // the answer is given. Rather than compute one on the client - a second code
+  // path, and therefore a picture of something they are not going to get - the
+  // caller asks this route for exactly the build it would download, and gets the
+  // geometry instead of the bytes.
+  //
+  // Everything above has already run: the same validation, the same refusals,
+  // the same `createExportZip`. Only the response differs.
+  if (payload.preview === true) {
+    return NextResponse.json({
+      geometry: bundle.geometry,
+      note: exportNote,
+      stepSupported: bundle.stepSupported,
+      files: bundle.files
+    });
+  }
 
   return new Response(new Uint8Array(bundle.buffer), {
     headers: {

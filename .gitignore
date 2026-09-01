@@ -45,6 +45,16 @@ yarn-error.log*
 # Cached vendor datasheets for the extraction benchmark. NEVER commit datasheets.
 .bench-cache
 .holdout-cache
+# The SECOND blind corpus, fetched from vendor sites on 2026-08-28. Same rule as
+# the hold-out: never tuned against, never opened to diagnose a failure. Not
+# committed for the same reason as the other two - these are other people's
+# documents. `bench:blind` reports what is missing rather than fetching silently.
+.blind-cache
+
+# KiCad's official footprint library, cached by `bench:published` so a rerun is
+# offline. Public reference data, but it is somebody else's repository and it
+# does not belong in this one.
+.kicad-ref
 
 # Cached model responses for the benchmarks. Not committed because an entry is
 # only valid for the exact prompt and page renders that produced it, so a shared
@@ -59,3 +69,7 @@ gcp-key.json
 
 # One-off inspection scripts. Never part of the product.
 .scratch
+
+# The product's own spend ledger. A running total of what this deployment has
+# billed, written by `src/lib/spend.ts`. Machine-local state, not source.
+.forge

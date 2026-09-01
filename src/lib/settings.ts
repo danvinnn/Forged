@@ -22,9 +22,32 @@
  *
  * Where a published standard answers a field, leaving it blank is a real answer
  * and the screen names the standard so nobody is accepting something unnamed.
- * Where no standard answers it, the field is required before the first run,
- * because a default there would be invented (RULES.md 1) and a silent choice
- * would be assumed (RULES.md 2).
+ * Where no standard answers it, the field has NO default at all, because one
+ * would be invented (RULES.md 1) and a silent choice would be assumed
+ * (RULES.md 2).
+ *
+ * ## Unanswered is not a gate, and used to be
+ *
+ * Until 2026-08-28 the two forming-die numbers had to be filled in before the
+ * first datasheet could be read, by anyone, for any part. An engineer trying the
+ * product on a plastic SOT-23 op-amp hit it thirty seconds in:
+ *
+ *   "There is no ceramic flat pack anywhere in this datasheet and no forming die
+ *    involved. I could not answer either question and neither is answerable for
+ *    my part. The tool made me fabricate manufacturing data to process a part
+ *    the data does not apply to."
+ *
+ * They invented two numbers to get past it. That is the exact failure RULES.md 1
+ * exists to prevent, caused by the screen that exists to enforce it.
+ *
+ * Measured the same day, with both fields blank: every one of OPA333's five
+ * packages still ships, because a gull-wing lead's span and foot are on its
+ * drawing. RHF310A, a ceramic flat pack, comes back `needs-input` naming
+ * `formedLeadSpanMm` and `formedLeadContactMm` exactly. The product already asks
+ * for these when, and only when, a part cannot be built without them.
+ *
+ * So they are OFFERED here, once, for a shop that knows its die and would rather
+ * answer once than per part, and nothing blocks on them.
  */
 
 import type { DensityLevel } from "./ipc7351";
@@ -67,13 +90,15 @@ export interface ForgeSettings {
    *
    * NO PUBLISHED STANDARD. The manufacturer ships the leads straight and never
    * bends them, so no datasheet can carry this and no standard specifies one
-   * shop's forming die. REQUIRED before the first run.
+   * shop's forming die. Asked for by name when a part needs it, and left blank
+   * otherwise; see the note at the top of this file.
    */
   formedLeadSpanMm?: number;
   /**
    * Seated foot length, in mm, from the same forming operation.
    *
-   * NO PUBLISHED STANDARD, for the same reason. REQUIRED before the first run.
+   * NO PUBLISHED STANDARD, for the same reason. Asked for by name when a part
+   * needs it.
    */
   formedLeadContactMm?: number;
 }
@@ -177,7 +202,15 @@ export function missingRequired(settings: ForgeSettings): SettingsField[] {
   });
 }
 
-/** Whether the first datasheet may be parsed yet. */
+/**
+ * Whether every field a standard cannot answer has been answered here.
+ *
+ * NOT A GATE ON READING A DATASHEET, and it was one until 2026-08-28. See the
+ * note at the top of this file: a part that needs these is asked for them by
+ * name, and a part that does not never sees them. This now says only whether the
+ * settings screen has more to offer, which is what decides whether it opens
+ * itself on a first visit.
+ */
 export function settingsComplete(settings: ForgeSettings): boolean {
   return missingRequired(settings).length === 0;
 }

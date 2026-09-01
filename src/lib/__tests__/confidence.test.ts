@@ -247,3 +247,117 @@ test("the summary names the checks that failed, and does not average them", () =
   assert.match(summary, /lands-clear-centre/, "a reviewer needs to know WHICH one");
   assert.doesNotMatch(summary, /\d+%/, "a percentage would hide exactly that");
 });
+
+/**
+ * A GRID-ADDRESSED PART GETS A REAL SYMBOL.
+ *
+ * The promise made when the footprint refuses a ball-grid array is "the pinout
+ * was read and is on the record; the schematic symbol can be built". That
+ * promise was false when it was written: `buildSymbolGeometry` split pins with
+ * `dualRowSides`, which counts 1..N, so every lookup missed on a part whose
+ * terminals are called `A1` and the symbol came out empty.
+ *
+ * A symbol has no physical arrangement to honour, so nothing about this is hard.
+ * It only had to stop assuming.
+ */
+test("a ball-grid part's symbol draws every terminal exactly once", async () => {
+  const { buildSymbolGeometry } = await import("../exporters");
+  const { symbolViolations } = await import("../confidence");
+
+  const numbers = ["A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"];
+  const part = {
+    id: "t",
+    partNumber: "ACME-BGA9",
+    manufacturer: "ACME",
+    packageType: "DSBGA-9",
+    packageOutlineCode: null,
+    jedecOutline: null,
+    vendorLandPattern: null,
+    pinCount: numbers.length,
+    pins: numbers.map((number, index) => ({
+      number,
+      name: `NET${index + 1}`,
+      electricalType: "bidirectional" as const
+    })),
+    exposedPad: false,
+    notes: [],
+    dimensions: {} as never
+  } as never;
+
+  const symbol = buildSymbolGeometry(part);
+  assert.deepEqual(
+    symbol.pins.map((pin) => pin.number).sort(),
+    [...numbers].sort(),
+    "every terminal the datasheet lists appears on the symbol"
+  );
+  assert.deepEqual(symbolViolations(symbol, part), [], "and the symbol invariant is satisfied");
+});
+
+test("the symbol invariant still catches a grid terminal the symbol drops", async () => {
+  const { symbolViolations } = await import("../confidence");
+  // Proved by removing one, because a check that cannot fail is not a check.
+  const numbers = ["A1", "A2", "B1", "B2"];
+  const part = {
+    partNumber: "ACME-BGA4",
+    pinCount: 4,
+    pins: numbers.map((number) => ({ number, name: number, electricalType: "passive" as const })),
+    exposedPad: false
+  } as never;
+  // Real anchors, because a grid symbol is now held to the same name and anchor
+  // rules as every other one: `symbolViolations` used to return before both
+  // checks on this branch, so a renamed BGA pin and two BGA stubs on one point
+  // went unreported. See `bench:symbol`.
+  const short = {
+    pins: numbers.slice(0, 3).map((number, index) => ({
+      number,
+      name: number,
+      anchor: { xMm: -10.16, yMm: 2.54 - index * 2.54 },
+      // A REAL LENGTH. `symbolViolations` now refuses a pin with nothing to
+      // attach a wire to, and a fixture that omits it is testing a symbol this
+      // generator would not write.
+      lengthMm: 2.54
+    })),
+    bodyCentreYMm: 0
+  } as never;
+
+  const problems = symbolViolations(short, part);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /B2/);
+});
+
+test("a grid symbol is held to the same name and anchor rules as any other", async () => {
+  const { symbolViolations } = await import("../confidence");
+  // The branch that returned early. Both defects are reported on all 107
+  // non-grid parts in `bench:symbol`; neither was reported on LP5907's DSBGA.
+  const numbers = ["A1", "A2", "B1", "B2"];
+  const part = {
+    partNumber: "ACME-BGA4",
+    pinCount: 4,
+    pins: numbers.map((number) => ({ number, name: number, electricalType: "passive" as const })),
+    exposedPad: false
+  } as never;
+  const renamed = {
+    pins: numbers.map((number, index) => ({
+      number,
+      name: number === "B1" ? "SOMETHING_ELSE" : number,
+      anchor: { xMm: -10.16, yMm: 2.54 - index * 2.54 },
+      // A REAL LENGTH. `symbolViolations` now refuses a pin with nothing to
+      // attach a wire to, and a fixture that omits it is testing a symbol this
+      // generator would not write.
+      lengthMm: 2.54
+    })),
+    bodyCentreYMm: 0
+  } as never;
+  assert.match(symbolViolations(renamed, part).join(" "), /B1 is drawn as "SOMETHING_ELSE"/);
+
+  const shorted = {
+    pins: numbers.map((number, index) => ({
+      number,
+      name: number,
+      anchor: { xMm: -10.16, yMm: index === 1 ? 2.54 : 2.54 - index * 2.54 },
+      lengthMm: 2.54
+    })),
+    bodyCentreYMm: 0
+  } as never;
+  assert.match(symbolViolations(shorted, part).join(" "), /share one anchor point/);
+});

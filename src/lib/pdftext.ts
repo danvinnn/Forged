@@ -69,6 +69,29 @@ export type PdfLimitKind = "pages" | "text" | "objects" | "time";
  * limit so the route can tell the user what was too large rather than failing
  * with a generic error.
  */
+/**
+ * THE FILE CANNOT BE OPENED AS A PDF AT ALL.
+ *
+ * Distinct from `PdfExtractionError`, which means a valid document was too big
+ * or too slow. This means the bytes are not a readable document: a download that
+ * stopped halfway, a file damaged in transit, a password-protected one.
+ *
+ * It exists because that case used to escape as whatever pdf.js threw, and an
+ * unrecognised throw out of a route handler is an HTTP 500. A person who
+ * uploaded a half-finished download got "something went wrong" and no reason to
+ * suspect the file. Found by `bench:badinput` on 2026-08-29.
+ */
+export class PdfUnreadableError extends Error {
+  constructor(
+    message: string,
+    /** What pdf.js said, kept for the log and never shown to the user. */
+    readonly underlying: string
+  ) {
+    super(message);
+    this.name = "PdfUnreadableError";
+  }
+}
+
 export class PdfExtractionError extends Error {
   readonly kind: PdfLimitKind;
   readonly limit: number;
@@ -259,6 +282,29 @@ function renderPage(
   return { text, items };
 }
 
+/**
+ * The failures that mean "this file is not a readable PDF", by pdf.js's own
+ * names for them. Anything else is a defect of ours and is rethrown.
+ */
+const UNOPENABLE = /InvalidPDFException|MissingPDFException|UnexpectedResponseException|PasswordException|Invalid PDF structure|bad XRef entry|xref table|stream must have data|FormatError/i;
+
+async function openDocument<T>(open: () => Promise<T>): Promise<T> {
+  try {
+    return await open();
+  } catch (error) {
+    if (error instanceof PdfExtractionError) throw error;
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    if (!UNOPENABLE.test(detail)) throw error;
+    const locked = /PasswordException/i.test(detail);
+    throw new PdfUnreadableError(
+      locked
+        ? "This PDF is password-protected, so it cannot be read. Save an unprotected copy and upload that."
+        : "This file could not be opened as a PDF. It is most likely an incomplete download or a damaged copy. Downloading it again usually fixes it.",
+      detail
+    );
+  }
+}
+
 export async function extractDatasheetText(
   pdfBuffer: ArrayBuffer,
   options: ExtractTextOptions = {}
@@ -284,7 +330,11 @@ export async function extractDatasheetText(
   // rendering one, which covers the rest.
   let breach: PdfExtractionError | null = null;
 
-  const parsed = await pdfParse(Buffer.from(pdfBuffer), {
+  // WRAPPED, so a document that will not open is bad input rather than a crash.
+  // Anything that is not a recognisable "cannot open this" is rethrown
+  // untouched: swallowing an unfamiliar failure here would turn a real defect
+  // into a message blaming the user's file.
+  const parsed = await openDocument(() => pdfParse(Buffer.from(pdfBuffer), {
     max: options.maxPages && options.maxPages > 0 ? options.maxPages : 0,
     pagerender: async (pageData) => {
       if (breach) return "";
@@ -371,7 +421,7 @@ export async function extractDatasheetText(
       // ourselves so the offsets stay exact, so the return value is unused.
       return text;
     }
-  });
+  }));
 
   if (breach) throw breach;
 

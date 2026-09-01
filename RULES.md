@@ -146,9 +146,28 @@ in `confirm.ts` is a reading against a DIFFERENT KIND of reading:
 | the pinout | a model reading the document | text-layer geometry, `pinevidence.ts` |
 | the copper | the vendor's printed footprint | IPC-7351B arithmetic on the outline |
 | the pin count | the pin table | the drawing's lead count, or the package name |
+| the arrangement | the drawing's lead sides | the package family in its own name |
 | the pitch | the package outline drawing | the printed footprint drawing |
 | the body | the body dimensions | the lead span that has to reach past them |
 | the thermal pad | the outline's D2 and E2 | the printed footprint's own pad |
+
+Two of those pairings are weaker than the rest and the difference is written down
+rather than glossed. The BODY's two readings are callouts on one drawing, so the
+pairing is one-sided: a body read too small still has its own span reach past it.
+The printed footprint is a genuine second drawing and contradicts one where the
+document prints it, on 42 of 62 parts; the rest are stated as unconfirmed. And the
+COPPER's overlay flags without confirming, because a clean overlay rules out one
+class of error and not the others.
+
+### A value nothing can pair is named, not quietly shipped
+
+The pin ELECTRICAL TYPE has no second source and is not going to get one. Its only
+candidate is the pin name, and reading a type out of a name is the invention this
+project exists not to do: `EN` is an input on one part and an open-drain output on
+the next. It is a read value with a citation or it is `unspecified`, a wrong one
+produces no wrong copper and no wrong net, and `bench:symbol` prints it as a
+decision rather than a hole every run. That stops being defensible the moment it
+drives something that reaches a board.
 
 A pairing that cannot name two different means is not a confirmation. Say so
 rather than inventing one.
@@ -188,6 +207,32 @@ Every value the product emits is one of three things, and which one is recorded:
 
 Anything that cannot be placed in one of those three, with its source named, is
 an assumption and is treated as a defect.
+
+## An instrument that cannot fail is not a check
+
+A green check earns trust, and a green check that could never have gone red
+spends trust that was never earned. Every conclusion in this repository rests on
+one, so this is not a nicety.
+
+Four instruments were found on 2026-08-29 that could not fire: a browser selector
+matching no element, a copper check comparing a pad number the emitter never
+emits, a replay loader hardcoding the exact field a bench measured, and a bad-input
+bench building PDFs the reader could not open. All four had been green for weeks.
+On 2026-08-30 the copper bench was found blind to a land moved 0.9 mm on 66 of 80
+footprints, and three of `bench:unchecked`'s eight mutations had nothing to
+corrupt and printed a row of zeros that read as a pass.
+
+So:
+
+- **Before trusting a check, break the thing it watches and watch it complain.**
+  `bench:instruments` does this for every bench that makes a claim, and refuses
+  the run if an injected defect changes nothing.
+- **A row of zeros is not a pass.** Where a bench had nothing to measure it says
+  NO DATA. "Nothing was wrong" and "nothing was looked at" must never print the
+  same.
+- **An independent reader is not the customer's tool.** `kiutils` and
+  AltiumSharp both accepted a symbol library KiCad refuses to open. Run the real
+  tool where it can be run at all: `bench:kicad`.
 
 ## Standing constraints
 

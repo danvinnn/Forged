@@ -12,11 +12,12 @@ import {
 } from "../../../lib/retrieval";
 import { extractPartRecord } from "../../../lib/datasheet";
 import { answersFromSettings, parseSettings } from "../../../lib/settings";
-import { PdfExtractionError } from "../../../lib/pdftext";
+import { PdfExtractionError, PdfUnreadableError } from "../../../lib/pdftext";
 // The extraction layer's public surface deliberately excludes the concrete
 // models, so importing it cannot pull a networked model into the air-gapped
 // module graph. makeExtractionModel reaches those by dynamic import.
 import { makeExtractionModel, runExtraction } from "../../../lib/extraction";
+import { SpendLimitReached } from "../../../lib/spend";
 import { SecondPassFailedError } from "../../../lib/extraction/contracts";
 import {
   ModelDeadlineError,
@@ -214,6 +215,20 @@ export async function POST(request: Request) {
         { status: 422 }
       );
     }
+    // A FILE THAT WILL NOT OPEN IS BAD INPUT, NOT A SERVER FAULT.
+    //
+    // A download that stopped halfway used to escape as whatever pdf.js threw,
+    // and an unrecognised throw out of a route handler is an HTTP 500. The
+    // person saw "something went wrong" with nothing pointing at their file.
+    // The underlying text is logged and not shown: "Invalid PDF structure" tells
+    // a person nothing they can act on.
+    if (error instanceof PdfUnreadableError) {
+      console.error("upload could not be opened as a PDF", error.underlying);
+      return NextResponse.json<RetrievalError>(
+        { error: error.message, code: "UPLOAD_INVALID", mode },
+        { status: 400 }
+      );
+    }
     throw error;
   }
   let method = "text only";
@@ -223,6 +238,47 @@ export async function POST(request: Request) {
   let rendered: RenderedPage[] = [];
 
   const model = await makeExtractionModel(mode);
+
+  // NO READER CONFIGURED IS THE THIRD DOOR TO THE SAME SILENT DEGRADE.
+  //
+  // Two doors below already refuse to hand back a parser-only record dressed as
+  // a success: the budget one, and the catch around the model call. This one was
+  // open. `makeExtractionModel` answers null when no key, no service account and
+  // no local endpoint is configured, and the whole model block was simply
+  // skipped - so an expired key, a revoked service account or a deployment that
+  // lost its environment produced HTTP 200, a record of nothing but nulls, and
+  // no hint anywhere that a reader had never run.
+  //
+  // `bench:holdout` measures the parser alone at READ 0 of 59. Handing that back
+  // as a success is not a degraded answer, it is a wrong one, and the route's own
+  // rule two paragraphs down already says so.
+  //
+  // Found by `bench:badinput` on 2026-08-29.
+  if (!model) {
+    return NextResponse.json(
+      {
+        error:
+          mode === "commercial"
+            ? `No reader is configured for this deployment, so the datasheet was never read. Nothing was built. ` +
+              `A deployment needs either Vertex credentials, a Gemini API key, or a local model endpoint.`
+            : `No local reader is configured for this air-gapped deployment, so the datasheet was never read. ` +
+              `Nothing was built. Air-gapped mode needs a local model endpoint on a private address.`,
+        code: "MODEL_UNAVAILABLE",
+        // Not retryable: the same request will fail the same way until someone
+        // configures a reader. Saying "try again" would send them round a loop.
+        retryable: false,
+        mode,
+        // THE UPLOAD STILL HAPPENED, so it is still reported. The file was
+        // received, validated and hashed before this point, and a caller that
+        // has to reconcile a request with an audit trail needs the digest
+        // whether or not a reader ran. Refusing to read is not a reason to
+        // forget what was read from.
+        source: toRetrievalSource(ref, "upload")
+      },
+      { status: 503 }
+    );
+  }
+
   if (model) {
     const budgetMs = modelBudgetMs(ROUTE_BUDGET_MS, Date.now() - startedAt);
 
@@ -230,13 +286,20 @@ export async function POST(request: Request) {
       // Retrieval and parsing have already used the route's budget. Asking now
       // guarantees the platform kills the function mid-call, which would lose the
       // record that is already in hand.
-      part = {
-        ...part,
-        notes: [
-          ...part.notes,
-          `Retrieval and text extraction used the request's time budget, so the ${model.name} extraction pass was skipped. Nothing was read off the document.`
-        ]
-      };
+      // SAME RULE AS THE CATCH BELOW. Fetching and parsing the document used the
+      // whole budget, so the model never ran, so the record is the parser's
+      // alone - which `bench:holdout` measures at READ 0 of 59. Handing that
+      // back as a success is the same silent degrade, reached by a different
+      // door.
+      return NextResponse.json(
+        {
+          error:
+            `Fetching and reading this document used the whole time budget for one request, so it was never sent ` +
+            `to the reader and no library was built. Try again.`,
+          retryable: true
+        },
+        { status: 503, headers: { "Retry-After": "5" } }
+      );
     } else {
       try {
         // Rendered inside the try: a renderer failure is a model-pass failure,
@@ -263,8 +326,46 @@ export async function POST(request: Request) {
           // does to an untrusted PDF and it was being done twice per part.
           rendered = outcome.renderedImages;
           if (outcome.filled.length > 0) method = `read by ${model.name}`;
+          // THE READER ANSWERED, AND ITS ANSWER COULD NOT BE READ.
+          //
+          // Not the same as a datasheet that states nothing, and the difference
+          // is the whole point: one is a fact about the document, the other is a
+          // broken deployment. Returning 200 with an empty record told an
+          // operator whose local model replies in prose that their DATASHEET was
+          // the problem. Found 2026-08-30 by pointing the route at an endpoint
+          // that answered in sentences.
+          //
+          // Both conditions, because a prose first pass followed by a good
+          // drawing pass is a successful read and must not be thrown away.
+          if (outcome.readerUnreadable && outcome.filled.length === 0) {
+            console.error("reader answer could not be parsed and nothing was filled", ref.fileName);
+            return NextResponse.json(
+              {
+                error:
+                  `The reader answered, but its reply could not be read, so nothing was built from this ` +
+                  `datasheet. This is a problem with the reader rather than with the document. Try again, ` +
+                  `and if it persists check which model the deployment is pointed at.`,
+                code: "MODEL_UNAVAILABLE",
+                retryable: true,
+                mode,
+                source: toRetrievalSource(ref, "upload")
+              },
+              { status: 503, headers: { "Retry-After": "5" } }
+            );
+          }
         }
       } catch (error) {
+        // THE DEPLOYMENT'S OWN SPEND CEILING. Not retryable and not the
+        // document's fault: the money is still there and the provider is fine,
+        // so the answer is a person deciding the spend is worth continuing.
+        // Degrading to a thin record here would hide the reason entirely.
+        if (error instanceof SpendLimitReached) {
+          console.error("spend ceiling reached", error.message);
+          return NextResponse.json(
+            { error: error.message, code: "SPEND_LIMIT_REACHED", retryable: false, mode },
+            { status: 402 }
+          );
+        }
         // A model failure must never cost the user the deterministic record.
         // Running out of time is reported as what it is rather than as a failure,
         // because the two call for different actions: one is retryable, the other
@@ -293,17 +394,53 @@ export async function POST(request: Request) {
             { status: 503, headers: { "Retry-After": "5" } }
           );
         }
+        // A PARSE THAT LOST THE MODEL PASS IS A FAILED PARSE, NOT A THINNER ONE.
+        //
+        // This used to keep the deterministic record, add a note saying nothing
+        // was read, and return 200. The user got a bundle, the screen said
+        // "Ready to build", and the note sat in a list they had no reason to
+        // open.
+        //
+        // Two facts make that untenable together:
+        //
+        //   1. The parser ALONE reads almost nothing. `bench:holdout` without
+        //      `--model` scores READ 0 of 59. So the record this path preserved
+        //      is not a thinner answer, it is very nearly an empty one wearing a
+        //      success.
+        //   2. Which path a request takes is a matter of TIMING. A rad-hard
+        //      engineer reading the same PDF three times on 2026-08-28 got a
+        //      package list of 2 cards, then 4, then 5, and one part's mounting
+        //      as `smd` and then blank. `bench:repeatable` proves our own half is
+        //      byte-identical over 100 documents and 3 runs, so this was the
+        //      variance they were seeing: sometimes the model pass landed inside
+        //      the budget and sometimes it did not.
+        //
+        // A tool for flight hardware that answers differently on identical input,
+        // with no visible difference between the two answers, is worse than one
+        // that says it could not finish.
+        //
+        // So this now does what the drawing-pass failure immediately above
+        // already does, for the same stated reason - Anthony's call, 2026-08-20:
+        // "a caveat on the deliverable is worse than useless, because it makes
+        // the user check everything and that is the job they came here to avoid.
+        // Either files nobody has to second-guess, or 'we could not read it, try
+        // again'." A timeout is exactly that situation; it was simply not the
+        // error being discussed at the time.
+        //
+        // Retryable, because both causes are transient by nature: a slow call
+        // and a loaded model. The UI already offers the retry, and it is one
+        // button rather than a loop.
         const timedOut = error instanceof ModelDeadlineError;
         if (!timedOut) console.error("extraction model failed", error);
-        part = {
-          ...part,
-          notes: [
-            ...part.notes,
-            timedOut
-              ? `The ${model.name} extraction pass did not answer within its ${Math.round(budgetMs / 1000)}s budget and was abandoned, so nothing was read off the document.`
-              : `The ${model.name} extraction pass failed, so nothing was read off the document.`
-          ]
-        };
+        return NextResponse.json(
+          {
+            error: timedOut
+              ? `Reading this datasheet did not finish within the ${Math.round(budgetMs / 1000)}s this request allows. Nothing was read off the document, so no library was built. Try again.`
+              : `The reader failed part way through this datasheet, so nothing was read off it and no library was built. Try again.`,
+            retryable: true
+          },
+          { status: 503, headers: { "Retry-After": "5" } }
+        );
       }
     }
   }

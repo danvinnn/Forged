@@ -18,6 +18,7 @@
 
 import { loadBenchEnv } from "./env";
 import { DIMENSION_ORACLE, type DimensionOracleEntry, type OracleRange } from "./dimension-oracle";
+import { defect } from "./inject";
 import { buildCachedParts } from "./oracle-match";
 
 loadBenchEnv();
@@ -256,7 +257,19 @@ async function main(): Promise<void> {
 
   const rows: Row[] = [];
   const unmatched: string[] = [];
-  for (const entry of built) {
+  for (const raw of built) {
+    // A READING THAT DISAGREES WITH THE DRAWING, which is the only thing this
+    // bench measures. Every numeric reading is moved by a third, which no
+    // rounding or tolerance explains, so every comparison should turn WRONG.
+    const entry = defect("dimensions.record", raw, (one) => ({
+      ...one,
+      values: Object.fromEntries(
+        Object.entries(one.values).map(([field, held]) => [
+          field,
+          typeof held?.value === "number" ? { ...held, value: held.value * 1.33 } : held
+        ])
+      )
+    }));
     if (!entry.oracleCode) {
       // NAME THE CODE THE RECORD DID REPORT, not just the part.
       //

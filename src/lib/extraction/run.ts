@@ -63,6 +63,15 @@ export interface ExtractionRun extends MergeOutcome {
   renderedImages: RenderedPage[];
   /** Whether a second pass happened at all. False means the text was enough. */
   lookedAtPages: boolean;
+  /**
+   * The reader's own answer could not be read on at least one pass.
+   *
+   * Distinct from a document that states nothing, and reported to the user as a
+   * different thing: see `ExtractionResult.unreadable`. Only meaningful
+   * alongside `filled`, because a prose first pass followed by a good drawing
+   * pass is a successful read.
+   */
+  readerUnreadable: boolean;
 }
 
 /**
@@ -888,14 +897,109 @@ function combine(first: ExtractionResult, second: ExtractionResult, partNumber?:
   const values = { ...first.values, ...second.values };
   const firstPins = first.values.pins;
   const secondPins = second.values.pins;
-  if (
-    firstPins !== undefined &&
-    secondPins !== undefined &&
-    firstPins.page !== secondPins.page &&
-    !samePinNames(firstPins.value, secondPins.value)
-  ) {
-    values.pins = firstPins;
+  if (firstPins !== undefined && secondPins !== undefined && !samePinNames(firstPins.value, secondPins.value)) {
+    // TWO READINGS OF ONE PINOUT, AND THE ONE THAT COLLAPSES FEWER NETS WINS.
+    //
+    // Pass 2 used to win outright whenever the two cited the SAME page, and that
+    // silently shipped wrong netlists. UT54LVDS032 was read by one pass as
+    // `RIN1-, RIN1+, ROUT1 ... EN, EN̅` and by the other as `RIN-, RIN+, ROUT ...
+    // EN, EN`: sixteen distinct names against six, with enable and enable-bar
+    // collapsed onto one name. A blind reader given only the rendered page
+    // confirmed the document prints the specific names.
+    //
+    // A NAME COLLISION is two pins sharing a name. Some are real - a part
+    // genuinely has four pins called GND - so a collision count means nothing on
+    // its own. Between two readings OF THE SAME PART it means a great deal: the
+    // reading with more collisions has merged nets the other kept apart.
+    //
+    // Measured over every part with two cached readings under the current
+    // prompt (`bench:passes`), 27 disagree and 5 differ on this measure:
+    //
+    //   fg-ut54lvds032   0 collisions vs 10   RIN1-/ROUT1  against  RIN-/ROUT
+    //   ut54lvds031     10 collisions vs  0   DIN/DOUT+    against  DIN1/DOUT1+
+    //   ut7r995_3       16 collisions vs 31   4F0/3Q1      against  nF[1:0]
+    //   ti-tps25990      0 of 4 pins  vs  6 of 26          against  the fuller table
+    //   lmk04828         2 of 65      vs  2 of 64          against  the one with DAP
+    //
+    // Note the SECOND pass wins two of those. "Prefer pass 1" was the obvious
+    // rule and would have been wrong on UT54LVDS031, which is why this is
+    // measured rather than reasoned.
+    //
+    // The other 22 disagreements are level on this measure and are typography or
+    // fuller alternate-function names (`PC14` against `PC14/OSC32_IN`). Those
+    // keep the previous behaviour exactly, so nothing that worked changes.
+    //
+    // THE RISK, STATED: a pass that INVENTED suffixes to break a legitimate
+    // collision would win here. The prompt forbids it in terms - "Do NOT invent
+    // a suffix or a number to tell two pins apart... repeating the name is the
+    // correct answer" - and in all five measured cases the low-collision reading
+    // is the one the document actually prints, two of them confirmed by a reader
+    // that was shown only the page. If that ever stops holding, `bench:passes`
+    // is where it will show.
+    const collisions = (pins: unknown) =>
+      Array.isArray(pins) ? pins.length - new Set(pins.map((pin) => String((pin as { name?: unknown }).name ?? "").trim())).size : 0;
+    const firstCollisions = collisions(firstPins.value);
+    const secondCollisions = collisions(secondPins.value);
+    if (firstCollisions !== secondCollisions) {
+      values.pins = firstCollisions < secondCollisions ? firstPins : secondPins;
+    } else if (firstPins.page !== secondPins.page) {
+      // Unchanged: pass 2 sees only the rendered pages, so where the two read
+      // DIFFERENT pages the one that had the whole document is the safer answer.
+      values.pins = firstPins;
+    }
   }
+  // A TYPE READ BY ONE PASS AND NOT THE OTHER IS STILL A TYPE WE HAVE.
+  //
+  // The two passes read the same pin table and only one of them tends to reach
+  // the type column: pass 2 sees rendered pages and usually answers `null`. Pass
+  // 2's answer then wins - by `samePinNames` above, or by the collision rule -
+  // and the column pass 1 read is discarded with it.
+  //
+  // `bench:pintypes` measured the size of that: 878 cached answers carry
+  // electrical types and 90 of 107 parts reach the symbol with every pin
+  // `unspecified`. A KiCad symbol whose pins are all unspecified gives the
+  // schematic tool nothing to run an electrical rule check against, which is
+  // most of what a symbol is for.
+  //
+  // Matched on the pin NUMBER AND ITS NAME TOGETHER, so nothing is carried
+  // across from a different pinout: where the two passes read different tables,
+  // the names differ and no type moves. This fills gaps only - a type the
+  // winning pass DID read is never overwritten - so it cannot change an answer,
+  // only complete one.
+  const winner = values.pins;
+  const loser = winner === secondPins ? firstPins : secondPins;
+  if (winner !== undefined && loser !== undefined && Array.isArray(winner.value) && Array.isArray(loser.value)) {
+    // READ DEFENSIVELY. These rows are what the MODEL returned, before merge
+    // coerces them: a pin number arrives as `1` on some documents and `"1"` on
+    // others, and an unread type arrives as `null`. The declared type says
+    // otherwise, which is exactly why the first version of this crashed
+    // `combine` on every part whose numbers came back as integers and quietly
+    // took the corpus from 107 shipping parts to 57.
+    const key = (pin: unknown) => {
+      const row = pin as { number?: unknown; name?: unknown };
+      return `${String(row.number ?? "").trim()}|${String(row.name ?? "").trim().toUpperCase()}`;
+    };
+    const stated = (pin: unknown) => {
+      const value = (pin as { electricalType?: unknown }).electricalType;
+      return typeof value === "string" && value.trim().length > 0 && value.trim().toLowerCase() !== "unspecified"
+        ? value
+        : null;
+    };
+    const typed = new Map<string, string>();
+    for (const pin of loser.value) {
+      const type = stated(pin);
+      if (type !== null) typed.set(key(pin), type);
+    }
+    if (typed.size > 0) {
+      const filled = winner.value.map((pin) => {
+        if (stated(pin) !== null) return pin;
+        const found = typed.get(key(pin));
+        return found === undefined ? pin : { ...(pin as Record<string, unknown>), electricalType: found };
+      });
+      values.pins = { ...winner, value: filled as typeof winner.value };
+    }
+  }
+
   // A DECLINE from either pass is a decline, and it was being dropped here.
   //
   // `declined` exists to tell "the model looked and the document is silent" from
@@ -914,6 +1018,9 @@ function combine(first: ExtractionResult, second: ExtractionResult, partNumber?:
     values,
     ...(declined.length > 0 ? { declined } : {}),
     notes: [...(first.notes ?? []), ...(second.notes ?? [])],
+    // EITHER pass failing to be read is enough to record it. Whether it matters
+    // is decided by the caller, which also knows whether anything was filled.
+    ...(first.unreadable || second.unreadable ? { unreadable: true as const } : {}),
     // MERGED BY PACKAGE, not replaced.
     //
     // The two passes answer different halves of the same question. Pass 1 has
@@ -1121,7 +1228,10 @@ export async function runExtraction(
     ...mergeModelValues(part, doc, combined, model.name, rendered),
     renderedPages: rendered,
     renderedImages: images,
-    lookedAtPages: rendered.length > 0
+    lookedAtPages: rendered.length > 0,
+    // CARRIED TO THE ROUTE, which is the only layer that can turn it into an
+    // answer the operator can act on. See `ExtractionResult.unreadable`.
+    readerUnreadable: combined.unreadable === true
   };
 }
 

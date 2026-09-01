@@ -29,6 +29,9 @@ import {
   sameDesignatorName
 } from "./packagevariants";
 import {
+  gridPosition,
+  gridRowIndex,
+  isGridAddressed,
   thermalPadNumber,
   type Corroboration,
   type FootprintGeometry,
@@ -704,6 +707,31 @@ function quadRowSides(
   };
 }
 
+/**
+ * A grid-addressed part's terminals, split into two columns for the symbol.
+ *
+ * A schematic symbol has no physical arrangement to honour - it is a box with
+ * named pins - so the only requirement is that every terminal appears once, in
+ * an order a person can find a pin in. Row then column is the order the
+ * datasheet's own table is printed in.
+ *
+ * The halves are `string` designators rather than numbers, which is why this
+ * exists at all: `dualRowSides` counts 1..N and a BGA has no pin called 1.
+ */
+function gridSymbolSides(pins: readonly PinRecord[]): { left: string[]; right: string[] } {
+  const ordered = [...pins].sort((a, b) => {
+    const left = gridPosition(a.number);
+    const right = gridPosition(b.number);
+    if (!left || !right) return a.number.localeCompare(b.number);
+    return left.row.length - right.row.length || left.row.localeCompare(right.row) || left.column - right.column;
+  });
+  const half = Math.ceil(ordered.length / 2);
+  return {
+    left: ordered.slice(0, half).map((pin) => pin.number),
+    right: ordered.slice(half).map((pin) => pin.number)
+  };
+}
+
 function pinByNumber(part: ResolvedPart): Map<string, PinRecord> {
   return new Map(part.pins.map((pin) => [String(pin.number), pin]));
 }
@@ -717,11 +745,19 @@ function pinByNumber(part: ResolvedPart): Map<string, PinRecord> {
  * below the body. Grouping by function is a nicety; placing a pin at the wrong
  * coordinate is a defect.
  */
-function buildSymbolGeometry(part: ResolvedPart): SymbolGeometry {
+export function buildSymbolGeometry(part: ResolvedPart): SymbolGeometry {
   // No vacant slot is passed, deliberately. A gap in the LEAD grid is a fact
   // about the package's physical layout; a schematic symbol has one pin per
   // electrical pin and no holes in it.
-  const { left, right } = dualRowSides(part.pinCount);
+  //
+  // A GRID-ADDRESSED PART IS SPLIT BY ITS OWN DESIGNATORS. `dualRowSides` counts
+  // 1..N, so on a BGA every lookup below missed and the symbol came out EMPTY -
+  // which would have made "the footprint cannot be built, the symbol can" a
+  // false promise. Ordered by row then column, which is how a datasheet's own
+  // table is printed and how a person reads one.
+  const { left, right } = isGridAddressed(part.pins)
+    ? gridSymbolSides(part.pins)
+    : dualRowSides(part.pinCount);
   const byNumber = pinByNumber(part);
   const rows = Math.max(left.length, right.length);
 
@@ -758,7 +794,7 @@ function buildSymbolGeometry(part: ResolvedPart): SymbolGeometry {
   const lengthMm = 2.54;
 
   const pins: SymbolPin[] = [];
-  const collect = (numbers: number[], side: "left" | "right") => {
+  const collect = (numbers: Array<number | string>, side: "left" | "right") => {
     numbers.forEach((number, row) => {
       const pin = byNumber.get(String(number));
       if (!pin) return;
@@ -780,8 +816,8 @@ function buildSymbolGeometry(part: ResolvedPart): SymbolGeometry {
       });
     });
   };
-  collect(left.filter((n): n is number => n !== null), "left");
-  collect(right.filter((n): n is number => n !== null), "right");
+  collect(left.filter((n): n is number | string => n !== null), "left");
+  collect(right.filter((n): n is number | string => n !== null), "right");
 
   return {
     name: part.partNumber,
@@ -992,6 +1028,25 @@ export function buildFootprintGeometry(
     }
   }
 
+  // A GRID-ADDRESSED PART HAS NO ARRANGEMENT HERE YET, and this is where that is
+  // said.
+  //
+  // A ball-, land- or column-grid array addresses every terminal by row letter
+  // and column number. The pinout is recorded exactly as printed - see
+  // `normalizeModelPins`, which used to throw it away at extraction and report
+  // the datasheet as unreadable - so the symbol, the pin list and the review
+  // panel all work. Only the FOOTPRINT is unavailable, because this generator
+  // places lands in one, two or four rows and a grid is none of those.
+  //
+  // Refused rather than approximated. Placing a grid on a guessed pitch produces
+  // a footprint that looks entirely ordinary in CAD and is wrong, which is the
+  // one failure this product cannot have.
+  //
+  // No `needs`: there is no number a user could type that would make this
+  // buildable. The chooser reports it as unsupported with this reason, which is
+  // the truth and names our gap rather than the document's.
+  if (isGridAddressed(part.pins)) return gridFootprint(part, densityLevel);
+
   // An exposed thermal pad is laid out when its size is known, and refused when
   // it is not. It is a mandatory soldered feature: the numbered lands alone are
   // a footprint the board house builds wrong.
@@ -1121,7 +1176,32 @@ export function buildFootprintGeometry(
           derived,
           {
             ...layout,
-            source: `IPC-7351B density ${densityLevel}, computed from this datasheet's own package drawing`
+            // AND FROM THE ASSEMBLER'S OWN NUMBERS, WHERE THEY SIZED IT.
+            //
+            // A straight-lead package has no seated span or foot on any drawing;
+            // both come from the settings screen, and `leadFromDrawing` builds
+            // the lead from them. So this sentence - "computed from this
+            // datasheet's own package drawing" - was false for exactly the
+            // packages that are most of this product's market, and it was the
+            // ONLY provenance the bundle carried.
+            //
+            // A rad-hard engineer typed 9.40 and 0.90 into the product on
+            // 2026-08-28, got a correct RHF310A footprint, and found their two
+            // numbers nowhere in the zip, the JSON or the manifest: "the numbers
+            // that size the copper are not recorded... they live in one
+            // browser's localStorage, are never shown back, and vanish on
+            // another workstation. Un-auditable."
+            //
+            // Two things wrong at once, and this fixes both: the claim about
+            // where the pattern came from, and the absence of the inputs a
+            // reviewer needs to reproduce it.
+            source:
+              part.dimensions.leadForm === "straight" && formedLeadSpanMm !== undefined && formedLeadContactMm !== undefined
+                ? `IPC-7351B density ${densityLevel}, computed from this datasheet's package drawing and the ` +
+                  `formed-lead dimensions your line supplied: ${formedLeadSpanMm} mm seated span, ` +
+                  `${formedLeadContactMm} mm seated foot. This package ships with straight leads, so no datasheet ` +
+                  `states those two and they are yours rather than the vendor's.`
+                : `IPC-7351B density ${densityLevel}, computed from this datasheet's own package drawing`
           },
           printedMm.length > 0
             ? {
@@ -1192,7 +1272,7 @@ export function buildFootprintGeometry(
           `ARRANGED was not: that comes from the pitch and how many sides carry leads. Answer what is missing and the ` +
           `footprint is built from the numbers already read off the page.`
         : `No land pattern could be read for ${part.packageType} from this datasheet, and none is derived from anything outside it. Supply the land pattern and it will be built from your numbers.`,
-    askForLandPattern(part, formedLeadSpanMm, formedLeadContactMm)
+    askForLandPattern(part, formedLeadSpanMm, formedLeadContactMm, supplied)
   );
 }
 
@@ -1348,6 +1428,201 @@ function throughHoleFootprint(part: ResolvedPart, densityLevel: DensityLevel): F
 }
 
 /**
+ * A BALL-, LAND- OR COLUMN-GRID ARRAY: lands on a regular grid under the body.
+ *
+ * ## Why this is its own function
+ *
+ * `assemble` places lands in rows along the sides of a package, and everything
+ * in it follows from that: a centre span between opposing rows, a land that is
+ * long in the direction its lead runs, a pin-1 marker beside the first row. A
+ * grid has none of those. Threading a fourth arrangement through it would put a
+ * branch in every one of those decisions, and the row path is the one carrying
+ * every part that ships today.
+ *
+ * Same reasoning as `throughHoleFootprint`, which is separate for the same
+ * reason: a plated hole is not a land with a hole added.
+ *
+ * ## Where the numbers come from
+ *
+ * THE GRID ITSELF IS FREE. The designators state it: `A1` through `M12` is
+ * thirteen rows of twelve, and the row letters are positional, so a depopulated
+ * grid places what is there and leaves the gaps empty. Nothing is asked and
+ * nothing is counted.
+ *
+ * THE LAND IS THE DATASHEET'S. A BGA drawing prints its recommended land
+ * diameter, and that is what is emitted. There is no computed alternative: this
+ * file does not transcribe IPC-7351B's ball-grid land rules, and deriving a land
+ * diameter from a ball diameter by a remembered ratio is exactly the
+ * reverse-engineered rule `computeLandPattern` refuses to keep for no-lead
+ * packages. Where the document prints no land, this asks for one number.
+ *
+ * ## The convention, and why it is not a choice
+ *
+ * Viewed from the top - which is how a footprint is drawn - `A1` is the
+ * top-left ball, row letters advance down the page and column numbers advance
+ * to the right. Every vendor's BGA drawing and every CAD library follows it.
+ */
+function gridFootprint(part: ResolvedPart, densityLevel: DensityLevel): FootprintGeometry {
+  const landPage = part.vendorLandPattern?.page ?? null;
+  const landLabel = landPage ? "Recommended footprint" : undefined;
+
+  const positions = part.pins.map((pin) => ({ pin, at: gridPosition(pin.number) }));
+  const unplaceable = positions.filter((entry) => entry.at === null || gridRowIndex(entry.at.row) === null);
+  if (unplaceable.length > 0) {
+    // Refused rather than placed somewhere. A row letter outside JEDEC's
+    // alphabet is one this cannot position, and a ball a pitch out of place is a
+    // board that looks correct and does not work.
+    throw new FootprintUnavailableError(
+      `${part.partNumber} has terminals this generator cannot place on a grid ` +
+        `(${unplaceable.slice(0, 4).map((entry) => entry.pin.number).join(", ")}). A grid row letter follows ` +
+        `JEDEC's alphabet, which omits I, O, Q, S, X and Z because they read as digits or as each other.`
+    );
+  }
+
+  // A FINITE POSITIVE NUMBER, or nothing.
+  //
+  // Tested for the VALUE rather than against null, because a record can carry
+  // `undefined` here as easily as `null` - an older stored part, a hand-built
+  // fixture, a partial object from the export route - and `undefined <= 0` is
+  // false, so a null check alone lets it through and every coordinate below
+  // becomes NaN. `printedLand` records the same lesson about the same fields.
+  const usable = (value: number | null | undefined): number | null =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+  const pitchMm = usable(part.dimensions.pitchMm);
+  // The land is a circle on a BGA, so one diameter describes it. Both fields are
+  // read from the printed footprint and either alone is enough; where the
+  // document printed a rectangle they differ and both are used.
+  const padXMm = usable(part.dimensions.landPadWidthMm) ?? usable(part.dimensions.landPadLengthMm);
+  const padYMm = usable(part.dimensions.landPadLengthMm) ?? usable(part.dimensions.landPadWidthMm);
+  const needs: RequiredInput[] = [];
+  if (pitchMm === null) {
+    needs.push({
+      field: "pitchMm",
+      label: "Ball pitch, centre to centre",
+      why: `${part.partNumber}'s terminals sit on a grid and the spacing was not read. Every grid package drawing dimensions it.`,
+      unit: "mm",
+      scope: "part",
+      page: landPage,
+      pageLabel: landLabel
+    });
+  }
+  if (padXMm === null || padYMm === null) {
+    needs.push({
+      field: "landPadLengthMm",
+      label: "Land diameter",
+      why:
+        `${part.partNumber} is a grid array and its land diameter was not read. It is printed on the ` +
+        `recommended footprint; this generator does not compute one, because IPC-7351B's ball-grid land ` +
+        `rules are not transcribed here.`,
+      unit: "mm",
+      scope: "part",
+      page: landPage,
+      pageLabel: landLabel
+    });
+  }
+  if (needs.length > 0 || pitchMm === null || padXMm === null || padYMm === null) {
+    throw new FootprintUnavailableError(
+      `${part.partNumber}'s grid footprint needs ${needs.map((need) => need.label.toLowerCase()).join(" and ")}.`,
+      needs
+    );
+  }
+
+  const placed = positions.map((entry) => ({
+    pin: entry.pin,
+    row: gridRowIndex(entry.at!.row)!,
+    column: entry.at!.column - 1
+  }));
+  // The EXTENT, not the count of rows that happen to carry a ball: a
+  // depopulated grid keeps its gaps, so the outermost row and column set the
+  // size and everything between them keeps its own position.
+  const rows = Math.max(...placed.map((entry) => entry.row)) + 1;
+  const columns = Math.max(...placed.map((entry) => entry.column)) + 1;
+
+  // `+y` is DOWN, the same convention `assemble` states and every land in this
+  // file follows, so row A sits at the most negative y and reads as the top.
+  const pads: Pad[] = placed.map((entry) => ({
+    number: entry.pin.number,
+    centre: {
+      xMm: (entry.column - (columns - 1) / 2) * pitchMm,
+      yMm: (entry.row - (rows - 1) / 2) * pitchMm
+    },
+    widthMm: padXMm,
+    heightMm: padYMm,
+    shape: "circle" as const,
+    mounting: "smd" as const,
+    ...(part.dimensions.solderMaskExpansionMm === null ||
+    part.dimensions.solderMaskDefined !== "non-solder-mask-defined"
+      ? {}
+      : { solderMaskMarginMm: part.dimensions.solderMaskExpansionMm })
+  }));
+
+  // The body as READ, falling back to the ball field plus one pitch of margin
+  // where it was not. Same rule the row arrangements use: the outline follows
+  // the drawing and is not grown to hold its own copper.
+  const ballFieldXMm = (columns - 1) * pitchMm + padXMm;
+  const ballFieldYMm = (rows - 1) * pitchMm + padYMm;
+  const bodyHalfXMm = (part.dimensions.bodyWidthMm ?? ballFieldXMm + pitchMm) / 2;
+  const bodyHalfYMm = (part.dimensions.bodyLengthMm ?? ballFieldYMm + pitchMm) / 2;
+
+  const padHalfXMm = Math.max(...pads.map((pad) => Math.abs(pad.centre.xMm) + pad.widthMm / 2));
+  const padHalfYMm = Math.max(...pads.map((pad) => Math.abs(pad.centre.yMm) + pad.heightMm / 2));
+  const courtyardHalfXMm = Math.max(bodyHalfXMm, padHalfXMm) + COURTYARD_EXCESS[densityLevel];
+  const courtyardHalfYMm = Math.max(bodyHalfYMm, padHalfYMm) + COURTYARD_EXCESS[densityLevel];
+
+  const source =
+    `the recommended footprint printed in this datasheet, on a ${rows} by ${columns} grid taken from the ` +
+    `terminal designators`;
+  return {
+    name: `${slugify(part.partNumber)}-${slugify(part.packageType)}`,
+    description:
+      `${part.partNumber} ${part.packageType}. ${rows} x ${columns} grid at ${pitchMm} mm pitch, ` +
+      `${pads.length} lands of ${padXMm} mm. Lands are the RECOMMENDED FOOTPRINT PRINTED IN THIS DATASHEET; ` +
+      `IPC-7351B supplies the courtyard only.`,
+    partNumber: part.partNumber,
+    pads,
+    body: { halfWidthMm: bodyHalfXMm, halfHeightMm: bodyHalfYMm },
+    courtyard: { halfWidthMm: courtyardHalfXMm, halfHeightMm: courtyardHalfYMm },
+    // OUTSIDE THE BODY AT THE A1 CORNER, which is top-left in the top view every
+    // footprint is drawn in.
+    //
+    // It matters more here than on any other package. A grid array is square or
+    // nearly so, every land is hidden under the body once it is placed, and the
+    // part can be fitted in four orientations that all look identical. The A1
+    // mark is the only thing on the board that says which one is right.
+    pin1Marker: {
+      xMm: -(bodyHalfXMm + COURTYARD_EXCESS[densityLevel]),
+      yMm: -(bodyHalfYMm + COURTYARD_EXCESS[densityLevel])
+    },
+    // A grid array's underside is balls, not an exposed pad, so there is nothing
+    // to via down to. An exposed pad is refused earlier for want of its size and
+    // no grid part in the corpus states one.
+    thermalVias: [],
+    provenance: {
+      family: part.packageType,
+      source,
+      densityLevel,
+      padWidthMm: padXMm,
+      padLengthMm: padYMm,
+      centreToCentreMm: Number(((columns - 1) * pitchMm).toFixed(3)),
+      centreToCentreCrossMm: Number(((rows - 1) * pitchMm).toFixed(3)),
+      pitchMm,
+      arrangement: "grid",
+      corroboration: {
+        from: "printed",
+        against: null,
+        agrees: false,
+        because: "no-ipc-model-for-lead-form",
+        detail:
+          `Taken from the footprint printed in this datasheet${landPage ? ` on page ${landPage}` : ""}. ` +
+          `IPC-7351B's land model for grid arrays is not transcribed here, so there is no independent ` +
+          `pattern to check it against.`
+      },
+      discards: []
+    }
+  };
+}
+
+/**
  * The lead geometry IPC-7351B needs, taken from this part's OWN drawing.
  *
  * `span` is the tip-to-tip extent, `contact` the foot that sits on the pad
@@ -1413,7 +1688,13 @@ function leadFromDrawing(
 
   const span =
     form === "straight"
-      ? formedLeadSpanMm && Number.isFinite(formedLeadSpanMm) && formedLeadSpanMm > 0
+      ? // See `formedSpanReachesBody`: an install-wide seated span that is
+        // smaller than this package's own body describes a lead that ends inside
+        // it, and no land pattern is computed from one.
+        formedLeadSpanMm &&
+        Number.isFinite(formedLeadSpanMm) &&
+        formedLeadSpanMm > 0 &&
+        formedSpanReachesBody(part, formedLeadSpanMm)
         ? { minMm: formedLeadSpanMm, maxMm: formedLeadSpanMm }
         : null
       : form === "gullwing"
@@ -1786,10 +2067,56 @@ function withSupplied(part: ResolvedPart, supplied: SuppliedDimensions | undefin
  * says WHY the datasheet cannot answer it, because "type a number" with no
  * reason is how a tool trains people to type anything.
  */
+/**
+ * The body a lead span has to reach across, or null where none was read.
+ *
+ * The SMALLER of the two body dimensions, which is the one a dual package's span
+ * is measured across. Comparing against the larger would fail every rectangular
+ * package correctly read; `spanCoversBody` in `confidence.ts` makes the same
+ * choice for the same reason.
+ */
+function bodyAcrossMm(part: ResolvedPart): number | null {
+  const values = [part.dimensions.bodyWidthMm, part.dimensions.bodyLengthMm].filter(
+    (value): value is number => value !== null && value > 0
+  );
+  return values.length === 0 ? null : Math.min(...values);
+}
+
+/**
+ * A FORMED SPAN THAT ENDS INSIDE THE PACKAGE IS NOT A SPAN.
+ *
+ * `spanCoversBody` exists to catch exactly this and cannot see it here. It reads
+ * `dimensions.leadSpanMm` - the DRAWING's span - which is null on precisely the
+ * packages whose span comes from the settings screen instead, so it reports
+ * "unavailable" and the lands are laid out wherever the assembler's one global
+ * number puts them.
+ *
+ * LX7730's 132-lead ceramic quad flat pack is the case: a 24.125 mm body with a
+ * 7.62 mm seated span, which puts every land completely underneath the part.
+ * Six of twelve straight-lead parts in the corpus are that shape, because the
+ * seated span is asked ONCE PER ASSEMBLER and a forming die that gives 7.62 mm
+ * on a 10 mm package does not give 7.62 mm on a 24 mm one.
+ *
+ * Whether a die gives a constant EXTENSION beyond the body rather than a
+ * constant span is a question about a customer's process and is not answered
+ * here. What is answered here is narrower and not in doubt: leads cannot end
+ * inside the package they leave. So the part asks for its own seated span rather
+ * than shipping copper under the body, and the question names the two numbers
+ * that make the answer impossible.
+ */
+function formedSpanReachesBody(part: ResolvedPart, formedLeadSpanMm?: number): boolean {
+  if (part.dimensions.leadForm !== "straight") return true;
+  if (!formedLeadSpanMm || !Number.isFinite(formedLeadSpanMm)) return true;
+  const across = bodyAcrossMm(part);
+  return across === null || formedLeadSpanMm >= across;
+}
+
 function askForLandPattern(
   part: ResolvedPart,
   formedLeadSpanMm?: number,
-  formedLeadContactMm?: number
+  formedLeadContactMm?: number,
+  /** What the caller typed, so a rejected answer can be offered back. */
+  supplied?: SuppliedDimensions
 ): RequiredInput[] {
   const needs: RequiredInput[] = [];
 
@@ -1800,6 +2127,24 @@ function askForLandPattern(
   //
   // This is nearly every rad-hard ceramic flat pack, so it is the opposite of a
   // corner case for this product's customers.
+  if (!formedSpanReachesBody(part, formedLeadSpanMm)) {
+    const across = bodyAcrossMm(part);
+    return [
+      {
+        field: "formedLeadSpanMm",
+        label: "Formed lead span for this package, toe to toe",
+        why:
+          `The seated span your line supplied is ${formedLeadSpanMm} mm and this package's body is ` +
+          `${across} mm across, so leads formed to that span would end inside the package they leave and ` +
+          `every land would sit underneath the part. A seated span is asked once per assembler because it ` +
+          `is a property of your forming die, and one number cannot cover a 5 mm package and a ${across} mm ` +
+          `one. This package needs its own.`,
+        unit: "mm",
+        scope: "part"
+      }
+    ];
+  }
+
   if (part.dimensions.leadForm === "straight" && (!formedLeadSpanMm || !formedLeadContactMm)) {
     const why =
       `${part.packageType} ships with its leads straight and the assembler trims and forms them, so ` +
@@ -1871,13 +2216,33 @@ function askForLandPattern(
       `prints one it is usually beside the package outline drawing, and the page is shown here; ` +
       `otherwise take these from the vendor's application note or your own library.`;
 
-  if (part.dimensions.landPadLengthMm === null) {
+  // A VALUE THAT IS PRESENT AND WAS REJECTED IS STILL A QUESTION.
+  //
+  // Every test below asks only about a BLANK, which is right when the product
+  // only ever asks about blanks. It is wrong once the user has answered: a land
+  // pattern typed in and then thrown out by a guard leaves all four fields
+  // populated, so nothing is asked, and the refusal arrives with an empty
+  // `needs` - which the screen renders as a dead end with no boxes to correct.
+  //
+  // Found 2026-08-30 walking VA10820's questions: four numbers answered with
+  // nonsense, and the refusal that followed explained exactly what was wrong
+  // ("a 10.4 mm land on a 10.4 mm centre span puts the two rows into each
+  // other") while offering no way to change them. Plausible numbers ship, so the
+  // flow works; the only person it strands is the one who typed a wrong number,
+  // which is the person who most needs the boxes back.
+  //
+  // Re-asked only where the caller SUPPLIED the value, because a value the
+  // DOCUMENT stated is not the user's to correct here - that is the review
+  // panel's job, and asking about it would be asking them to overrule their own
+  // datasheet.
+  const rejected = (field: keyof SuppliedDimensions) => supplied?.[field] !== undefined;
+  if (part.dimensions.landPadLengthMm === null || rejected("landPadLengthMm")) {
     needs.push({ field: "landPadLengthMm", label: "Land length, along the lead", why, unit: "mm", scope: "part", page: landPage, pageLabel: landLabel });
   }
-  if (part.dimensions.landPadWidthMm === null) {
+  if (part.dimensions.landPadWidthMm === null || rejected("landPadWidthMm")) {
     needs.push({ field: "landPadWidthMm", label: "Land width, across the lead", why, unit: "mm", scope: "part", page: landPage, pageLabel: landLabel });
   }
-  if (part.dimensions.landSpanMm === null) {
+  if (part.dimensions.landSpanMm === null || rejected("landSpanMm")) {
     needs.push({ field: "landSpanMm", label: "Centre-to-centre span between opposing rows", why, unit: "mm", scope: "part", page: landPage, pageLabel: landLabel });
   }
   // THE SECOND SPAN, on a four-sided package, and asked rather than assumed.
@@ -1891,7 +2256,7 @@ function askForLandPattern(
   //
   // Asked only for `leadSides === 4`, because a two-sided or one-sided package
   // genuinely has one span and asking would be friction with no answer behind it.
-  if (part.dimensions.leadSides === 4 && part.dimensions.landSpanCrossMm === null) {
+  if (part.dimensions.leadSides === 4 && (part.dimensions.landSpanCrossMm === null || rejected("landSpanCrossMm"))) {
     needs.push({
       field: "landSpanCrossMm",
       label: "Centre-to-centre span across the other axis",
@@ -2354,13 +2719,26 @@ function assemble(
       // Measured 2026-08-18 by `bench:copper` over 61 cached records: FIVE parts
       // fail here, every one of them a quad, and it is the only build failure in
       // the corpus that is not a plain refusal.
+      // SAYS WHAT NUMBER WOULD WORK, and does not call it "read".
+      //
+      // Both halves were reported by driving VA10820 through a browser on
+      // 2026-08-30. A user typed a span, got this refusal back verbatim, typed
+      // another, and got it again: the message described the arithmetic in full
+      // and never said what would satisfy it, so answering was guessing. And it
+      // said "the N mm read" about a number the user had just supplied - which
+      // `withSupplied` deliberately lets override a read one - so it also read
+      // as though the answer had been ignored.
+      //
+      // `needsMm` is already computed here. Printing it turns a question that
+      // can only be answered by luck into one that can be answered by looking.
       const why =
-        `The centre span read for ${part.packageType} contradicts its own pitch and pin count: two adjacent ` +
+        `The centre span for ${part.packageType} contradicts its own pitch and pin count: two adjacent ` +
         `sides put lands ${bindingMm.toFixed(2)} mm along at ${definition.pitchMm} mm pitch, and with a ` +
         `${land.padWidthMm} mm land width and a ${land.padLengthMm} mm land length they need ` +
-        `${needsMm.toFixed(2)} mm of centre span to stay apart, against the ${centreSpanMm.toFixed(2)} mm read. ` +
-        `Built as read, the corner lands would touch. The pitch and the pin count corroborate each other, so ` +
-        `the span is the value to take again off the recommended-footprint drawing.`;
+        `${needsMm.toFixed(2)} mm of centre span to stay apart, against the ${centreSpanMm.toFixed(2)} mm in hand. ` +
+        `Built as it stands, the corner lands would touch. The pitch and the pin count corroborate each other, ` +
+        `so the span is the value to take again off the recommended-footprint drawing: it has to be more than ` +
+        `${needsMm.toFixed(2)} mm.`;
       const landPage = part.vendorLandPattern?.page ?? null;
       const ask = (field: "landSpanMm" | "landSpanCrossMm", label: string): RequiredInput => ({
         field,
@@ -2584,11 +2962,33 @@ function assemble(
     // by a factor of four between A and C: a customer who chose level A to buy
     // solder-joint robustness was getting a courtyard sized for level B in one
     // axis and level A in the other.
+    // AND THE BODY IS A TERM ON BOTH AXES, which it was not.
+    //
+    // The paragraph above says it: "the body is only ever the bound when it is
+    // the wider of the two". The code did not do that. X took the larger of the
+    // land table's courtyard and the pad extent and never looked at the body at
+    // all, and Y looked at the body only on a dual package.
+    //
+    // On a NO-LEAD package that is exactly backwards. A QFN's terminals sit
+    // inside its own outline, so the body IS the outer extent and the lands
+    // never reach it. `bench:courtyard` found two footprints whose keep-out was
+    // drawn inside the package it is meant to keep clear - SN74LVC245A and
+    // TPS7A8300, both VQFN-20 - which is the same defect as a courtyard inside
+    // its own lands and has the same consequence: the board designer trusts it
+    // and puts the neighbouring part on top of this one.
+    //
+    // Written as one max over three terms per axis so the two cannot drift
+    // apart again.
     courtyard: {
-      halfWidthMm: Math.max(land.courtyardHalfMm, padHalfExtentXMm + COURTYARD_EXCESS[densityLevel]),
+      halfWidthMm: Math.max(
+        land.courtyardHalfMm,
+        padHalfExtentXMm + COURTYARD_EXCESS[densityLevel],
+        bodyHalfXMm + COURTYARD_EXCESS[densityLevel]
+      ),
       halfHeightMm: Math.max(
-        quad ? land.courtyardHalfMm : bodyHalfYMm + COURTYARD_EXCESS[densityLevel],
-        padHalfExtentYMm + COURTYARD_EXCESS[densityLevel]
+        quad ? land.courtyardHalfMm : 0,
+        padHalfExtentYMm + COURTYARD_EXCESS[densityLevel],
+        bodyHalfYMm + COURTYARD_EXCESS[densityLevel]
       )
     },
     // Outside pin 1, wherever pin 1 actually is.
@@ -3003,6 +3403,15 @@ export async function createExportZip(
     stepSupported: stepModel.supported,
     stepNote: stepModel.note,
     footprint: footprint.provenance,
+    // THE GEOMETRY THAT WENT INTO THESE FILES, so the screen can draw it.
+    //
+    // Returned rather than rebuilt by the caller. The package chooser carries a
+    // geometry per option and that covers every part that ships without being
+    // asked anything, but a part that needs an answer has no option geometry
+    // until the answer is given - and a ceramic flat pack always needs one. That
+    // is this product's own market, so the case where the preview goes missing
+    // is the case where it matters most.
+    geometry: footprint,
     checks,
     files: files.map((file) => file.name)
   };
@@ -3087,6 +3496,18 @@ export interface PackageOption {
    * Empty on `unsupported`, where there is nothing to take.
    */
   toCheck: Confirmation[] | null;
+  /**
+   * THE FOOTPRINT THIS OPTION WOULD ACTUALLY PRODUCE, for drawing on screen.
+   *
+   * Carried rather than recomputed, and that is the whole point. A preview built
+   * by a second code path is a picture of something the user is not going to get,
+   * which is worse than no picture at all: it invites them to approve one
+   * footprint and download another. This is the object `createExportZip` writes
+   * into the library, already through `validateGeometry`.
+   *
+   * Null on `needs-input` and `unsupported`, where no geometry exists yet.
+   */
+  geometry: FootprintGeometry | null;
 }
 
 export type PackageChoice =
@@ -3152,6 +3573,11 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
   // `buildFootprintGeometry` refuses anything that still contradicts.
   const entry = pinTableFor(part.packagesInThisDocument, designator);
   const table = entry?.pins ? entry : null;
+  // Computed before the object below, because `exposedPad` is now decided from
+  // it. `resolvedDimensions` has already dropped anything uncited.
+  const packageDimensions: ResolvedPart["dimensions"] = entry?.dimensions
+    ? { ...blank, ...resolvedDimensions(entry.dimensions) }
+    : blank;
   return {
     ...part,
     packageType: designator,
@@ -3178,7 +3604,17 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
     // Still false where the document printed no table for this package: nothing
     // states it either way, and `buildFootprintGeometry` refuses a pinout that
     // contradicts the designator regardless.
-    exposedPad: entry?.exposedPad ?? false,
+    // ...OR BECAUSE THE PACKAGE'S OWN DRAWING DIMENSIONS ONE. See the matching
+    // rule in `merge.ts`: a drawing that states D2 and E2 is a drawing of a
+    // package with a pad, and that is the same fact as the flag rather than an
+    // inference from it.
+    //
+    // Needed HERE as well as on the flat record because this function overrides
+    // the flag per package, so a family datasheet took the flat answer and threw
+    // it away. Three of the five parts that shipped with no thermal land on
+    // 2026-08-28 resolved through this path and were still wrong after the merge
+    // was fixed.
+    exposedPad: entry?.exposedPad || statesAnExposedPad(packageDimensions),
     // BLANK, EXCEPT WHERE THE DOCUMENT MEASURED THIS PACKAGE ITSELF.
     //
     // Blanking is right and stays the default: every dimension on the record was
@@ -3194,8 +3630,20 @@ export function asPackage(part: ResolvedPart, designator: string): ResolvedPart 
     //
     // Nothing is inherited and nothing is inferred: a field the document did not
     // state for THIS package stays blank and is asked for, as before.
-    dimensions: entry?.dimensions ? { ...blank, ...resolvedDimensions(entry.dimensions) } : blank
+    dimensions: packageDimensions
   };
+}
+
+/**
+ * Does this package's own drawing state an underside pad?
+ *
+ * Both dimensions, both positive. One alone is a half-read drawing and cannot
+ * size a land, which is why `thermalPadLand` refuses on either being absent.
+ */
+function statesAnExposedPad(dimensions: ResolvedPart["dimensions"]): boolean {
+  const length = dimensions.thermalPadLengthMm;
+  const width = dimensions.thermalPadWidthMm;
+  return typeof length === "number" && length > 0 && typeof width === "number" && width > 0;
 }
 
 /**
@@ -3321,7 +3769,9 @@ function optionFor(
     // The questions are still carried, so the caller can offer them and unlock
     // the solid. See `PackageOption.needs`.
     const supplied = withSupplied(candidate, answers.supplied);
-    const report = doc ? confirmations(supplied, geometry, doc) : null;
+    const report = doc
+      ? confirmations(supplied, geometry, doc, answers.formedLeadSpanMm, answers.formedLeadContactMm)
+      : null;
     // OVER THE BUDGET IS A REFUSAL, NOT A WARNING.
     //
     // Anthony's rule, 2026-08-27: past five things to check the product has
@@ -3334,18 +3784,19 @@ function optionFor(
         ...base,
         status: "unsupported",
         needs: [],
+        geometry: null,
         reason:
           `Too much of this package could not be confirmed against a second reading of the datasheet to ship it ` +
           `without checking: ${report.flagged.map((item) => item.label.toLowerCase()).join(", ")}.`,
         toCheck: report.flagged
       };
     }
-    return { ...base, status: "ships", needs: body, reason: null, toCheck: report?.flagged ?? null };
+    return { ...base, status: "ships", needs: body, reason: null, toCheck: report?.flagged ?? null, geometry };
   } catch (error) {
     if (error instanceof FootprintUnavailableError) {
       return error.needs.length > 0
-        ? { ...base, status: "needs-input", needs: [...error.needs, ...body], reason: null, toCheck: null }
-        : { ...base, status: "unsupported", needs: [], reason: error.reason, toCheck: [] };
+        ? { ...base, status: "needs-input", needs: [...error.needs, ...body], reason: null, toCheck: null, geometry: null }
+        : { ...base, status: "unsupported", needs: [], reason: error.reason, toCheck: [], geometry: null };
     }
     // A footprint that fails its own invariants is a NON-SHIP and says why.
     //
@@ -3355,7 +3806,7 @@ function optionFor(
     // Without it the message lands in the branch below, which is worded as
     // though Forge had crashed.
     if (error instanceof FootprintInvalidError) {
-      return { ...base, status: "unsupported", needs: [], reason: error.violations.join("; "), toCheck: [] };
+      return { ...base, status: "unsupported", needs: [], reason: error.violations.join("; "), toCheck: [], geometry: null };
     }
     // Anything else is a defect rather than a refusal, and reporting it as an
     // unbuildable package would bury it. It is still not allowed to fail the
@@ -3364,6 +3815,7 @@ function optionFor(
       ...base,
       status: "unsupported",
       needs: [],
+      geometry: null,
       reason: error instanceof Error ? error.message : "The footprint generator failed.",
       toCheck: []
     };
@@ -3564,7 +4016,26 @@ function optionsFromPerPackageTables(
     optionFromPerPackageTable(record, tables, variant, answers, doc)
   );
 
-  return { ok: true, options: [...options, ...extra] };
+  // AN EMPTY LIST IS NOT A CHOICE, AND SAYING `ok` ABOUT ONE IS A LIE.
+  //
+  // This returned `{ ok: true, options: [] }` whenever the per-package route
+  // found nothing, which reads downstream as "the record is fine, here are its
+  // packages" - so a document nothing was read from came back HTTP 200 with a
+  // chooser of zero entries, no blocked fields, no checks and no questions. The
+  // screen has no state for that: the verdict card's first branch is
+  // `packageChoice.ok === false`, so it fell straight past the sentence written
+  // to explain exactly this situation.
+  //
+  // CD4017B is the case, found by `bench:badinput` on 2026-08-29. Its document
+  // states no pin table this reader can find, `resolveForExport` says so, and
+  // the per-package route then overrode that with an empty success.
+  //
+  // Falling through to the caller's `blockedBy` restores the honest answer: the
+  // record is short of a pin table and a pin count, and the screen already knows
+  // how to say that.
+  const found = [...options, ...extra];
+  if (found.length === 0) return null;
+  return { ok: true, options: found };
 }
 
 /**
@@ -3593,6 +4064,7 @@ function optionFromPerPackageTable(
       ...base,
       status: "unsupported" as const,
       needs: [],
+      geometry: null,
       reason: entry
         ? `This datasheet's drawings for ${variant.designator} were read, but no pin table was found ` +
           `for it, and a footprint cannot be numbered without one. Re-reading the datasheet for this ` +
@@ -3610,6 +4082,7 @@ function optionFromPerPackageTable(
       ...base,
       status: "unsupported" as const,
       needs: [],
+      geometry: null,
       reason: `${variant.designator}'s own pin table is on the record but cannot be used: ${why.join(", ")}.`,
       toCheck: []
     };

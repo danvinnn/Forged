@@ -1,5 +1,6 @@
 import type { DeploymentMode } from "../retrieval/deployment";
-import type { ExtractionModel } from "./contracts";
+import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "./contracts";
+import { assertUnderLimit, recordSpend } from "../spend";
 
 /**
  * Chooses the extraction model for a deployment mode.
@@ -11,6 +12,44 @@ import type { ExtractionModel } from "./contracts";
  * same structural guarantee `retrieval/factory.ts` provides for resolvers, and
  * it is enforced by the air-gap guard test.
  */
+/**
+ * The model, with what it costs counted and capped.
+ *
+ * ## Why the wrapper is here and not in each model
+ *
+ * Every model would have to remember to do it, and the one that forgot would be
+ * the one that billed. This is the single door both routes go through, so a
+ * provider added later is metered whether or not its author thought about it -
+ * which is the failure that produced the Vertex billing hole, where a new
+ * provider slipped past a check written as a list of the providers that bill.
+ *
+ * The ceiling is asserted BEFORE the call. A limit enforced afterwards has
+ * already spent the money it exists to prevent.
+ *
+ * A local model is neither counted nor capped; see `spend.ts` for why that
+ * direction is not negotiable.
+ */
+function metered(model: ExtractionModel): ExtractionModel {
+  return {
+    name: model.name,
+    isConfigured: () => model.isConfigured(),
+    async extract(request: ExtractionRequest): Promise<ExtractionResult> {
+      assertUnderLimit(model.name);
+      // RECORDED WHETHER OR NOT IT SUCCEEDS. A call that threw was still made and
+      // still billed, and a ceiling that only counts successes can be walked
+      // straight through by a provider that is failing.
+      try {
+        const result = await model.extract(request);
+        recordSpend(model.name, result.usage, result.attempts);
+        return result;
+      } catch (error) {
+        recordSpend(model.name, undefined, (error as { attempts?: number }).attempts ?? 1);
+        throw error;
+      }
+    }
+  };
+}
+
 export async function makeExtractionModel(mode: DeploymentMode): Promise<ExtractionModel | null> {
   if (mode === "commercial") {
     // VERTEX FIRST, where it is configured.
@@ -26,18 +65,18 @@ export async function makeExtractionModel(mode: DeploymentMode): Promise<Extract
     if (process.env.GOOGLE_APPLICATION_CREDENTIALS && process.env.FORGE_VERTEX_PROJECT) {
       const { VertexExtractionModel } = await import("./models/vertex");
       const model = new VertexExtractionModel();
-      if (model.isConfigured()) return model;
+      if (model.isConfigured()) return metered(model);
     }
 
     // Cloud model. Only ever loaded on the commercial path.
     if (process.env.GOOGLE_GEMINI_API_KEY) {
       const { GeminiExtractionModel } = await import("./models/gemini");
       const model = new GeminiExtractionModel();
-      if (model.isConfigured()) return model;
+      if (model.isConfigured()) return metered(model);
     }
     // A commercial deploy may still prefer a self-hosted model.
     const local = await makeLocalModel();
-    if (local) return local;
+    if (local) return metered(local);
     return null;
   }
 
@@ -45,7 +84,8 @@ export async function makeExtractionModel(mode: DeploymentMode): Promise<Extract
   // endpoint must resolve to a private address. Controlled datasheets cannot
   // leave the customer network, so a public endpoint here is a misconfiguration
   // that the model itself refuses (see models/local.ts).
-  return (await makeLocalModel()) ?? null;
+  const local = await makeLocalModel();
+  return local ? metered(local) : null;
 }
 
 /**

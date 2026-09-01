@@ -26,7 +26,8 @@
  * pairing below is a reading against a DIFFERENT KIND of reading:
  *
  *     the pinout        a model reading the document, against text-layer geometry
- *     the copper        the vendor's printed footprint, against IPC-7351B arithmetic
+ *     the copper        the vendor's printed footprint, against IPC-7351B arithmetic,
+ *                       and the leads themselves laid onto the lands
  *     the pin count     the pin table, against the mechanical drawing's lead count
  *     the pitch         the pitch, against the body it has to fit inside
  *     the body          the body, against the lead span that has to reach past it
@@ -51,9 +52,10 @@
  * values that place copper. Same rule `review.ts` states for its own list.
  */
 
-import type { FootprintGeometry } from "./geometry";
-import { declaredLeadCount } from "./packagevariants";
+import { isGridAddressed, type FootprintGeometry } from "./geometry";
+import { declaredLeadCount, declaredLeadSides } from "./packagevariants";
 import { pinoutEvidence, type PinoutEvidence } from "./pinevidence";
+import { solderJoint, type JointReport } from "./solderjoint";
 import type { DatasheetText } from "./pdftext";
 import type { ResolvedPart } from "./types";
 
@@ -174,13 +176,68 @@ function confirmPinout(part: ResolvedPart, evidence: PinoutEvidence | null): Con
  * patterns; see `FootprintProvenance.corroboration`. This turns that record into
  * the user's language.
  */
-function confirmCopper(part: ResolvedPart, geometry: FootprintGeometry): Confirmation {
+/**
+ * THE PADS, against two second sources rather than one.
+ *
+ * ## Why the second one had to exist
+ *
+ * IPC-7351B arithmetic was the only check here, and it publishes its fillet
+ * goals per lead form with only the gull-wing table transcribed. So every QFN,
+ * DFN, SON and LGA in the corpus came back `no-ipc-model-for-lead-form`: a
+ * permanent flag, on the packages whose lands are hardest to verify, saying
+ * nothing more useful than "the standard does not cover this". A flag a user
+ * can do nothing about is a flag they learn to click past.
+ *
+ * The overlay covers exactly that gap. It needs no fillet table, because it
+ * computes nothing: it takes the lands the vendor printed on one page and the
+ * leads the vendor drew on another, lays one on top of the other, and asks
+ * whether there is copper under the lead. Two pages, two readings, and the same
+ * kind of independence the IPC pairing has - with geometry between them instead
+ * of a standard's arithmetic.
+ *
+ * ## IT FLAGS, IT DOES NOT CONFIRM, and the difference is the whole point
+ *
+ * A clean overlay proves the joint will form. It does NOT prove the pattern was
+ * read correctly, and the first version of this treated the two as one claim.
+ *
+ * STM32F103C8 is what settled it. Its UFQFPN48 footprint is emitted on a 6.55 mm
+ * centre span where the datasheet prints 6.75: the reader took a corner gap for
+ * the pad length and derived the span from it, and BOTH readings reproduce the
+ * same 7.30 mm outer envelope, which is why nothing else catches it. Every
+ * terminal still sits entirely on its land, so the overlay is perfectly happy -
+ * and it confirmed a footprint 0.1 mm out of position on every pad.
+ *
+ * `bench:confirm` reported that as this project's first FALSE CONFIRMATION on
+ * the copper. So the overlay is consulted for disagreement only. Where it finds
+ * a lead off its copper, two pages of one datasheet contradict each other and
+ * that outranks any band. Where it finds nothing, it has ruled out one class of
+ * error and says nothing about the others, which is not a second source.
+ */
+function confirmCopper(part: ResolvedPart, geometry: FootprintGeometry, joint: JointReport): Confirmation {
   const id = "land-pattern";
   const label = "Land pattern (the pads)";
   const consequence =
     "These pads are the copper the part is soldered to. Wrong here and the footprint misses the leads, on every board built from it.";
   const { corroboration } = geometry.provenance;
   const page = part.vendorLandPattern?.page ?? null;
+
+  if (joint.findings.length > 0) {
+    // ONE SENTENCE, from the worst land. A user settles this by looking at two
+    // figures once, which is one glance, so it is one item however many lands
+    // carry the same fault.
+    const worst = [...joint.findings].sort((a, b) => a.fraction - b.fraction)[0];
+    const lands = joint.findings.length;
+    return flagged(
+      id,
+      label,
+      worst.at === "width" ? "lead-wider-than-land" : "lead-misses-land",
+      `The lands printed in this datasheet do not fit the leads its own package drawing states. On pin ` +
+        `${worst.padNumber}, ${worst.detail}${lands > 1 ? `. ${lands} lands are affected` : ""}.`,
+      consequence,
+      page
+    );
+  }
+
   if (corroboration.agrees) return confirmed(id, label, corroboration.detail, page);
   return flagged(id, label, corroboration.because, corroboration.detail, consequence, page);
 }
@@ -232,8 +289,82 @@ function confirmPinCount(part: ResolvedPart): Confirmation {
   );
 }
 
-/** How close two readings of the same printed dimension must sit, in mm. */
+/**
+ * HOW THE LEADS ARE ARRANGED, from the package name rather than the drawing.
+ *
+ * `dimensions.leadSides` decides whether the lands go in two rows or around four
+ * edges, and until 2026-08-29 nothing checked it. `bench:unchecked` swapped 2 for
+ * 4 on 86 footprints the product vouched for and 59 stayed CONFIRMED: a quad
+ * flat pack laid out as a very long two-row part, which does not fit the package
+ * at all, with every other check passing because every other input is fine.
+ *
+ * The second source is `declaredLeadSides`, which reads the family out of the
+ * designator - the Q in QFP is quad - and is independent of the drawing the side
+ * count was counted off. See its own note for what it recognises and what it
+ * measured.
+ *
+ * ## Why a grid array is not flagged
+ *
+ * A BGA has no lead sides, `declaredLeadSides` answers null for one, and the
+ * generator lays it out from its own designators rather than from this field. A
+ * flag there would be a question about a number nothing uses, which RULES.md is
+ * explicit about: a flag that fires where it cannot matter teaches the user to
+ * click past the ones that do.
+ */
+function confirmArrangement(part: ResolvedPart): Confirmation | null {
+  const sides = part.dimensions.leadSides;
+  if (sides === null) return null;
+  if (isGridAddressed(part.pins)) return null;
+  const id = "arrangement";
+  const label = "How the leads are arranged";
+  const consequence =
+    "Decides whether the lands go in two rows or around four edges. A wrong arrangement is a footprint the part cannot be placed on.";
+  const named = declaredLeadSides(part.packageType);
+  const words = (count: number) => (count === 1 ? "a single row" : count === 2 ? "two rows" : `${count} sides`);
+  if (named === null) {
+    return flagged(
+      id,
+      label,
+      "no-second-source",
+      `The drawing was read as ${words(sides)}, and this document's name for the package, ${part.packageType}, does not state a family that says how many sides its leads come out of.`,
+      consequence
+    );
+  }
+  if (named === sides) {
+    return confirmed(id, label, `${words(sides)}, and this document names the package ${part.packageType}.`);
+  }
+  return flagged(
+    id,
+    label,
+    "name-disagrees",
+    `The drawing was read as ${words(sides)} and this document names the package ${part.packageType}, which is ${words(named)}.`,
+    consequence
+  );
+}
+
+/**
+ * How close two readings of the SAME printed dimension must sit, in mm.
+ *
+ * Not a tolerance on the part and not a judgement about accuracy. Both sides of
+ * every comparison this is used for are readings of one number printed on one
+ * drawing - the pitch on the outline against the pitch on the footprint, the
+ * exposed pad on the outline against the pad on the footprint - so the only
+ * difference that can legitimately arise is how many decimal places each callout
+ * was printed to.
+ *
+ * A drawing prints two. Half of the last place is 0.005; this allows ten times
+ * that, so a 2.30 against a 2.3 agrees and a 2.30 against a 2.54 does not.
+ * Measured on the corpus: of 29 parts whose printed footprint states a pitch,
+ * all 29 match the outline's exactly, so nothing in hand actually needs the
+ * slack.
+ */
 const PAD_AGREEMENT_MM = 0.05;
+
+/**
+ * How far the printed footprint may reach past the body before the two drawings
+ * are calling each other wrong. Swept by `bench:bodysweep`; see `confirmBody`.
+ */
+const BODY_AGAINST_PRINTED_LAND = 3.5;
 
 /**
  * THE PITCH, against the footprint the datasheet prints for the same package.
@@ -314,6 +445,45 @@ function confirmBody(part: ResolvedPart): Confirmation {
   }
   const span = part.dimensions.leadSpanMm;
   const across = Math.min(length, width);
+
+  // THE PRINTED FOOTPRINT CONTRADICTS THE BODY, and this runs first because a
+  // contradiction between two DRAWINGS outranks agreement within one.
+  //
+  // The pairing below - the body against the lead span - reads two callouts off
+  // the same package outline, and it is one-sided: a body read too SMALL still
+  // has its span reach past it, so it stays confirmed. `bench:unchecked` shrank
+  // every body to 40% of its real size and 56 of them were still vouched for.
+  //
+  // The land pattern the datasheet prints on its own page is a different
+  // drawing, laid out by different people for a different purpose, which is what
+  // the invariant means by a second MEANS. A package cannot hang far off its own
+  // recommended footprint.
+  //
+  // THE BOUND WAS SWEPT, not argued (`bench:bodysweep`). Across the 62 parts
+  // that state both, the outer land extent runs from 0.82 to 2.97 times the body
+  // - a DSBGA's lands sit inside its body, a TSSOP-8's reach three times across
+  // it - so the bound is 3.5, which is clear of the widest correct part by 18%
+  // and flags none of them. It catches 41 of the 62 shrunken bodies. A tighter
+  // 3.0 catches 47 and clears the widest correct reading by one percent, which
+  // is not clearance, it is luck.
+  //
+  // IT FLAGS AND DOES NOT CONFIRM, for the same reason the copper overlay does:
+  // agreeing within a factor of three and a half rules out one class of error
+  // and says nothing about the others.
+  const printedSpan = part.dimensions.landSpanMm;
+  const printedPad = part.dimensions.landPadLengthMm;
+  if (printedSpan !== null && printedPad !== null && printedSpan + printedPad > across * BODY_AGAINST_PRINTED_LAND) {
+    return flagged(
+      id,
+      label,
+      "printed-footprint-disagrees",
+      `${length} x ${width} mm, but the footprint this datasheet prints for the same package spans ` +
+        `${(printedSpan + printedPad).toFixed(2)} mm across its two land rows, which is more than three and a half ` +
+        `times that body. One of the two drawings was misread.`,
+      consequence
+    );
+  }
+
   if (span && span.maxMm >= across) {
     return confirmed(
       id,
@@ -399,13 +569,25 @@ export interface ConfirmationReport {
 export function confirmations(
   part: ResolvedPart,
   geometry: FootprintGeometry,
-  doc: DatasheetText | null
+  doc: DatasheetText | null,
+  /**
+   * The assembler's formed-lead answers, for a package that ships straight.
+   *
+   * Threaded through because a flat pack's seated span and foot come from the
+   * settings screen rather than from any drawing, and without them the overlay
+   * declines to run on exactly the packages that are most of this product's
+   * market. Same two numbers `buildFootprintGeometry` already takes.
+   */
+  formedLeadSpanMm?: number,
+  formedLeadContactMm?: number
 ): ConfirmationReport {
   const evidence = doc && part.pins.length > 0 ? pinoutEvidence(doc, part.pins, part.pinCount) : null;
+  const joint = solderJoint(geometry, part, formedLeadSpanMm, formedLeadContactMm);
   const items = [
     confirmPinout(part, evidence),
-    confirmCopper(part, geometry),
+    confirmCopper(part, geometry, joint),
     confirmPinCount(part),
+    confirmArrangement(part),
     confirmPitch(part),
     confirmBody(part),
     confirmThermalPad(part)

@@ -14,6 +14,7 @@ import {
 import { extractPartRecord } from "../../../lib/datasheet";
 import { looksLikeWrongDocument, namesThePart, PdfExtractionError, type DatasheetText } from "../../../lib/pdftext";
 import { makeExtractionModel, runExtraction } from "../../../lib/extraction";
+import { SpendLimitReached } from "../../../lib/spend";
 import { SecondPassFailedError } from "../../../lib/extraction/contracts";
 import {
   ModelDeadlineError,
@@ -65,6 +66,32 @@ class WrongDocumentError extends Error {
         `(it is a few pages with almost no text). Upload the datasheet PDF directly and it will be read.`
     );
     this.name = "WrongDocumentError";
+  }
+}
+
+/**
+ * NO READER IS CONFIGURED, so nothing was read.
+ *
+ * The same door `/api/parse` closed on 2026-08-29 and the same reason.
+ * `makeExtractionModel` answers null when no credential and no local endpoint is
+ * set, and this route returned `{ part, method: "text only" }` - a record of
+ * nulls, HTTP 200, and nothing anywhere saying a reader never ran.
+ *
+ * Found because a parity test noticed the two routes now disagreed, which is
+ * the third time a guard on one route has had to be repeated on the other. Past
+ * the point where the bytes are in hand these two ARE the same operation, and
+ * `buildReadout` already says so.
+ */
+class NoReaderError extends Error {
+  constructor(readonly mode: DeploymentMode) {
+    super(
+      mode === "commercial"
+        ? `No reader is configured for this deployment, so the datasheet was never read. Nothing was built. ` +
+          `A deployment needs either Vertex credentials, a Gemini API key, or a local model endpoint.`
+        : `No local reader is configured for this air-gapped deployment, so the datasheet was never read. ` +
+          `Nothing was built. Air-gapped mode needs a local model endpoint on a private address.`
+    );
+    this.name = "NoReaderError";
   }
 }
 
@@ -173,7 +200,7 @@ async function extractPart(
   }
 
   const model = await makeExtractionModel(mode);
-  if (!model) return { part, method: "text only", doc, rendered: [] };
+  if (!model) throw new NoReaderError(mode);
 
   // THE SAME DEADLINE `/api/parse` ENFORCES.
   //
@@ -215,6 +242,18 @@ async function extractPart(
       budgetMs
     );
     if (!outcome) return { part, method: "text only", doc, rendered: [] };
+    // THE READER'S ANSWER COULD NOT BE READ, and nothing was filled. Rethrown
+    // the way `SecondPassFailedError` is, so this route answers 503 with a retry
+    // exactly as `/api/parse` does. Reporting a broken reader as a datasheet
+    // that states nothing sends the operator to check the wrong thing.
+    if (outcome.readerUnreadable && outcome.filled.length === 0) {
+      throw new SecondPassFailedError(
+        `The reader answered, but its reply could not be read, so nothing was built from this datasheet. ` +
+          `This is a problem with the reader rather than with the document. Try again, and if it persists ` +
+          `check which model the deployment is pointed at.`,
+        1
+      );
+    }
     // The renders the model was already shown, rather than a second pass over
     // the same pages. The review panel shows a reviewer the page a value was
     // read from, and `runExtraction` has already rasterised exactly those pages.
@@ -230,6 +269,9 @@ async function extractPart(
     // `/api/parse` does; see `SecondPassFailedError`. Degrading here would ship
     // text-layer dimensions as though they had been read off a drawing.
     if (error instanceof SecondPassFailedError) throw error;
+    // THE DEPLOYMENT'S OWN SPEND CEILING, rethrown the same way, so the caller
+    // answers with the reason rather than a record the reader never touched.
+    if (error instanceof SpendLimitReached) throw error;
     // The record is still useful; a model outage must not lose it. A deadline is
     // reported as what it is rather than as a failure, because the two call for
     // different actions: one is retryable, the other means this document is too
@@ -343,6 +385,24 @@ export async function POST(request: Request) {
     // We fetched the wrong document. NOT retryable, because re-running finds the
     // same page again; the user uploading the datasheet is what fixes it, and
     // saying so is the whole point of separating this from a read failure.
+    // Not retryable: nothing about this request changes until an operator
+    // configures a reader, so offering "try again" would send them round a loop.
+    if (error instanceof NoReaderError) {
+      return NextResponse.json<RetrievalError>(
+        {
+          error: error.message,
+          code: "MODEL_UNAVAILABLE",
+          mode,
+          // RETRIEVAL STILL SUCCEEDED, so it is still reported. Finding the
+          // right PDF and reading it are two jobs, and failing the second is no
+          // reason to throw away the answer to the first: the resolver that won,
+          // the URL it found and the digest of the bytes are what an audit trail
+          // needs, and they are true whether or not a reader ran.
+          ...(ref ? { source: toRetrievalSource(ref, "resolver", resolver.name) } : {})
+        },
+        { status: 503 }
+      );
+    }
     if (error instanceof WrongDocumentError) {
       return NextResponse.json<RetrievalError>(
         { error: error.message, code: "NOT_A_DATASHEET", mode },
@@ -351,6 +411,13 @@ export async function POST(request: Request) {
     }
     // Not retryable for the same reason: the resolver will find the same
     // document again. The user supplying the right PDF is what fixes it.
+    if (error instanceof SpendLimitReached) {
+      console.error("spend ceiling reached", error.message);
+      return NextResponse.json(
+        { error: error.message, code: "SPEND_LIMIT_REACHED", retryable: false, mode },
+        { status: 402 }
+      );
+    }
     if (error instanceof WrongPartError) {
       return NextResponse.json<RetrievalError>(
         { error: error.message, code: "WRONG_PART_DATASHEET", mode },

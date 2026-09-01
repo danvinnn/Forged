@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import FootprintPreview from "./FootprintPreview";
 import { isUntraceable, userEdited } from "../lib/provenance";
 import type { Extracted, ExportFormat, LeadWidth, PartRecord, PinRecord } from "../lib/types";
 // Runtime import, and safe in the browser bundle: `packagevariants.ts` imports
@@ -11,6 +12,7 @@ import { declaredLeadCount, pinTableFor } from "../lib/packagevariants";
 import type { DeploymentMode } from "../lib/retrieval";
 // Type-only for the same reason: `exporters.ts` reaches the CAD generators.
 import type { PackageChoice, PackageOption, RequiredInput } from "../lib/exporters";
+import type { FootprintGeometry } from "../lib/geometry";
 import {
   SETTINGS_FIELDS,
   missingRequired,
@@ -19,7 +21,7 @@ import {
   settingsComplete,
   type ForgeSettings
 } from "../lib/settings";
-import { isRangeField, labelForField, parseRange, type ReviewItem } from "../lib/review";
+import { isRangeField, labelForField, parseRange, shownRecord, type ReviewItem } from "../lib/review";
 import type { Confirmation } from "../lib/confirm";
 import type { ConfidenceCheck } from "../lib/confidence";
 // Type-only: `pagerender.ts` dynamically imports mupdf, which must not follow
@@ -350,6 +352,15 @@ export default function HomePage() {
    * UI had just written in.
    */
   const [chosenPackage, setChosenPackage] = useState<string | null>(null);
+  /**
+   * The footprint a BUILD produced, when one has been run with answers.
+   *
+   * The chooser carries a geometry per package and that covers every part that
+   * ships without a question. A part that had to be asked has none until it is
+   * answered - and every ceramic flat pack is asked - so after an answer the
+   * screen fetches exactly the build it would download and draws that.
+   */
+  const [builtGeometry, setBuiltGeometry] = useState<FootprintGeometry | null>(null);
 
   // Values the export asked for. Empty unless the last attempt came back 422.
   const [pendingNeeds, setPendingNeeds] = useState<RequiredInput[]>([]);
@@ -491,10 +502,17 @@ export default function HomePage() {
       ...(clean.formedLeadSpanMm !== undefined ? { formedLeadSpanMm: clean.formedLeadSpanMm } : {}),
       ...(clean.formedLeadContactMm !== undefined ? { formedLeadContactMm: clean.formedLeadContactMm } : {})
     }));
-    if (!settingsComplete(clean)) return;
-    setSettingsOpen(false);
+    // CLOSED ONLY IF EVERYTHING TYPED WAS ACCEPTED.
+    //
+    // A save that refused a value must leave the box on screen beside the
+    // sentence explaining the refusal, or the two never meet - which is the
+    // defect the `rejected` message above was written for, reintroduced one
+    // line down. Nothing else blocks on these fields any more, so an EMPTY
+    // field closes the panel quite happily; only a value we would not take
+    // keeps it open.
+    if (rejected.length === 0) setSettingsOpen(false);
 
-    // The gate is open, so run whatever it turned away. `clean` is passed
+    // Run whatever was held while the panel was open. `clean` is passed
     // explicitly for the same reason `handleExport` passes its answers: the
     // state set above is not visible to a handler queued from this one, and
     // `handleFile` would read the settings it had before the Save.
@@ -542,6 +560,59 @@ export default function HomePage() {
   );
 
   /**
+   * The chooser succeeded and every package it returned is `unsupported`.
+   *
+   * ONE VALUE, read by both the verdict card and the Build button, because the
+   * two disagreeing is the defect. `packageChoice.ok` is true in this state - the
+   * record resolved and options were produced - so the button's own condition
+   * saw nothing wrong and stayed live under a card that had just said nothing
+   * could be built. Found on RTAX2000S, 2026-08-30, where pressing it produced a
+   * refusal at the last click.
+   */
+  const nothingBuildable = useMemo(
+    () => packageOutcomes.size > 0 && [...packageOutcomes.values()].every((option) => option.status === "unsupported"),
+    [packageOutcomes]
+  );
+
+  /**
+   * THE PACKAGES TO OFFER, from the drawings the document actually gave us.
+   *
+   * ## Two lists, and the screen was reading the weaker one
+   *
+   * `packageVariants` is a scan of the ordering table's TEXT: a designator, a
+   * family and a lead count, with no drawing and no dimensions behind it.
+   * `packagesInThisDocument` is one entry per package the reader LOCATED, each
+   * with its own pin table, its own outline drawing and its own printed land
+   * pattern. `packageOptions` builds from the second and it is what `/api/export`
+   * will accept.
+   *
+   * The chooser rendered the first. Measured on OPA333 on 2026-08-28: two
+   * variants scanned from the ordering table against FIVE located tables, all
+   * five of which build a complete bundle. So three packages a user could have
+   * had - SC70 (DCK0005A), VSON (DRB0008B) and VSSOP (DGK0008A), each with a
+   * pinout and seventeen cited dimensions on the record - were never offered,
+   * and the heading said "2 were read from this datasheet" above a document that
+   * had given up five.
+   *
+   * Same shape as `forge-false-claims-about-documents`: a confident sentence
+   * about what a datasheet contains, printed beside the evidence that it
+   * contains more.
+   *
+   * Falls back to the scanned list when the chooser has not run or could not
+   * build, because then it is the only list there is.
+   */
+  const choosable = useMemo(() => {
+    if (packageChoice?.ok && packageChoice.options.length > 0) {
+      return packageChoice.options.map((option) => ({
+        designator: option.designator,
+        family: option.family,
+        leadCount: option.leadCount
+      }));
+    }
+    return offeredVariants;
+  }, [packageChoice, offeredVariants]);
+
+  /**
    * The questions we ALREADY know the answer to, before anything is pressed.
    *
    * `packageOptions` runs the real footprint generator once per package when the
@@ -564,6 +635,29 @@ export default function HomePage() {
   }, [packageChoice, activePackage]);
 
   const shownNeeds = pendingNeeds.length > 0 ? pendingNeeds : knownNeeds;
+
+  /**
+   * THE FOOTPRINT TO DRAW: the one that would come out if Build were pressed.
+   *
+   * Read off the option the user is actually holding, so choosing a different
+   * package redraws it with no round trip - `packageOptions` already built every
+   * one of them on the server, against the real generator.
+   *
+   * Falls back to the single offer, and to nothing at all when the record has
+   * not resolved to a package. Never to "the first one that happens to have
+   * geometry": a picture of a package the user did not choose is the drift this
+   * whole path was built to avoid.
+   */
+  const previewGeometry = useMemo(() => {
+    // A build that has actually run wins: it is the only one that knows what the
+    // user typed. The chooser's geometry was computed before any question was
+    // answered.
+    if (builtGeometry) return builtGeometry;
+    if (!packageChoice?.ok) return null;
+    const chosen = packageChoice.options.find((option) => option.designator === activePackage);
+    const option = chosen ?? (packageChoice.options.length === 1 ? packageChoice.options[0] : undefined);
+    return option?.geometry ?? null;
+  }, [builtGeometry, packageChoice, activePackage]);
 
   /**
    * The outstanding questions, gathered under the page each is answered from.
@@ -620,7 +714,17 @@ export default function HomePage() {
   const openChecks = checks.filter((check) => check.state !== "pass");
   const blockingReview = review.filter((item) => item.blocking);
   const sourceUrl = formatSourceUrl(part.sourceUrl);
-  const pins = part.pins.value ?? [];
+  /**
+   * WHAT TO SHOW, for the package on screen. See `shownRecord`.
+   *
+   * Everything below reads `shown` rather than `part.dimensions` and
+   * `part.pins`, because on a family datasheet those are empty and the values
+   * the user is about to export live in the per-package entry. Rendering the
+   * flat block told an engineer every dimension was "not read" beside a zip
+   * that contained all of them.
+   */
+  const shown = shownRecord(part, activePackage);
+  const pins = shown.pins;
   /**
    * THE ONE THING THE SCREEN HAS TO SAY AFTER A READ.
    *
@@ -686,7 +790,7 @@ export default function HomePage() {
         tone: "check",
         headline: `Not enough was read to build anything: ${named.join(" and ")}.`,
         detail:
-          offeredVariants.length > 1
+          choosable.length > 1
             ? "Choosing the exact package below re-reads the datasheet for it, which usually finds them."
             : "A read varies: the same document can give up its pinout on a second pass. Failing that, a different revision often does.",
         // TOLD WHAT TO DO, AND GIVEN THE MEANS.
@@ -696,15 +800,49 @@ export default function HomePage() {
         // back, re-pick the same file, and press Read. Reported 2026-08-25:
         // "what am I supposed to do with this?" Advice a screen will not act on
         // is the dead end the settings gate already was.
-        ...(offeredVariants.length > 1 ? {} : { action: "re-read" as const })
+        ...(choosable.length > 1 ? {} : { action: "re-read" as const })
       };
     }
-    if (offeredVariants.length > 1 && chosenPackage === null && part.packageType.value === null) {
+    // NOT READY IF NOTHING ON OFFER CAN BE BUILT.
+    //
+    // The verdict consulted the review list, the questions and the chooser's own
+    // `ok` flag, and none of those catches a record where the chooser succeeded
+    // and every package it returned is `unsupported`. On LM139AQML-SP that is
+    // exactly the state: four packages offered, four badged "cannot build", an
+    // empty review list, and this line therefore announcing "Ready to build."
+    // above them. A rad-hard engineer spent eight attempts on it, was refused at
+    // the last click every time, and reported the banner and the cards
+    // contradicting each other with no way to tell which was right.
+    //
+    // Read off the OUTCOMES the cards are already drawn from, so the headline
+    // and the cards beneath it cannot disagree - the same rule `optionFor`
+    // exists to keep between the chooser and the export, applied one layer up.
+    //
+    // AHEAD OF "which package?", moved 2026-08-30. It sat after it, so a
+    // document offering several packages of which NONE can be built told the
+    // user to pick one - and the Build button under it stayed live, because
+    // the chooser's own `ok` flag was true. Found by driving RTAX2000S
+    // through a browser: three CQFP packages, all three `unsupported`, the
+    // card reading "Which package? 3 were read from this datasheet", and the
+    // export refusing at the last click. Asking somebody to choose between
+    // three things that do not work is the same defect as promising "Ready
+    // to build" above them, reached by a different branch.
+    if (nothingBuildable) {
+      return {
+        tone: "check",
+        headline: "No package in this datasheet can be built yet.",
+        detail:
+          `All ${packageOutcomes.size} were read, and each is short of something the footprint needs. Open a card ` +
+          `to see what is missing for that package.`
+      };
+    }
+
+    if (choosable.length > 1 && chosenPackage === null && part.packageType.value === null) {
       return {
         tone: "choose",
         // COUNTS WHAT WAS READ. "This datasheet describes N" asserts the list is
         // complete, and it is the list this run produced.
-        headline: `Which package? ${offeredVariants.length} were read from this datasheet.`,
+        headline: `Which package? ${choosable.length} were read from this datasheet.`,
         detail:
           "A footprint is a manufacturing instruction for one package, so this is the one choice nothing can make for you."
       };
@@ -745,14 +883,15 @@ export default function HomePage() {
     };
   }, [
     packageChoice,
-    offeredVariants.length,
+    choosable.length,
     chosenPackage,
     part.packageType.value,
     shownNeeds.length,
     blockingReview.length,
     toCheck.length,
     part.notes,
-    offeredVariants.length
+    packageOutcomes,
+    nothingBuildable
   ]);
 
   // ---------------------------------------------------------------------------
@@ -775,6 +914,9 @@ export default function HomePage() {
       setOfferedVariants(record.packageVariants);
       setPackageChoice((payload.packageChoice as PackageChoice) ?? null);
       setChosenPackage(null);
+      // A NEW READING IS A NEW PART. A drawing left over from the last one is
+      // the worst kind of stale: it looks like an answer about this datasheet.
+      setBuiltGeometry(null);
     }
   }
 
@@ -829,19 +971,28 @@ export default function HomePage() {
     setSelectedFile(file);
     if (!file) return;
 
-    // THE FIRST RUN IS GATED ON THE SETTINGS, per RULES.md 3.
+    // NO SETTINGS GATE. Removed 2026-08-28, and this comment is what it is
+    // replaced by, because the gate was defended here for months.
     //
-    // Enforced here rather than only by disabling the input: a drop target, a
-    // paste and a lookup all reach this function, and a rule written on one of
-    // three doors is not a rule. Fields a published standard answers are not
-    // part of this; only the ones nothing else can answer.
-    if (!settingsComplete(using)) {
-      setSettingsOpen(true);
-      // HELD, not dropped. See `heldByGate`.
-      setHeldByGate({ file, packageType });
-      setStatus("Set up your assembly line first, then this datasheet runs on its own.");
-      return;
-    }
+    // The two forming-die numbers had to be filled in before ANY datasheet could
+    // be read, on the reasoning that no default for them could be anything but
+    // invented. That reasoning is right about the numbers and wrong about when
+    // to ask. An engineer trying the product on a plastic SOT-23 op-amp was
+    // stopped thirty seconds in by two questions about a ceramic flat pack's
+    // forming die, with no way to say "not applicable", and got past them by
+    // making two numbers up. A screen that exists to enforce RULES.md 1 caused
+    // the exact invention it forbids.
+    //
+    // Measured the same day with both fields blank: all five of OPA333's
+    // packages still ship, and RHF310A - a ceramic flat pack - comes back
+    // `needs-input` naming `formedLeadSpanMm` and `formedLeadContactMm`
+    // precisely. The product already asks for them when a part cannot be built
+    // without them, with that part on screen, which is where the question means
+    // something.
+    //
+    // `heldByGate` stays: a datasheet dropped while the settings panel is open
+    // is still held and run on save, so the flow for someone who DOES want to
+    // set up first is unchanged.
     setHeldByGate(null);
 
     setBusy(true);
@@ -854,7 +1005,15 @@ export default function HomePage() {
       if (packageType) formData.append("packageType", packageType);
       // See the lookup call above: the chooser cannot avoid asking for what it
       // has not been told.
-      formData.append("settings", JSON.stringify(settingsFor()));
+      //
+      // `using` RATHER THAN STATE. A React state update is not visible to a
+      // handler queued from the one that made it, so a datasheet held while the
+      // settings panel was open and run on Save would have posted the settings
+      // from BEFORE the save. That is why `handleFile` takes them as an
+      // argument; it took them and then read state anyway. Same defect shape as
+      // `handleExport`'s `install` parameter, which documents itself for the
+      // identical reason four hundred lines down.
+      formData.append("settings", JSON.stringify({ ...using, ...installAnswers }));
 
       const response = await fetch("/api/parse", { method: "POST", body: formData });
       const payload = await response.json();
@@ -929,6 +1088,8 @@ export default function HomePage() {
     // elsewhere for the same reason: a forming die belongs to the assembler and
     // not to the package. They are not in this map.
     setSupplied({});
+    // Same rule as a new reading: the drawing belonged to the package being left.
+    setBuiltGeometry(null);
 
     const table = pinTableFor(part.packagesInThisDocument, designator);
     // Rows, specifically. An entry may carry this package's MEASUREMENTS and no
@@ -1001,11 +1162,25 @@ export default function HomePage() {
           // makes `/api/export` apply `asPackage`, which is the only place the
           // relabelling rule is written.
           ...(chosenPackage ? { packageType: chosenPackage } : {}),
+          // THE MORE SPECIFIC ANSWER WINS, and the order here is the whole rule.
+          //
+          // Install-scoped answers first, so a remembered value is still sent on
+          // an export the user started without answering anything this time.
+          // Then the answers given for THIS part, which override them.
+          //
+          // These were the other way round, and it made a question unanswerable.
+          // A ceramic flat pack whose body is wider than the assembler's one
+          // install-wide seated span is asked for a span FOR THAT PACKAGE; the
+          // user types it, `handleSupplyNeed` puts it in `answers` - and
+          // `...install` then overwrote it with the very number that could not
+          // work. The screen asked again, in the same words, forever.
+          //
+          // Found on 2026-08-29 by driving the question flow in a browser for
+          // the first time: the bench's selector for the answer boxes had never
+          // matched anything, so this path had never once been exercised.
+          ...install,
           // Every answered question, under the field name the refusal used.
           ...answers,
-          // Install-scoped answers last, so a remembered value is sent even on
-          // an export the user started without answering anything this time.
-          ...install,
           // THE INSTALLATION'S SETTINGS. Until 2026-08-19 the density level had
           // no way to reach the server at all: `ExportOptions.densityLevel` had
           // existed since the generator did and no caller ever set it, so every
@@ -1212,6 +1387,49 @@ export default function HomePage() {
     // The freshly typed answer is passed alongside the remembered ones, because
     // a React state update is not visible to the handler that queued it.
     await handleExport(nextInstall, answers);
+    // AND THEN DRAW WHAT THAT ANSWER PRODUCED.
+    //
+    // Until now a part that had to be asked something was answered blind and
+    // downloaded blind: the chooser's per-package geometry is computed before any
+    // answer exists, so the preview had nothing to show on exactly the parts this
+    // product is for. Asking the export route for the same build it just ran is
+    // free of any model call and cannot disagree with the files, because it IS
+    // the files' own geometry.
+    await refreshPreview(nextInstall, answers);
+  }
+
+  /**
+   * Ask the export route to hand back the geometry rather than the bytes.
+   *
+   * Never allowed to fail anything: a missing picture is a missing picture, and
+   * the build it describes has already succeeded or already been refused on its
+   * own terms.
+   */
+  async function refreshPreview(
+    install: Record<string, number> = installAnswers,
+    answers: Record<string, number | string> = supplied
+  ) {
+    try {
+      const response = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          part,
+          format: selectedFormat,
+          preview: true,
+          ...(chosenPackage ? { packageType: chosenPackage } : {}),
+          ...install,
+          ...answers,
+          settings
+        })
+      });
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (payload?.geometry) setBuiltGeometry(payload.geometry as FootprintGeometry);
+    } catch {
+      // A drawing is a convenience. Failing to fetch one must not disturb a
+      // screen whose export has already answered.
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1240,9 +1458,9 @@ export default function HomePage() {
               <h2 className="step-title" id="settings-title">Your assembly line</h2>
             </div>
             <p className="hint">
-              {settingsComplete(settings)
-                ? "These apply to every part you build."
-                : "Set these before your first datasheet. They describe your process, so no datasheet can answer them."}
+              These apply to every part you build. The two forming-die numbers describe your process rather than any
+              part, so no datasheet can answer them; leave them blank and you will be asked only if a package turns up
+              that cannot be built without them.
             </p>
 
             <div className="settings">
@@ -1253,7 +1471,7 @@ export default function HomePage() {
                   <label className="setting" key={field.key}>
                     <span className="setting-label">
                       {field.label}
-                      {required ? <em className="req"> required</em> : null}
+                      {required ? <em className="req"> no standard answers this</em> : null}
                     </span>
                     {field.key === "densityLevel" ? (
                       <select
@@ -1313,14 +1531,18 @@ export default function HomePage() {
               >
                 Save settings
               </button>
-              {settingsComplete(settings) && (
-                <button type="button" className="ghost" onClick={() => setSettingsOpen(false)}>
-                  Close
-                </button>
-              )}
+              <button type="button" className="ghost" onClick={() => setSettingsOpen(false)}>
+                Close
+              </button>
               {missingRequired(settings).length > 0 && (
                 <span className="hint">
-                  {missingRequired(settings).length} still needed before the first datasheet.
+                  {/* NOT "still needed". Nothing is blocked on these; see `handleFile`.
+                      The old wording counted down to a gate that no longer exists, and
+                      it did not recount as the boxes were filled, so it told a user
+                      they had answered nothing while they were typing. */}
+                  {missingRequired(settings).length === 1
+                    ? "One is unanswered. Forge will ask for it if a part needs it."
+                    : `${missingRequired(settings).length} are unanswered. Forge will ask for them if a part needs them.`}
                 </span>
               )}
             </div>
@@ -1485,11 +1707,11 @@ export default function HomePage() {
                         reading "0 pins", is three numbers disagreeing on one
                         screen. Reported 2026-08-25 from a screenshot. */}
                     <dd>
-                      {part.pinCount.value === null
+                      {part.pinCount.value === null && pins.length === 0
                         ? "—"
-                        : (part.pins.value?.length ?? 0) === 0
+                        : pins.length === 0
                           ? `${part.pinCount.value}, no pinout`
-                          : part.pinCount.value}
+                          : (part.pinCount.value ?? pins.length)}
                     </dd>
                   </div>
                   <div>
@@ -1498,7 +1720,7 @@ export default function HomePage() {
                   </div>
                   <div>
                     <dt>Mounting</dt>
-                    <dd>{part.dimensions.mounting.value ?? "—"}</dd>
+                    <dd>{shown.dimensions.mounting.value ?? "—"}</dd>
                   </div>
                   <div>
                     <dt>Source</dt>
@@ -1538,6 +1760,17 @@ export default function HomePage() {
                     )}
                   </span>
                 </p>
+
+                {/* THE FOOTPRINT, DRAWN, directly under the verdict.
+                    Placed here on purpose: this is the moment the person decides
+                    whether to trust the reading, and every other thing on this
+                    screen is a number. A picture answers "is this the part" in
+                    two seconds; a table of millimetres does not answer it at
+                    all. See `FootprintPreview` for why it draws the geometry
+                    that ships rather than one of its own. */}
+                {previewGeometry && (
+                  <FootprintPreview geometry={previewGeometry} source={previewGeometry.provenance.source} />
+                )}
               </div>
 
 
@@ -1555,7 +1788,19 @@ export default function HomePage() {
                   <summary className="checks-head">
                     {failedChecks.length > 0
                       ? `${failedChecks.length} consistency check${failedChecks.length === 1 ? "" : "s"} failed`
-                      : `All ${checks.filter((c) => c.state === "pass").length} runnable consistency checks passed`}
+                      : /* WHAT COULD NOT RUN IS PART OF THE ANSWER.
+                           This counted the PASSING checks and called them "all runnable", so a
+                           record where two passed and six were unavailable read as "All 2
+                           runnable consistency checks passed" while the manifest in the same
+                           bundle said "2 of 8 checks passed, 6 could not run on this record".
+                           The engineer who found that put it plainly: the manifest is honest and
+                           the screen is not, and the six that did not run included the two they
+                           cared about. */
+                        checks.length === checks.filter((c) => c.state === "pass").length
+                        ? `All ${checks.length} consistency checks passed`
+                        : `${checks.filter((c) => c.state === "pass").length} of ${checks.length} consistency checks passed, ${
+                            checks.filter((c) => c.state !== "pass").length
+                          } could not run`}
                   </summary>
                   {openChecks.length > 0 && (
                     <ul>
@@ -1707,7 +1952,7 @@ export default function HomePage() {
             )}
 
             {/* 4. PACKAGE ----------------------------------------------------- */}
-            {offeredVariants.length > 1 && (
+            {choosable.length > 1 && (
               <section className="step">
                 <div className="step-head">
                   <span className="step-eyebrow">Choose</span>
@@ -1719,7 +1964,7 @@ export default function HomePage() {
                 </p>
 
                 <ul className="packages">
-                  {offeredVariants.map((variant) => {
+                  {choosable.map((variant) => {
                     const outcome: PackageOption | undefined = packageOutcomes.get(variant.designator);
                     const active = activePackage === variant.designator;
                     return (
@@ -1802,7 +2047,7 @@ export default function HomePage() {
                      one big blue button on the page, which is the screen
                      telling a person to do a thing it has just told them will
                      not work. Reported 2026-08-25 from a screenshot. */
-                  disabled={busy || !part.partNumber.value || (packageChoice ? !packageChoice.ok : false)}
+                  disabled={busy || !part.partNumber.value || (packageChoice ? !packageChoice.ok : false) || nothingBuildable}
                 >
                   Build library
                 </button>
@@ -1857,13 +2102,32 @@ export default function HomePage() {
                   <p className="blocked-why">
                     {exportBlocked.kind === "untraceable" ? (
                       <>
-                        A value nobody can locate cannot be signed off, so it is not built into copper. Open each one
-                        under <strong>Worth a look</strong> above, check it against the page it claims, and confirm it.
+                        {/* NAMED AS THE SECTION IS ACTUALLY HEADED, and only when it is on
+                            screen at all. This said "Worth a look", which is not the heading of
+                            any section on this page - the list is headed "The reading", and a
+                            different section is headed "Worth a glance". An engineer following
+                            the instruction on 2026-08-28 found no such section, and for their
+                            part the reading list was not rendered either, so the sentence was a
+                            dead end twice over: a refusal that tells the user to go and do
+                            something they cannot do is a refusal with no way out. */}
+                        A value nobody can locate cannot be signed off, so it is not built into copper.{" "}
+                        {review.length > 0 ? (
+                          <>
+                            Open each one under <strong>The reading</strong> above, check it against the page it
+                            claims, and confirm it.
+                          </>
+                        ) : (
+                          <>
+                            These were read without a page to point at, and this datasheet gave us nothing to show you
+                            beside them. Supply them yourself on the package you want, or try a datasheet revision that
+                            prints the drawing.
+                          </>
+                        )}
                       </>
                     ) : (
                       <>
                         A footprint is a manufacturing instruction, so these are not guessed.{" "}
-                        {offeredVariants.length > 1
+                        {choosable.length > 1
                           ? "Choosing the exact package above re-reads the datasheet for it, which usually finds them."
                           : "Reading the datasheet again sometimes finds them, and a different revision of the document often does."}
                       </>
@@ -1911,7 +2175,20 @@ export default function HomePage() {
                               ? { max: need.field === "formedLeadContactMm" ? MAX_FORMED_CONTACT_MM : MAX_LEAD_SPAN_MM }
                               : {})}
                             value={needValues[need.field] ?? ""}
-                            placeholder={need.unit === "counts" ? "6,6,6,5" : need.unit === "count" ? "2" : "1.55"}
+                            /* THE UNIT, NEVER AN EXAMPLE VALUE.
+                               This seeded every millimetre box with "1.55" - the same hint
+                               for a seated foot, where 1.55 mm is plausible, and for a
+                               toe-to-toe span, where on an 8-lead flat pack it is impossible.
+                               A rad-hard engineer using the product on 2026-08-28 called it
+                               "an invitation to type a wrong number". The bounds the settings
+                               panel shows were missing here too, so they are shown now. */
+                            placeholder={
+                              need.unit === "counts"
+                                ? "6,6,6,5"
+                                : need.unit === "count"
+                                  ? "how many"
+                                  : need.unit ?? "mm"
+                            }
                             onChange={(event) =>
                               setNeedValues((current) => ({ ...current, [need.field]: event.target.value }))
                             }
@@ -1970,22 +2247,22 @@ export default function HomePage() {
                     <h3>Package</h3>
                     <table className="facts">
                       <tbody>
-                        <Row label="Body length" unit="mm" field={part.dimensions.bodyLengthMm} />
-                        <Row label="Body width" unit="mm" field={part.dimensions.bodyWidthMm} />
-                        <Row label="Body height" unit="mm" field={part.dimensions.bodyHeightMm} />
-                        <Row label="Pitch" unit="mm" field={part.dimensions.pitchMm} />
-                        <Row label="Lead span" unit="mm" field={part.dimensions.leadSpanMm} />
-                        <Row label="Lead span, other axis" unit="mm" field={part.dimensions.leadSpanCrossMm} />
-                        <Row label="Lead width" unit="mm" field={part.dimensions.leadWidthMm} />
-                        <Row label="Lead length" unit="mm" field={part.dimensions.leadLengthMm} />
-                        <Row label="Seated foot" unit="mm" field={part.dimensions.leadContactMm} />
-                        <Row label="Lead form" field={part.dimensions.leadForm} />
-                        <Row label="Mounting" field={part.dimensions.mounting} />
-                        <Row label="Lead diameter" unit="mm" field={part.dimensions.leadDiameterMm} />
-                        <Row label="Sides with leads" field={part.dimensions.leadSides} />
-                        <Row label="Leads per side" field={part.dimensions.leadsPerSide} />
-                        <Row label="Empty grid position" field={part.dimensions.vacantLeadSlot} />
-                        <Row label="Lead count" field={part.dimensions.leadCount} />
+                        <Row label="Body length" unit="mm" field={shown.dimensions.bodyLengthMm} />
+                        <Row label="Body width" unit="mm" field={shown.dimensions.bodyWidthMm} />
+                        <Row label="Body height" unit="mm" field={shown.dimensions.bodyHeightMm} />
+                        <Row label="Pitch" unit="mm" field={shown.dimensions.pitchMm} />
+                        <Row label="Lead span" unit="mm" field={shown.dimensions.leadSpanMm} />
+                        <Row label="Lead span, other axis" unit="mm" field={shown.dimensions.leadSpanCrossMm} />
+                        <Row label="Lead width" unit="mm" field={shown.dimensions.leadWidthMm} />
+                        <Row label="Lead length" unit="mm" field={shown.dimensions.leadLengthMm} />
+                        <Row label="Seated foot" unit="mm" field={shown.dimensions.leadContactMm} />
+                        <Row label="Lead form" field={shown.dimensions.leadForm} />
+                        <Row label="Mounting" field={shown.dimensions.mounting} />
+                        <Row label="Lead diameter" unit="mm" field={shown.dimensions.leadDiameterMm} />
+                        <Row label="Sides with leads" field={shown.dimensions.leadSides} />
+                        <Row label="Leads per side" field={shown.dimensions.leadsPerSide} />
+                        <Row label="Empty grid position" field={shown.dimensions.vacantLeadSlot} />
+                        <Row label="Lead count" field={shown.dimensions.leadCount} />
                       </tbody>
                     </table>
 
@@ -2001,16 +2278,16 @@ export default function HomePage() {
                     */}
                     <table className="facts">
                       <tbody>
-                        <Row label="Land length" unit="mm" field={part.dimensions.landPadLengthMm} />
-                        <Row label="Land width" unit="mm" field={part.dimensions.landPadWidthMm} />
-                        <Row label="Centre span" unit="mm" field={part.dimensions.landSpanMm} />
-                        <Row label="Centre span, other axis" unit="mm" field={part.dimensions.landSpanCrossMm} />
-                        <Row label="Mask expansion" unit="mm" field={part.dimensions.solderMaskExpansionMm} />
-                        <Row label="Mask defined by" field={part.dimensions.solderMaskDefined} />
-                        <Row label="Exposed pad length" unit="mm" field={part.dimensions.thermalPadLengthMm} />
-                        <Row label="Exposed pad width" unit="mm" field={part.dimensions.thermalPadWidthMm} />
-                        <Row label="Via drill" unit="mm" field={part.dimensions.thermalViaDiameterMm} />
-                        <Row label="Via pitch" unit="mm" field={part.dimensions.thermalViaPitchMm} />
+                        <Row label="Land length" unit="mm" field={shown.dimensions.landPadLengthMm} />
+                        <Row label="Land width" unit="mm" field={shown.dimensions.landPadWidthMm} />
+                        <Row label="Centre span" unit="mm" field={shown.dimensions.landSpanMm} />
+                        <Row label="Centre span, other axis" unit="mm" field={shown.dimensions.landSpanCrossMm} />
+                        <Row label="Mask expansion" unit="mm" field={shown.dimensions.solderMaskExpansionMm} />
+                        <Row label="Mask defined by" field={shown.dimensions.solderMaskDefined} />
+                        <Row label="Exposed pad length" unit="mm" field={shown.dimensions.thermalPadLengthMm} />
+                        <Row label="Exposed pad width" unit="mm" field={shown.dimensions.thermalPadWidthMm} />
+                        <Row label="Via drill" unit="mm" field={shown.dimensions.thermalViaDiameterMm} />
+                        <Row label="Via pitch" unit="mm" field={shown.dimensions.thermalViaPitchMm} />
                       </tbody>
                     </table>
                   </div>

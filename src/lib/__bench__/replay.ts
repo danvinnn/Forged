@@ -34,7 +34,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createExportZip, FootprintUnavailableError } from "../exporters";
 import { lastRowIsNumberedThermalPad } from "../extraction/merge";
-import { type LeadWidth, type PinRecord, type ResolvedPart } from "../types";
+import { pinTypeFrom, type LeadWidth, type PartRecord, type PinRecord, type ResolvedPart } from "../types";
 
 const CACHE_DIR = join(process.cwd(), ".model-cache");
 
@@ -158,7 +158,7 @@ function pinsFrom(value: unknown): { pins: PinRecord[]; exposedPad: boolean } {
   let exposedPad = false;
   for (const row of value) {
     if (typeof row !== "object" || row === null) continue;
-    const record = row as { number?: unknown; name?: unknown };
+    const record = row as { number?: unknown; name?: unknown; electricalType?: unknown };
     const number = String(record.number ?? "").trim();
     const name = String(record.name ?? "").trim();
     if (!number || !name) continue;
@@ -166,7 +166,11 @@ function pinsFrom(value: unknown): { pins: PinRecord[]; exposedPad: boolean } {
       exposedPad = true;
       continue;
     }
-    pins.push({ number, name, electricalType: "unspecified" });
+    // THE TYPE THE MODEL RETURNED, not a constant. This used to hardcode
+    // `unspecified`, so `bench:pintypes` measured 3114 of 3114 pins as carrying
+    // no electrical type when 878 cached answers do carry one - and every bench
+    // built on this harness, `bench:unchecked` included, was blind to the field.
+    pins.push({ number, name, electricalType: pinTypeFrom(record.electricalType) });
   }
   return { pins, exposedPad };
 }
@@ -216,8 +220,16 @@ function partFrom(label: string, values: Record<string, CachedValue>): ResolvedP
     partNumber: String(at("partNumber") ?? label),
     manufacturer: String(at("manufacturer") ?? "Unknown"),
     packageType: String(at("packageType") ?? "Unknown package"),
-    packageOutlineCode: null,
+    // FROM THE CACHE, which holds it for 667 answers. Hardcoded null until
+    // 2026-08-30, alongside `vendorLandPattern` below, and both matter: the
+    // outline code is how `findVendorLandPattern` tells one drawing in a family
+    // datasheet from another.
+    packageOutlineCode: typeof at("packageOutlineCode") === "string" ? (at("packageOutlineCode") as string) : null,
     jedecOutline: typeof at("jedecOutline") === "string" ? (at("jedecOutline") as string) : null,
+    // NULL HERE, and filled by `replayRecordsWithDocuments` for the benches that
+    // need it. The struct is not a model answer: `withPrintedFootprint` builds
+    // it by reading the datasheet's own printed footprint off the page, so it
+    // needs the document, and this function is deliberately synchronous.
     vendorLandPattern: null,
     pinCount,
     pins,
@@ -291,6 +303,58 @@ export function replayRecords(): ResolvedPart[] {
   for (const [label, values] of [...cachedAnswers()].sort()) {
     const part = partFrom(label, values);
     if (part) out.push(part);
+  }
+  return out;
+}
+
+/**
+ * The same records, WITH the printed footprint the product repairs onto them.
+ *
+ * ## Why this had to exist
+ *
+ * `withPrintedFootprint` is not decoration. It is where the second source for a
+ * land pattern comes from, and `confirmPitch`, `confirmThermalPad` and
+ * `contradictsPrintedLand` all read the struct it writes. A record that has not
+ * been through it carries null, so every check resting on the datasheet's own
+ * printed footprint is inert.
+ *
+ * Measured on 2026-08-30: `bench:unchecked` doubled the pitch of 128 footprints
+ * and reported `0 confirmed, 0 caught, 0 still confirmed` - a row of zeros that
+ * reads as a clean sheet and is an instrument measuring nothing. The pitch was
+ * never CONFIRMED on any part, because confirming it needs the printed
+ * footprint, because `replayRecords` set it to null. The same three-zero row sat
+ * under `thermalPad x2` and `formed span x0.4`.
+ *
+ * `readout.ts` names this exact failure for a different bench in its own header.
+ * It happened again one level down.
+ *
+ * Costs a PDF parse per part, which is why it is not what `replayRecords` does.
+ */
+export async function replayRecordsWithDocuments(): Promise<ResolvedPart[]> {
+  const { documentFor } = await import("./oracle-match");
+  const { withPrintedFootprint } = await import("../readout");
+  const out: ResolvedPart[] = [];
+  for (const part of replayRecords()) {
+    // The label carries the package after a `#`; the document is filed under the
+    // part alone.
+    const doc = await documentFor(part.partNumber.split("#")[0]);
+    if (!doc) {
+      out.push(part);
+      continue;
+    }
+    const repaired = withPrintedFootprint(
+      {
+        vendorLandPattern: null,
+        packageType: { value: part.packageType },
+        packageOutlineCode: { value: part.packageOutlineCode }
+      } as unknown as PartRecord,
+      doc
+    );
+    out.push(
+      repaired.vendorLandPattern && repaired.vendorLandPattern.valuesMm.length > 0
+        ? { ...part, vendorLandPattern: repaired.vendorLandPattern }
+        : part
+    );
   }
   return out;
 }

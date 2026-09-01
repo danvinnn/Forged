@@ -1,6 +1,6 @@
 import { computeLandPattern, COURTYARD_EXCESS } from "./ipc7351";
 import type { ResolvedPart } from "./types";
-import { thermalPadNumber } from "./geometry";
+import { isGridAddressed, thermalPadNumber } from "./geometry";
 import type { FootprintGeometry, SymbolGeometry } from "./geometry";
 
 /**
@@ -130,8 +130,28 @@ function landsClearTheCentre(part: ResolvedPart): ConfidenceCheck {
   if (length === null || span === null) {
     return { ...base, state: "unavailable", detail: "No printed land pattern was read." };
   }
-  const axes: Array<{ what: string; span: number }> = [{ what: "the two rows", span }];
-  if (crossSpan !== null) axes.push({ what: "the other two rows", span: crossSpan });
+  // WHAT IS ACTUALLY IN THE GAP.
+  //
+  // This measured the distance between opposing rows and called the whole of it
+  // "clear board", without ever asking what sits in the middle. On a package
+  // with an exposed pad, most of it does.
+  //
+  // TPS7A4700 built from a 3.9 mm centre span: gap 3.150 mm, exposed pad 3.150
+  // mm square. Twenty lead lands abutting the ground pad, and this check
+  // reported "3.150 mm of clear board between the opposing rows" - the exact
+  // width of the copper filling it. A PCB librarian found it on 2026-08-28 by
+  // unpacking the file and measuring, and rightly called the check blind.
+  //
+  // `thermalPadWidthMm` is the pad's x extent and `thermalPadLengthMm` its y,
+  // which is the placer's convention and the same one `bench:copper` states.
+  // `landSpanMm` is the x spread and `landSpanCrossMm` the y, so each axis is
+  // compared against the pad extent that actually lies across it.
+  const padAcross = part.exposedPad ? part.dimensions.thermalPadWidthMm ?? 0 : 0;
+  const padAlong = part.exposedPad ? part.dimensions.thermalPadLengthMm ?? 0 : 0;
+  const axes: Array<{ what: string; span: number; occupied: number }> = [
+    { what: "the two rows", span, occupied: padAcross }
+  ];
+  if (crossSpan !== null) axes.push({ what: "the other two rows", span: crossSpan, occupied: padAlong });
 
   for (const axis of axes) {
     const gap = axis.span - length;
@@ -143,12 +163,35 @@ function landsClearTheCentre(part: ResolvedPart): ConfidenceCheck {
         consequence: "Every pin on one side would be shorted to the pin opposite it."
       };
     }
+    // The pad sits centred in the gap, so the board either side of it is half
+    // what is left over.
+    const clearance = (gap - axis.occupied) / 2;
+    if (axis.occupied > 0 && clearance <= 0) {
+      return {
+        ...base,
+        state: "fail",
+        detail:
+          `A ${length} mm land on a ${axis.span} mm centre span leaves ${gap.toFixed(3)} mm between ${axis.what}, ` +
+          `and the exposed pad is ${axis.occupied} mm across it. There is ${clearance <= 0 ? "no" : ""} board left ` +
+          `between them${clearance < 0 ? `, by ${(-clearance).toFixed(3)} mm` : ""}.`,
+        consequence:
+          "Every lead land would be continuous copper with the exposed pad, which is usually ground: every pin shorted at once."
+      };
+    }
   }
-  const gaps = axes.map((axis) => `${(axis.span - length).toFixed(3)} mm`).join(" and ");
+  const gaps = axes
+    .map((axis) =>
+      axis.occupied > 0
+        ? `${((axis.span - length - axis.occupied) / 2).toFixed(3)} mm`
+        : `${(axis.span - length).toFixed(3)} mm`
+    )
+    .join(" and ");
   return {
     ...base,
     state: "pass",
-    detail: `${gaps} of clear board between the opposing rows.`
+    detail: padAcross > 0 || padAlong > 0
+      ? `${gaps} of clear board between the lead lands and the exposed pad.`
+      : `${gaps} of clear board between the opposing rows.`
   };
 }
 
@@ -180,7 +223,14 @@ function thermalPadFitsBody(part: ResolvedPart): ConfidenceCheck {
 /** The pin table and the pin count have to describe the same part. */
 function pinTableMatchesCount(part: ResolvedPart): ConfidenceCheck {
   const base = { id: "pins-match-count", label: "Pin table matches the pin count" };
-  const numbered = part.pins.filter((pin) => /^\d+$/.test(pin.number)).length;
+  // A GRID POSITION IS A DESIGNATOR TOO. Counting only `/^\d+$/` reported every
+  // ball-grid part as a table of zero pins against a stated count of a hundred
+  // and forty-three, which is a failed check on a pinout that is entirely
+  // correct. `isGridAddressed` decides on the SHAPE of the table rather than on
+  // the package name; see `geometry.ts`.
+  const numbered = isGridAddressed(part.pins)
+    ? part.pins.length
+    : part.pins.filter((pin) => /^\d+$/.test(pin.number)).length;
   if (numbered === part.pinCount) {
     return { ...base, state: "pass", detail: `${numbered} numbered pins for a ${part.pinCount}-pin part.` };
   }
@@ -401,7 +451,30 @@ function extent(pad: { centre: { xMm: number; yMm: number }; widthMm: number; he
   };
 }
 
-/** Floating-point slack. Two lands that share an edge exactly are not overlapping. */
+/**
+ * Floating-point slack around ZERO CLEARANCE.
+ *
+ * It used to read "two lands that share an edge exactly are not overlapping",
+ * and the test below required a strict overlap wider than this before calling a
+ * short. That sentence is true about rectangles and false about copper: two
+ * features that share an edge are one continuous region, and a fabricator etches
+ * them as one.
+ *
+ * TPS7A4700 is what it cost. Built from a 3.9 mm centre span its twenty lead
+ * lands have an inner edge at 1.575 mm, and its 3.15 mm exposed pad has a half
+ * extent of 1.575 mm. They abut exactly, all twenty of them, so every signal pin
+ * is continuous copper with the ground pad - and this check reported no problem
+ * at all, because nothing overlapped by more than a micron.
+ *
+ * Found 2026-08-28 by a PCB librarian who unpacked the file and measured it:
+ * "a wrong footprint that announces itself is a nuisance; a wrong footprint that
+ * passes its own checks is a recall."
+ *
+ * The slack is now what its name says, an allowance for arithmetic in the last
+ * decimal, and it is applied around zero rather than as permission to touch. No
+ * minimum clearance is invented here: this asserts only that copper which meets
+ * is joined, which is arithmetic rather than a judgement about a fab.
+ */
 const TOUCHING_MM = 1e-6;
 
 /**
@@ -427,8 +500,19 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
   // Checking against the pin TABLE instead made this fire on a record whose
   // table was empty but whose count was known, which is a different defect and
   // one `pins-match-count` above already reports.
-  const wanted = new Set(Array.from({ length: part.pinCount }, (_, index) => String(index + 1)));
-  if (part.exposedPad) wanted.add(thermalPadNumber(part.pinCount));
+  //
+  // A GRID-ADDRESSED PART IS CHECKED AGAINST ITS OWN DESIGNATORS. `A1` is not
+  // 1..N and never will be, so the numbered set would report every land on a
+  // ball-grid array as belonging to no pin of the part. The guarantee is
+  // unchanged and it is the same sentence: one land per terminal the table
+  // lists, and no others. The reason the numbered path reads `pinCount` instead
+  // - a known count with an empty table - cannot arise here, because a grid's
+  // designators ARE the count.
+  const grid = isGridAddressed(part.pins);
+  const wanted = grid
+    ? new Set(part.pins.map((pin) => pin.number))
+    : new Set(Array.from({ length: part.pinCount }, (_, index) => String(index + 1)));
+  if (part.exposedPad && !grid) wanted.add(thermalPadNumber(part.pinCount));
   const seen = new Map<string, number>();
   for (const pad of lands) seen.set(pad.number, (seen.get(pad.number) ?? 0) + 1);
 
@@ -462,7 +546,7 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
   //
   // Skipped for an empty table, which is a different and already-reported gap.
   for (const pin of part.pins) {
-    if (!/^\d+$/.test(pin.number)) continue;
+    if (!grid && !/^\d+$/.test(pin.number)) continue;
     if (!seen.has(pin.number)) {
       problems.push(
         `the pin table lists pin ${pin.number} and no land was placed for it, so that connection does not exist`
@@ -476,13 +560,20 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
     for (let right = left + 1; right < lands.length; right += 1) {
       const a = extent(lands[left]);
       const b = extent(lands[right]);
-      const overlaps =
-        a.x0 < b.x1 - TOUCHING_MM &&
-        b.x0 < a.x1 - TOUCHING_MM &&
-        a.y0 < b.y1 - TOUCHING_MM &&
-        b.y0 < a.y1 - TOUCHING_MM;
-      if (overlaps) {
-        problems.push(`lands ${lands[left].number} and ${lands[right].number} overlap, which shorts them together`);
+      // MEETING COUNTS, NOT ONLY CROSSING. See `TOUCHING_MM`.
+      const joined =
+        a.x0 <= b.x1 + TOUCHING_MM &&
+        b.x0 <= a.x1 + TOUCHING_MM &&
+        a.y0 <= b.y1 + TOUCHING_MM &&
+        b.y0 <= a.y1 + TOUCHING_MM;
+      if (joined) {
+        const apart =
+          Math.max(a.x0 - b.x1, b.x0 - a.x1, a.y0 - b.y1, b.y0 - a.y1);
+        problems.push(
+          apart >= -TOUCHING_MM
+            ? `lands ${lands[left].number} and ${lands[right].number} meet edge to edge, so they are one piece of copper`
+            : `lands ${lands[left].number} and ${lands[right].number} overlap, which shorts them together`
+        );
       }
     }
   }
@@ -546,6 +637,63 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
     if (outside) problems.push(`land ${pad.number || "(paste)"} reaches outside the courtyard`);
   }
 
+  // AND THE BODY, which is the other half of what IPC-7351B says a courtyard
+  // contains: the maximum extent of the land pattern AND the component.
+  //
+  // Only the lands were checked. Found 2026-08-30 by `bench:outputs`, which
+  // swelled the silkscreen body past the courtyard on 86 footprints and had all
+  // 86 pass the gate. The body is the silkscreen outline and the 3D solid, so
+  // one bigger than its own keep-out prints over the neighbouring part's copper
+  // and collides with it in the 3D view, and the board designer trusting the
+  // courtyard has been told the part is smaller than it is.
+  //
+  // `assemble` already sizes the courtyard from the body on both axes, so this
+  // is an internal consistency check rather than a new rule: it can only fire on
+  // a footprint that contradicts its own construction. Measured on the corpus at
+  // 0 of 86 as built, which is what `bench:courtyard` independently reports.
+  if (
+    geometry.body.halfWidthMm > geometry.courtyard.halfWidthMm + TOUCHING_MM ||
+    geometry.body.halfHeightMm > geometry.courtyard.halfHeightMm + TOUCHING_MM
+  ) {
+    problems.push(
+      `the package body is ${(geometry.body.halfWidthMm * 2).toFixed(2)} x ${(geometry.body.halfHeightMm * 2).toFixed(2)} mm ` +
+        `and reaches outside its own courtyard, which is ${(geometry.courtyard.halfWidthMm * 2).toFixed(2)} x ` +
+        `${(geometry.courtyard.halfHeightMm * 2).toFixed(2)} mm`
+    );
+  }
+
+  // EVERY THERMAL VIA SITS ON THE PAD IT DRAINS.
+  //
+  // Nothing in this file mentioned `thermalVias` at all until 2026-08-30, so the
+  // one part in the corpus that emits them - TPS54360, six of them - shipped a
+  // via array nothing had looked at. A via is COPPER and a hole: one drifting
+  // off the thermal pad drills through the board where no land is, and one
+  // drifting far enough reaches a lead land and shorts the pad to a signal.
+  //
+  // Checked against the thermal pad's own extent rather than a tolerance,
+  // because the relationship is exact: the vias exist to carry heat out of that
+  // pad, so a via not on it is not a thermal via.
+  //
+  // Found by `bench:outputs`, which derives its field list from what the
+  // emitters dereference rather than from memory. This was the one field on the
+  // emitted surface with no check anywhere.
+  const pad = geometry.pads.find((entry) => entry.number === thermalPadNumber(part.pinCount));
+  if (pad) {
+    for (const via of geometry.thermalVias) {
+      const outside =
+        Math.abs(via.centre.xMm - pad.centre.xMm) + via.padMm / 2 > pad.widthMm / 2 + TOUCHING_MM ||
+        Math.abs(via.centre.yMm - pad.centre.yMm) + via.padMm / 2 > pad.heightMm / 2 + TOUCHING_MM;
+      if (outside) {
+        problems.push(
+          `a thermal via at (${via.centre.xMm.toFixed(3)}, ${via.centre.yMm.toFixed(3)}) reaches outside the ` +
+            `exposed pad it drains, which is ${pad.widthMm} x ${pad.heightMm} mm at ` +
+            `(${pad.centre.xMm.toFixed(3)}, ${pad.centre.yMm.toFixed(3)})`
+        );
+        break;
+      }
+    }
+  }
+
   // A PLATED HOLE IS NOT PASTED. That joint is made by wave or by hand, and
   // paste in the barrel only fouls it.
   //
@@ -585,18 +733,24 @@ export function geometryViolations(geometry: FootprintGeometry, part: ResolvedPa
 
   // PIN 1 HAS TO BE FINDABLE. A correct footprint placed rotated is as wrong as
   // an incorrect one, and the marker is the only thing that says which way round.
-  const one = lands.find((pad) => pad.number === "1");
+  //
+  // A GRID ARRAY'S FIRST TERMINAL IS CALLED A1. The check is the same and only
+  // the name differs, and it matters MORE here: every land is hidden under the
+  // body once the part is placed and the package is square, so it can be fitted
+  // four ways that look identical on the assembled board.
+  const firstNumber = grid ? "A1" : "1";
+  const one = lands.find((pad) => pad.number === firstNumber);
   if (!one) {
-    problems.push("there is no land for pin 1");
+    problems.push(`there is no land for pin ${firstNumber}`);
   } else {
     const distance = Math.hypot(geometry.pin1Marker.xMm - one.centre.xMm, geometry.pin1Marker.yMm - one.centre.yMm);
     const nearest = Math.min(
       ...lands
-        .filter((pad) => pad.number !== "1")
+        .filter((pad) => pad.number !== firstNumber)
         .map((pad) => Math.hypot(geometry.pin1Marker.xMm - pad.centre.xMm, geometry.pin1Marker.yMm - pad.centre.yMm))
     );
     if (Number.isFinite(nearest) && distance > nearest + TOUCHING_MM) {
-      problems.push("the pin-1 marker sits closer to another land than to pin 1");
+      problems.push(`the pin-1 marker sits closer to another land than to pin ${firstNumber}`);
     }
   }
 
@@ -652,6 +806,51 @@ export function symbolViolations(symbol: SymbolGeometry, part: ResolvedPart): st
   const drawn = new Map<string, number>();
   for (const pin of symbol.pins) drawn.set(pin.number, (drawn.get(pin.number) ?? 0) + 1);
 
+  // A GRID-ADDRESSED PART IS CHECKED AGAINST ITS OWN DESIGNATORS.
+  //
+  // The rule below counts 1..`pinCount` because that is what the FOOTPRINT
+  // places, and it is the right rule for every package this generator can lay
+  // out. A grid array has no pin called 1: its terminals are `A1`, `B2`, `M12`,
+  // and no footprint is emitted for one at all. Running the numbered rule would
+  // report a hundred and forty-three missing pins on a symbol that draws every
+  // terminal the datasheet lists.
+  //
+  // The guarantee is unchanged and is stated in the same terms: one symbol pin
+  // per terminal, exactly once, and nothing drawn that the table does not list.
+  if (isGridAddressed(part.pins)) {
+    const listed = new Set(part.pins.map((pin) => pin.number));
+    for (const pin of part.pins) {
+      const count = drawn.get(pin.number) ?? 0;
+      if (count !== 1) {
+        problems.push(
+          `the pin table lists terminal ${pin.number} ("${pin.name}") and the symbol draws it ${count} times, ` +
+            `so that connection does not exist in the schematic`
+        );
+      }
+    }
+    for (const [number] of drawn) {
+      if (listed.has(number)) continue;
+      problems.push(`the symbol draws a pin ${number} that the pin table does not list`);
+    }
+    // AND THEN THE SAME NAME AND ANCHOR CHECKS AS EVERY OTHER PART.
+    //
+    // This used to return here, and `bench:symbol` found what that let through:
+    // rename one of LP5907's DSBGA pins on the way out, or draw two of them on
+    // one point, and nothing said a word. Both were reported on all 106 other
+    // parts, which is exactly how a hole like this survives - the check works,
+    // and one branch never reaches it.
+    //
+    // What is grid-specific is only which numbers the symbol has to carry.
+    // A name drawn differently from the record and two stubs on one point are
+    // the same defects on a BGA as on a SOIC.
+    return [
+      ...problems,
+      ...renamedPins(symbol, new Map(part.pins.map((entry) => [entry.number, entry.name]))),
+      ...sharedAnchors(symbol),
+      ...pinsWithNothingToWire(symbol)
+    ];
+  }
+
   // ONE SYMBOL PIN PER LAND THE FOOTPRINT PLACES. A pin the symbol omits is a
   // connection that exists on the board and not in the schematic, which is the
   // failure a netlist cannot survive and no geometric check can see.
@@ -701,17 +900,62 @@ export function symbolViolations(symbol: SymbolGeometry, part: ResolvedPart): st
     problems.push(`the symbol draws pin ${number}, which is not one of this part's ${part.pinCount} pins`);
   }
 
-  // AND UNDER THE NAME THE RECORD GIVES IT. A symbol pin renamed on the way out
-  // is a wire connected to the wrong net by a reviewer reading the schematic.
+  problems.push(...renamedPins(symbol, named));
+
+  problems.push(...sharedAnchors(symbol));
+  problems.push(...pinsWithNothingToWire(symbol));
+
+  return problems;
+}
+
+/**
+ * A symbol pin drawn under a different name from the one the record holds.
+ *
+ * A wire connected to the wrong net by a reviewer reading the schematic, and
+ * invisible in every view they would open to check.
+ */
+function renamedPins(symbol: SymbolGeometry, named: ReadonlyMap<string, string>): string[] {
+  const problems: string[] = [];
   for (const pin of symbol.pins) {
     const expected = named.get(pin.number);
     if (expected !== undefined && expected !== pin.name) {
       problems.push(`symbol pin ${pin.number} is drawn as "${pin.name}" and the record reads "${expected}"`);
     }
   }
+  return problems;
+}
 
-  // NO TWO PINS ON ONE POINT. Two stubs at the same anchor are a short the
-  // moment a wire touches either, and they look like one pin on the sheet.
+/**
+ * EVERY PIN HAS SOMETHING TO ATTACH A WIRE TO.
+ *
+ * A pin of zero length is a connection point with no stub: it draws as a bare
+ * label, and the net attached to it in the schematic is attached to nothing.
+ *
+ * The Altium emitter already refuses one - `schlib.ts` throws "has no length, so
+ * it has nothing to attach a wire to" - and the KiCad emitter does not, so the
+ * same symbol was writable in one format and refused in the other. Found
+ * 2026-08-30 by `bench:outputs`: zeroing one pin's length passed the export gate
+ * on 86 of 86 symbols. A rule the two formats disagree about belongs in the gate
+ * they share, not in one emitter.
+ *
+ * Non-finite as well as zero, for the reason the land sizes are checked the same
+ * way: a NaN reaches the file as the characters `NaN`.
+ */
+function pinsWithNothingToWire(symbol: SymbolGeometry): string[] {
+  return symbol.pins
+    .filter((pin) => !Number.isFinite(pin.lengthMm) || pin.lengthMm <= 0)
+    .map(
+      (pin) =>
+        `symbol pin ${pin.number} ("${pin.name}") is ${pin.lengthMm} mm long, so there is nothing to attach a wire to`
+    );
+}
+
+/**
+ * NO TWO PINS ON ONE POINT. Two stubs at the same anchor are a short the moment
+ * a wire touches either, and they look like one pin on the sheet.
+ */
+function sharedAnchors(symbol: SymbolGeometry): string[] {
+  const problems: string[] = [];
   const seen = new Map<string, string>();
   for (const pin of symbol.pins) {
     const at = `${pin.anchor.xMm.toFixed(4)},${pin.anchor.yMm.toFixed(4)}`;
@@ -721,7 +965,6 @@ export function symbolViolations(symbol: SymbolGeometry, part: ResolvedPart): st
     }
     seen.set(at, pin.number);
   }
-
   return problems;
 }
 

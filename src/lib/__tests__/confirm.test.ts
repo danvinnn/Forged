@@ -183,3 +183,82 @@ test("the budget is a hard number and the report states when it is exceeded", ()
   assert.ok(report.flagged.length > MAX_FLAGGED, "this record has nothing corroborated");
   assert.equal(report.overBudget, true);
 });
+
+test("a lead off its copper flags the land pattern, whatever the band says", () => {
+  // Two pages of one datasheet contradicting each other outranks agreement with
+  // IPC-7351B: the band constrains the toe-to-toe extent alone, so a pattern can
+  // sit inside it with its lands in the wrong place.
+  const narrow = part({
+    dimensions: { ...part().dimensions, landPadWidthMm: 0.25 }
+  });
+  const withLands = {
+    ...geometry(AGREES),
+    pads: [
+      { number: "1", centre: { xMm: 2.7, yMm: 0 }, widthMm: 1.55, heightMm: 0.25, shape: "roundrect", mounting: "smd" },
+      { number: "2", centre: { xMm: -2.7, yMm: 0 }, widthMm: 1.55, heightMm: 0.25, shape: "roundrect", mounting: "smd" }
+    ]
+  } as unknown as FootprintGeometry;
+  const item = confirmations(narrow, withLands, null).items.find((entry) => entry.id === "land-pattern")!;
+  assert.equal(item.state, "flagged");
+  assert.equal(item.because, "lead-wider-than-land");
+  assert.match(item.detail, /still overhangs its copper/);
+});
+
+test("a clean overlay does NOT confirm the land pattern on its own", () => {
+  // STM32F103C8 is why. Its UFQFPN48 lands sit on a 6.55 mm span where the
+  // datasheet prints 6.75, and every terminal is still entirely on its copper,
+  // so the overlay is happy about a footprint 0.1 mm out on every pad. Proving
+  // the joint forms is not proving the pattern was read.
+  const clean = {
+    ...geometry(ALONE),
+    pads: [
+      { number: "1", centre: { xMm: 2.7, yMm: 0 }, widthMm: 1.55, heightMm: 0.6, shape: "roundrect", mounting: "smd" },
+      { number: "2", centre: { xMm: -2.7, yMm: 0 }, widthMm: 1.55, heightMm: 0.6, shape: "roundrect", mounting: "smd" }
+    ]
+  } as unknown as FootprintGeometry;
+  const item = confirmations(part(), clean, null).items.find((entry) => entry.id === "land-pattern")!;
+  assert.equal(item.state, "flagged");
+  assert.equal(item.because, "no-printed-footprint");
+});
+
+test("the package name is a second source for how the leads are arranged", () => {
+  // `bench:unchecked` swapped 2 sides for 4 on 86 footprints the product vouched
+  // for, and 59 stayed CONFIRMED. Nothing read the side count off anything but
+  // the drawing it was counted on.
+  const soic = confirmations(part(), geometry(AGREES), null).items.find((item) => item.id === "arrangement")!;
+  assert.equal(soic.state, "confirmed");
+
+  const swapped = part({ dimensions: { ...part().dimensions, leadSides: 4 } });
+  const wrong = confirmations(swapped, geometry(AGREES), null).items.find((item) => item.id === "arrangement")!;
+  assert.equal(wrong.state, "flagged", "a SOIC is not a quad, and the name says so");
+  assert.match(wrong.detail, /SOIC/);
+});
+
+test("a grid array is not asked about lead sides it does not have", () => {
+  // An LGA or a BGA has no sides, `declaredLeadSides` says so, and the layout
+  // comes from the designators. A flag there is a question about a number
+  // nothing uses.
+  const grid = part({
+    pins: ["A1", "A2", "B1", "B2"].map((number) => ({ number, name: number, electricalType: "unspecified" as const })),
+    pinCount: 4
+  });
+  const item = confirmations(grid, geometry(AGREES), null).items.find((entry) => entry.id === "arrangement");
+  assert.equal(item, undefined);
+});
+
+test("a body the printed footprint contradicts is flagged, not confirmed", () => {
+  // The pairing this replaces reads two callouts off ONE drawing and is
+  // one-sided: shrink the body and its own lead span still reaches past it.
+  // `bench:unchecked` left 56 shrunken bodies confirmed. The bound is swept in
+  // `bench:bodysweep`.
+  const shrunk = part({
+    dimensions: { ...part().dimensions, bodyWidthMm: 1.5, bodyLengthMm: 1.9 }
+  });
+  const item = confirmations(shrunk, geometry(AGREES), null).items.find((entry) => entry.id === "body")!;
+  assert.equal(item.state, "flagged");
+  assert.equal(item.because, "printed-footprint-disagrees");
+
+  // And a real body, with the same printed footprint, is untouched.
+  const ok = confirmations(part(), geometry(AGREES), null).items.find((entry) => entry.id === "body")!;
+  assert.equal(ok.state, "confirmed");
+});

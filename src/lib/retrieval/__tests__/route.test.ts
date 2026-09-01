@@ -76,9 +76,18 @@ test("commercial lookup resolves LMP7704-SP end to end", async () => {
   const restoreFetch = mockVendorFetch({ datasheetUrl, pdfBytes: new Uint8Array(REAL_PDF) });
   try {
     const res = await lookupPOST(jsonRequest({ partNumber: "LMP7704-SP", manufacturer: "Texas Instruments" }));
-    assert.equal(res.status, 200);
     const body = await res.json();
-    assert.match(String(body.part.partNumber.value).toUpperCase(), /LMP7704/);
+    // RETRIEVAL IS WHAT THIS TEST GUARDS, and it is credential-free as it always
+    // was: the manufacturer resolver wins from an empty .env, with no
+    // third-party search call.
+    //
+    // Reading is a different job and it needs a reader. With none configured the
+    // route now refuses instead of answering 200 with a record of nulls
+    // (2026-08-29), so the retrieval facts are asserted on whichever answer came
+    // back. They are true either way, which is why the refusal carries them.
+    assert.ok(res.status === 200 || res.status === 503, `unexpected status ${res.status}`);
+    if (res.status === 503) assert.equal(body.code, "MODEL_UNAVAILABLE");
+    else assert.match(String(body.part.partNumber.value).toUpperCase(), /LMP7704/);
     assert.equal(body.source.origin, "resolver");
     // The manufacturer resolver wins, with an empty .env and no third-party search call.
     // Provenance names the concrete resolver rather than the chain.
@@ -128,8 +137,15 @@ test("upload route parses a valid PDF and reports upload provenance", async () =
     form.set("file", new File([new Uint8Array(REAL_PDF)], "LMP7704-SP.pdf", { type: "application/pdf" }));
     const req = new Request("http://test/api/parse", { method: "POST", body: form });
     const res = await parsePOST(req);
-    assert.equal(res.status, 200);
+    // 503 WITH THE PROVENANCE INTACT. No reader is configured in this
+    // environment, and since 2026-08-29 the route refuses rather than handing
+    // back a record of nulls with a 200 on it; see the MODEL_UNAVAILABLE branch.
+    // The upload itself still happened, so what is asserted here - that the file
+    // was received, hashed and reported as an upload rather than a fetch - is
+    // asserted unchanged.
+    assert.equal(res.status, 503);
     const body = await res.json();
+    assert.equal(body.code, "MODEL_UNAVAILABLE");
     assert.equal(body.source.origin, "upload");
     assert.equal(body.source.pdfUrl, undefined);
     assert.match(body.source.sha256, /^[0-9a-f]{64}$/);
@@ -306,13 +322,25 @@ test("air-gapped upload NEVER invokes the cloud extractor, even with a key prese
     const form = new FormData();
     form.set("file", new File([new Uint8Array(REAL_PDF)], "LMP7704-SP.pdf", { type: "application/pdf" }));
     const res = await parsePOST(new Request("http://test/api/parse", { method: "POST", body: form }));
-    assert.equal(res.status, 200);
+    // Air-gapped with no local reader refuses since 2026-08-29 rather than
+    // returning a record of nulls with a 200 on it. The INVARIANT under test is
+    // untouched and is checked below: no cloud model is reached and no fetch
+    // leaves the process, whatever the answer turns out to be.
+    assert.equal(res.status, 503);
     const body = await res.json();
+    assert.equal(body.code, "MODEL_UNAVAILABLE");
     // The INVARIANT is that no cloud model appears, not that a particular word
     // does. This asserted `/^deterministic/`, which named a 7,500-line reader
     // deleted on 2026-08-14: it pinned a label rather than the property, so
     // renaming the label to what the route actually does looked like a breach.
-    assert.doesNotMatch(body.method, /gemini|vertex/i, "no cloud model may appear in an air-gapped extraction");
+    // ASSERTED ON THE METHOD, not on the whole body. The refusal's own text
+    // names the credentials a deployment could configure, which is advice to an
+    // operator rather than evidence a model ran, and matching the body wholesale
+    // reads one as the other.
+    assert.ok(
+      body.method === undefined || !/gemini|vertex/i.test(String(body.method)),
+      "no cloud model may appear in an air-gapped extraction"
+    );
     assert.equal(fetchCalled, false, "air-gapped parse must make no network call whatsoever");
   } finally {
     globalThis.fetch = originalFetch;
@@ -320,7 +348,7 @@ test("air-gapped upload NEVER invokes the cloud extractor, even with a key prese
   }
 });
 
-test("commercial upload without a Gemini key falls back to the local parser", async () => {
+test("commercial upload without any credential reaches no cloud model", async () => {
   // The gate is (commercial AND key). Commercial alone must not force a cloud call.
   // EVERY credential, not just the API key. `factory.ts` prefers Vertex where
   // `GOOGLE_APPLICATION_CREDENTIALS` and `FORGE_VERTEX_PROJECT` are set, and
@@ -343,7 +371,16 @@ test("commercial upload without a Gemini key falls back to the local parser", as
     const body = await res.json();
     // The gate is (commercial AND a credential). Commercial alone must not
     // produce a cloud call, and that is the property, not the label.
-    assert.doesNotMatch(body.method, /gemini|vertex/i);
+    //
+    // The route now REFUSES here rather than returning a blank record with a 200
+    // on it: with no credential and no local endpoint there is no reader, and
+    // `bench:holdout` measures a reader-less parse at READ 0 of 59. The name of
+    // this test used to be "falls back to the local parser", which named a
+    // 7,500-line reader deleted on 2026-08-14 and a fallback that no longer
+    // exists.
+    assert.equal(res.status, 503);
+    assert.equal(body.code, "MODEL_UNAVAILABLE");
+    assert.ok(body.method === undefined || !/gemini|vertex/i.test(String(body.method)));
   } finally {
     restoreEnv();
   }
@@ -383,14 +420,28 @@ test("lookup answers with the same shape as parse, not a bare record", async () 
   const restoreFetch = mockVendorFetch({ datasheetUrl: url, pdfBytes: new Uint8Array(REAL_PDF) });
   try {
     const looked = await lookupPOST(jsonRequest({ partNumber: "LMP7704-SP", manufacturer: "Texas Instruments" }));
-    assert.equal(looked.status, 200, "the fixture must resolve, or this test proves nothing");
     const lookedBody = await looked.json();
 
     const form = new FormData();
     form.set("file", new File([new Uint8Array(REAL_PDF)], "LMP7704-SP.pdf", { type: "application/pdf" }));
     const parsed = await parsePOST(new Request("http://test/api/parse", { method: "POST", body: form }));
-    assert.equal(parsed.status, 200);
     const parsedBody = await parsed.json();
+
+    // PARITY IS THE POINT, AND IT NOW BINDS THE REFUSALS TOO.
+    //
+    // No reader is configured in this environment, so since 2026-08-29 both
+    // routes refuse rather than returning a record of nulls with a 200 on it.
+    // This test is what CAUGHT the second half of that: the guard was added to
+    // `/api/parse` alone and the two routes immediately disagreed, which is the
+    // third time a guard on one has had to be repeated on the other. Past the
+    // point where the bytes are in hand they are the same operation.
+    assert.equal(looked.status, parsed.status, "the same document must get the same answer whichever route read it");
+    assert.equal(lookedBody.code, parsedBody.code);
+
+    if (parsed.status !== 200) {
+      assert.equal(parsedBody.code, "MODEL_UNAVAILABLE");
+      return;
+    }
 
     // Everything the panel is built from. A key present on one and absent on the
     // other is the drift this exists to catch.

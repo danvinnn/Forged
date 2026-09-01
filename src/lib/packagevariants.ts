@@ -941,3 +941,49 @@ export function pinTableFor<
   const matching = tables.filter((table) => table.pins !== undefined && table.pins.length === wanted);
   return matching.length === 1 ? matching[0] : null;
 }
+
+/**
+ * HOW MANY SIDES THE PACKAGE FAMILY NAME SAYS THE LEADS COME OUT OF.
+ *
+ * A second, independent reading of `dimensions.leadSides`, which until now had
+ * none: `bench:unchecked` swapped 2 for 4 on 86 footprints that the product
+ * vouched for and 59 of them stayed CONFIRMED. Swapping the side count turns a
+ * quad flat pack into a very long two-row part and back, which is a footprint
+ * that does not fit at all, and nothing was looking.
+ *
+ * The side count is IN THE NAME, and this is a reading rather than a convention.
+ * The Q in QFP, QFN and PLCC is quad; SOIC, SSOP, TSSOP, SOT, DFN, SON and a
+ * ceramic flat pack are two rows; a TO can and a SIP are one; a BGA and an LGA
+ * have no sides at all and this answers null for them rather than guessing.
+ * `declaredLeadCount` above already reads a lead COUNT out of the same string
+ * for the same purpose, so this is the same liberty and no new one.
+ *
+ * Measured over the cached corpus 2026-08-29: 97 of 103 designators state a side
+ * count, 96 agree with the drawing and 1 disagrees (`VQFN-HR (7)`, a seven-pin
+ * half-etched QFN, where the flag is the right outcome). The six silent ones are
+ * all LGA, where the answer is correctly "no sides".
+ *
+ * BOUNDED BY LETTERS RATHER THAN WORD BOUNDARIES, because a datasheet writes the
+ * family and the lead count as one token as often as not - `TSSOP8`, `LQFP48`,
+ * `DFN6`, `Flat-16P`. A `\b` ends at the digit, and with one it recognised 78
+ * designators rather than 97.
+ */
+export function declaredLeadSides(designator: string): 1 | 2 | 4 | null {
+  const name = designator.toUpperCase();
+  const has = (...families: string[]) => new RegExp(`(?<![A-Z])(?:${families.join("|")})(?![A-Z])`).test(name);
+  // Checked FIRST. A grid array's designator often carries a token that would
+  // otherwise read as a two-row family, and "no sides" has to win over a
+  // substring match.
+  if (has("BGA", "[HWTUV]?LGA", "CSP", "WLCSP", "DSBGA", "PGA")) return null;
+  if (has("TO", "SIP", "SIL")) return 1;
+  if (has("[CLTMPHVU]?QFP", "[VHWUML]?QFN", "LFCSP", "MLPQ", "MLF", "PLCC", "QFJ", "LCC")) return 4;
+  if (
+    has(
+      "[HW]?SOIC", "SOP", "[TQV]?SSOP", "[HE]?TSSOP", "MSOP", "VSSOP", "TSOP", "TSOT", "SOT",
+      "[VHWU]?SON", "[VHWU]?DFN", "[PC]?DIP", "SO", "SC", "SOD", "CFP", "FLAT", "FLATPACK"
+    )
+  ) {
+    return 2;
+  }
+  return null;
+}

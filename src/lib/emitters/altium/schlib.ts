@@ -65,12 +65,21 @@ const PIN_FLAG = {
 const PIN_TAIL = Buffer.from([0x00, 0x03, 0x7c, 0x26, 0x7c, 0x00]);
 
 /**
- * Altium's eight electrical types, from `SchematicPinElectricalType`.
+ * Altium's eight electrical types, from `SchematicPinElectricalType`:
+ * 0 Input, 1 IO, 2 Output, 3 OpenCollector, 4 Passive, 5 HiZ, 6 OpenEmitter,
+ * 7 Power.
  *
  * Altium has no "not connected" and no "unspecified"; both become Passive, which
  * is what an Altium library does for an unconnected pin. That is a mapping, not
  * a fact about the part, so the pin name still carries whatever the datasheet
  * called it.
+ *
+ * OPEN COLLECTOR AND OPEN EMITTER ARE NOT IN THAT CATEGORY. Altium has both, and
+ * both were falling through to Passive - so an open-drain pin that must not be
+ * driven arrived in the schematic as one that may be, and Altium's own rule
+ * check had nothing to object to. Found 2026-08-30 alongside the same loss in
+ * the KiCad emitter, which is where the type is now taken from the datasheet
+ * rather than thrown away.
  */
 function electricalType(type: PinElectricalType): number {
   switch (type) {
@@ -80,6 +89,10 @@ function electricalType(type: PinElectricalType): number {
       return 1;
     case "output":
       return 2;
+    case "open_collector":
+      return 3;
+    case "open_emitter":
+      return 6;
     case "power":
       return 7;
     case "passive":

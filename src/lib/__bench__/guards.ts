@@ -27,7 +27,8 @@
  */
 
 import { buildFootprintGeometry, createExportZip, FootprintUnavailableError } from "../exporters";
-import { replayRecords } from "./replay";
+import { defect } from "./inject";
+import { replayRecordsWithDocuments } from "./replay";
 import { HOLDOUT_CORPUS } from "./holdout-corpus";
 import { densityOf } from "../settings";
 import { BENCH_CORPUS } from "../retrieval/__bench__/corpus";
@@ -88,7 +89,50 @@ async function main() {
   // missed the readdir-order fix that made the other reader reproducible. Two
   // readers of one cache drift, and the one that drifts is the one making the
   // correctness claim. `replay.ts` says exactly this about why it was split out.
-  for (const part of replayRecords()) {
+  for (const raw of await replayRecordsWithDocuments()) {
+    // ONE WRONG RECORD PER GUARD, so a guard that "never fires" on real data can
+    // still be shown to work. Six of the seven guards below fire on nothing in
+    // any corpus, which leaves two possibilities that look identical from the
+    // outside: the condition is rare, or the guard is dead. Only this tells them
+    // apart, and one of the four instruments found broken on 2026-08-29 was a
+    // regex matching a message the code never writes.
+    const part = defect("guards.part", raw, (p, which) => {
+      const d = p.dimensions;
+      const pitch = d.pitchMm ?? 0.5;
+      switch (which) {
+        case "wider-than-pitch":
+          return { ...p, dimensions: { ...d, landPadWidthMm: pitch * 1.6 } };
+        case "rows-overlap":
+          return d.landPadLengthMm === null
+            ? p
+            : { ...p, dimensions: { ...d, landSpanMm: d.landPadLengthMm * 0.4 } };
+        case "lead-too-wide":
+          return { ...p, dimensions: { ...d, leadWidthMm: { minMm: pitch * 0.98, maxMm: pitch * 0.99 } } };
+        case "contradicts-printed":
+          return { ...p, dimensions: { ...d, landPadLengthMm: null, landPadWidthMm: null, landSpanMm: null, leadSpanMm: d.leadSpanMm ? { minMm: d.leadSpanMm.minMm * 2.4, maxMm: d.leadSpanMm.maxMm * 2.4 } : null } };
+        case "inconsistent":
+          // FEET THAT MEET IN THE MIDDLE. `innerMin <= 0` in `ipc7351.ts` needs
+          // a contact length past half the span, with the printed pattern
+          // removed so the compute path is the one that runs.
+          return d.leadSpanMm === null
+            ? p
+            : {
+                ...p,
+                dimensions: {
+                  ...d,
+                  landPadLengthMm: null,
+                  landPadWidthMm: null,
+                  landSpanMm: null,
+                  landSpanCrossMm: null,
+                  leadContactMm: { minMm: d.leadSpanMm.minMm * 0.6, maxMm: d.leadSpanMm.minMm * 0.7 }
+                }
+              };
+        case "name-vs-pin-count":
+          return { ...p, packageType: "SOIC-8", pinCount: p.pinCount === 8 ? 20 : p.pinCount };
+        default:
+          return p;
+      }
+    });
     const label = part.id;
     const k = key(label);
     const set: Row["set"] = TUNED.has(k) ? "tuned" : HOLDOUT.has(k) ? "holdout" : "other";

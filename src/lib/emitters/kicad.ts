@@ -61,6 +61,30 @@ function mm(value: number): string {
   return value.toFixed(3);
 }
 
+/**
+ * Our pin type, as the token KiCad's s-expression parser accepts.
+ *
+ * ## Every name here is KiCad's, not ours, and one of them was not
+ *
+ * `nc` mapped to `not_connected`, which is not a KiCad token - the file format
+ * spells it `no_connect`. KiCad does not skip the pin or warn: it refuses to
+ * load the WHOLE LIBRARY with "Unable to load library", so every part in the
+ * file is lost over one pin.
+ *
+ * Found 2026-08-30 by running `kicad-cli sym export svg` over all 80 emitted
+ * symbols: 78 loaded and 2 did not, and both of those had an NC pin. Nothing
+ * else could have found it. `kiutils` parses these files happily, the unit tests
+ * assert on our own strings, and the electrical type only started being emitted
+ * at all on 2026-08-28 - so between those two dates every part with an unused
+ * pin shipped a symbol library that would not open.
+ *
+ * That is the whole argument for `bench:kicad`. An independent reader is not the
+ * tool the customer uses.
+ *
+ * `open_collector` and `open_emitter` are in KiCad's list too and were falling
+ * through to `unspecified`, which is a real loss: ERC cannot tell an
+ * open-collector output driving a bus from a pin nobody described.
+ */
 function kicadPinType(pinType: PinRecord["electricalType"]): string {
   switch (pinType) {
     case "power":
@@ -74,7 +98,11 @@ function kicadPinType(pinType: PinRecord["electricalType"]): string {
     case "passive":
       return "passive";
     case "nc":
-      return "not_connected";
+      return "no_connect";
+    case "open_collector":
+      return "open_collector";
+    case "open_emitter":
+      return "open_emitter";
     default:
       return "unspecified";
   }

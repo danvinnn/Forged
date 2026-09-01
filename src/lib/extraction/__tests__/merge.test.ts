@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { datasheetTextFromPages } from "../../pdftext";
 import { buildPartRecord } from "../../datasheet";
 import { partSchema, resolveForExport, type PartRecord } from "../../types";
-import { mergeModelValues, RANGE_FIELDS, unresolvedFields, verifyCitation } from "../merge";
+import { mergeModelValues, normalizeModelPins, RANGE_FIELDS, unresolvedFields, verifyCitation } from "../merge";
 import { buildExtractionRequest } from "../request";
 import type { ExtractionResult } from "../contracts";
 
@@ -137,7 +137,15 @@ test("a merged record still satisfies the part contract", () => {
 
   const parsed = partSchema.safeParse(JSON.parse(JSON.stringify(merged)));
   assert.ok(parsed.success, `merged record must satisfy partSchema: ${JSON.stringify(parsed.error?.issues ?? [])}`);
-  assert.ok(merged.notes.some((note) => /test-model: pin table was image-based/.test(note)));
+  // THE READER'S NOTE, UNPREFIXED, AND THE MODEL NAMED EXACTLY ONCE.
+  //
+  // It used to open every sentence on the review panel. An engineer counted
+  // "vertex:gemini-3.6-flash" five times on one screen on 2026-08-28 and called
+  // it a developer log rather than user copy. The identity is provenance and is
+  // still recorded, once; the prose is about what was read.
+  assert.ok(merged.notes.some((note) => note === "pin table was image-based"));
+  assert.equal(merged.notes.filter((note) => note.includes("test-model")).length, 1);
+  assert.ok(merged.notes.some((note) => note === "Read by test-model."));
 });
 
 test("model-filled pins cannot export without a verified citation", () => {
@@ -407,7 +415,7 @@ test("a table of nothing but terminals is still refused", () => {
   );
 
   assert.equal(merged.part.pins.value, null);
-  assert.match(merged.rejected[0].reason, /no numbered rows/);
+  assert.match(merged.rejected[0].reason, /no usable designators/);
 });
 
 // --- values read off a RENDERED page ----------------------------------------
@@ -834,16 +842,21 @@ test("EVERY extraction field can actually be stored on the record", async () => 
   }
 });
 
-test("a grid-addressed pinout is refused for being out of scope, not for being unreadable", async () => {
+test("a grid-addressed pinout is KEPT, not thrown away", async () => {
   // TXB0104 in the corpus is a 12-ball DSBGA. Every terminal is addressed by
-  // grid position, so every row hits the exposed-pad branch, the table empties,
-  // and the user used to be told "the pin table had no numbered rows". We had
-  // read it perfectly. The refusal blamed the document for our own scope.
+  // grid position.
   //
-  // Forge is blocked on grid arrays in three independent places: this check,
-  // leadSides being 2 | 4, and arrangement being "dual" | "quad". That is a
-  // deliberate limit, and the refusal should say so rather than imply a failure
-  // to read.
+  // Until 2026-08-27 every such row hit the exposed-pad branch, the table
+  // emptied, and the record ended up with NO PINS AT ALL and a false thermal
+  // pad. The screen then told the user their datasheet could not be read, which
+  // was untrue: the reading was correct and the code threw it away.
+  //
+  // Nothing about a pinout requires the designator to be an integer. A schematic
+  // symbol is a box with named pins and does not care how the part is soldered.
+  // The one thing that does care is the footprint, and it refuses in
+  // `buildFootprintGeometry` where the arrangement is chosen - see the next
+  // test. Same move the exposed pad made on 2026-08-10, same guarantee: no
+  // footprint is emitted for a package this generator cannot place.
   const { datasheetTextFromPages } = await import("../../pdftext");
   const { buildPartRecord } = await import("../../datasheet");
 
@@ -869,13 +882,96 @@ test("a grid-addressed pinout is refused for being out of scope, not for being u
     []
   );
 
-  const note = outcome.part.notes.find((entry) => /grid position/.test(entry));
-  assert.ok(note, "the refusal must name the real reason");
-  assert.match(note, /read correctly/, "and must not imply the pinout was unreadable");
+  const pins = outcome.part.pins.value ?? [];
+  assert.equal(pins.length, 3, "a correctly read pinout reaches the record whatever its designators are");
+  assert.deepEqual(
+    pins.map((pin) => pin.number),
+    ["A1", "A2", "B1"],
+    "recorded exactly as the datasheet prints them"
+  );
+  assert.equal(
+    outcome.part.exposedPad ?? false,
+    false,
+    "a grid position is a terminal, not a thermal pad; marking one would emit a pad the part does not have"
+  );
   assert.doesNotMatch(
     outcome.part.notes.join(" "),
-    /had no numbered rows/,
-    "the old message blamed the document"
+    /no numbered rows|no usable designators/,
+    "nothing was discarded, so nothing should be reported as discarded"
+  );
+});
+
+test("and the FOOTPRINT asks for the one number a grid needs, rather than refusing", async () => {
+  // The other half of the same guarantee, at the seam this file owns.
+  //
+  // When the pinout first stopped being thrown away, the footprint refused every
+  // grid array outright because nothing could place one. It can now - see
+  // `gridarray.test.ts`, which owns the placement - and the only thing it still
+  // needs is the land diameter, because IPC-7351B's ball-grid land rules are not
+  // transcribed here and deriving one from a remembered ratio is the
+  // reverse-engineered rule this project retired for no-lead packages.
+  //
+  // So the refusal is now a QUESTION with a page attached, which is the outcome
+  // rule 3 asks for: read it, ask for it, or offer a setting.
+  const { buildFootprintGeometry, FootprintUnavailableError } = await import("../../exporters");
+
+  const part = {
+    id: "t",
+    partNumber: "ACME32M",
+    manufacturer: "ACME",
+    packageType: "BGA-3",
+    packageOutlineCode: null,
+    jedecOutline: null,
+    vendorLandPattern: null,
+    pinCount: 3,
+    pins: [
+      { number: "A1", name: "VDD", electricalType: "power" as const },
+      { number: "A2", name: "GND", electricalType: "power" as const },
+      { number: "B1", name: "IO", electricalType: "bidirectional" as const }
+    ],
+    exposedPad: false,
+    notes: [],
+    dimensions: {
+      bodyLengthMm: 2,
+      bodyWidthMm: 2,
+      bodyHeightMm: 0.6,
+      pitchMm: 0.5,
+      leadLengthMm: null,
+      leadCount: 3,
+      leadWidthMm: null,
+      leadSpanMm: null,
+      leadSpanCrossMm: null,
+      leadContactMm: null,
+      thermalPadLengthMm: null,
+      thermalPadWidthMm: null,
+      landPadLengthMm: null,
+      landPadWidthMm: null,
+      landSpanMm: null,
+      landSpanCrossMm: null,
+      leadSides: null,
+      leadForm: null,
+      mounting: "smd" as const,
+      leadDiameterMm: null,
+      vacantLeadSlot: null,
+      leadsPerSide: null,
+      solderMaskExpansionMm: null,
+      solderMaskDefined: null,
+      thermalViaDiameterMm: null,
+      thermalViaPitchMm: null
+    }
+  } as never;
+
+  assert.throws(
+    () => buildFootprintGeometry(part, "B"),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError, "a missing number is a question, not a crash");
+      assert.deepEqual(
+        error.needs.map((need) => need.field),
+        ["landPadLengthMm"],
+        "one number, and it is the one the datasheet prints"
+      );
+      return true;
+    }
   );
 });
 
@@ -1201,4 +1297,39 @@ test("a pin table nothing else can cite is proven by the rendered page carrying 
   assert.equal(outcome.part.pins.value?.length, 8, "the rows survive");
   assert.equal(outcome.part.pins.citation?.page, 3, "cited to the rendered page that carries the names");
   assert.ok(!outcome.uncited.includes("pins"), "and it is no longer held as uncitable");
+});
+
+test("a bus range is not a pin name", () => {
+  // UT7R995, read blind on 2026-08-28. Its Figure 1 prints 4F0 at pin 1 and 3Q1
+  // at pin 8; eighteen of its forty-eight names came back as three range
+  // templates copied out of the pin-description table, so eight outputs shared
+  // one name and a schematic built from that symbol would short them together.
+  const normalized = normalizeModelPins([
+    { number: 1, name: "nF[1:0]" },
+    { number: 2, name: "nF[1:0]" },
+    { number: 3, name: "sOE" },
+    { number: 4, name: "DS[7..0]" }
+  ]);
+  assert.ok(normalized.ok);
+  assert.equal(normalized.pins[0].name, "");
+  assert.equal(normalized.pins[1].name, "");
+  assert.equal(normalized.pins[2].name, "sOE", "an ordinary name is untouched");
+  assert.equal(normalized.pins[3].name, "", "the dotted spelling counts too");
+  // The numbers survive: thirty correct names and eighteen blanks is a better
+  // answer than a refusal of all forty-eight.
+  assert.deepEqual(normalized.pins.map((pin) => pin.number), ["1", "2", "3", "4"]);
+  assert.deepEqual(normalized.unnamed, ["nF[1:0]", "DS[7..0]"]);
+});
+
+test("a name that merely contains brackets is not a bus range", () => {
+  // The rule is about a RANGE of indices. A single index, or a bracketed note,
+  // names one terminal and is left alone.
+  const normalized = normalizeModelPins([
+    { number: 1, name: "D[0]" },
+    { number: 2, name: "VCC (analog)" },
+    { number: 3, name: "IN[A]" }
+  ]);
+  assert.ok(normalized.ok);
+  assert.deepEqual(normalized.pins.map((pin) => pin.name), ["D[0]", "VCC (analog)", "IN[A]"]);
+  assert.deepEqual(normalized.unnamed, []);
 });

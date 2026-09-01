@@ -172,3 +172,35 @@ test("a trailing sign is not an alternative name", () => {
   assert.deepEqual([...pinNameAlternatives("V-")], ["V-"]);
   assert.deepEqual([...pinNameAlternatives("IN1-")], ["IN1-"]);
 });
+
+test("a stray pair of numbers cannot corroborate itself into agreement", () => {
+  // The real figure, with pins 1 and 2 exchanged on the record. The figure
+  // contradicts that, so nothing should come back corroborated.
+  //
+  // ADG1211 is where this was found. Two collinear numbers elsewhere on the page
+  // formed a "sequence", took their offset from the single name that happened to
+  // sit at it, and agreed with themselves - and the page-level union then used
+  // that to erase the pin table's own dissent. A swapped netlist came back
+  // confirmed. See MIN_OFFSET_SUPPORT.
+  const swapped = [pin(1, EIGHT[1]), pin(2, EIGHT[0]), ...CLAIM.slice(2)];
+  const runs: Array<{ str: string; x: number; y: number }> = [];
+  const half = EIGHT.length / 2;
+  for (let index = 0; index < half; index += 1) {
+    const y = 600 - index * 20;
+    runs.push({ str: EIGHT[index], x: 80, y });
+    runs.push({ str: String(index + 1), x: 140, y });
+    runs.push({ str: String(EIGHT.length - index), x: 210, y });
+    runs.push({ str: EIGHT[EIGHT.length - 1 - index], x: 250, y });
+  }
+  // Two numbers far from the pinout, sharing a line, with one of the swapped
+  // names at a constant offset from one of them. That is the whole trick.
+  runs.push({ str: "1", x: 80, y: 200 });
+  runs.push({ str: "2", x: 300, y: 200 });
+  runs.push({ str: EIGHT[1], x: 120, y: 200 });
+
+  const evidence = pinoutEvidence(pageOf(runs), swapped, 8);
+  assert.ok(
+    evidence === null || evidence.agreeing.length < 8,
+    "a pinout with two names exchanged must not come back fully corroborated"
+  );
+});

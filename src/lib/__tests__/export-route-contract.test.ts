@@ -648,3 +648,54 @@ test("the en dash that caused the report exports cleanly in both formats", async
     assert.equal(response.headers.get("Content-Type"), "application/zip");
   }
 });
+
+test("a preview asks for the same build and gets the geometry instead of the bytes", async () => {
+  // The screen draws the footprint the user is about to take. A part that had to
+  // be asked a question has no chooser geometry until it is answered - and a
+  // ceramic flat pack always is - so the preview would go missing on exactly the
+  // packages this product is for.
+  //
+  // The point of routing it through here rather than computing one on the client
+  // is that it CANNOT be a different footprint: everything above this branch has
+  // already run, including `createExportZip` itself.
+  const zipped = await POST(
+    post({
+      part: exportablePart("14-lead CFP", 14, "straight"),
+      format: "kicad",
+      formedLeadSpanMm: 10.16,
+      formedLeadContactMm: 0.6
+    })
+  );
+  assert.equal(zipped.status, 200);
+  assert.equal(zipped.headers.get("Content-Type"), "application/zip");
+
+  const preview = await POST(
+    post({
+      part: exportablePart("14-lead CFP", 14, "straight"),
+      format: "kicad",
+      formedLeadSpanMm: 10.16,
+      formedLeadContactMm: 0.6,
+      preview: true
+    })
+  );
+  assert.equal(preview.status, 200);
+  const payload = await preview.json();
+  assert.ok(payload.geometry, "the preview carries the geometry");
+  assert.ok(Array.isArray(payload.geometry.pads) && payload.geometry.pads.length > 0);
+  assert.ok(payload.geometry.courtyard.halfWidthMm > 0);
+  assert.ok(payload.geometry.body.halfWidthMm > 0);
+  // One land per lead, which is what the drawing has to show.
+  assert.equal(payload.geometry.pads.filter((pad: { number: string }) => pad.number !== "").length, 14);
+});
+
+test("a preview of a build that cannot happen refuses exactly as the build would", async () => {
+  // A picture must never be available where the files are not: that would put a
+  // footprint on the screen that no click can produce.
+  const response = await POST(
+    post({ part: exportablePart("14-lead CFP", 14, "straight"), format: "kicad", preview: true })
+  );
+  assert.equal(response.status, 422);
+  const payload = await response.json();
+  assert.equal(payload.code, "INPUT_REQUIRED");
+  assert.ok(Array.isArray(payload.needs) && payload.needs.length > 0);
+});

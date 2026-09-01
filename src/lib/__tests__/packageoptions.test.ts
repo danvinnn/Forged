@@ -636,3 +636,34 @@ test("it is not offered twice when the ordering table does name it", () => {
     "one package, one row in the dropdown"
   );
 });
+
+test("a document with per-package tables it cannot use still reports what is missing", () => {
+  // LIVE, found by `bench:badinput` on 2026-08-29 with CD4017B. The per-package
+  // route returned `{ ok: true, options: [] }` whenever it found nothing, which
+  // reads downstream as "the record is fine, here are its packages" - so a
+  // document nothing was read from came back HTTP 200 with a chooser of zero
+  // entries, no blocked fields, no checks and no questions.
+  //
+  // The screen has no state for that. The verdict card's first branch is
+  // `packageChoice.ok === false`, so an empty success fell straight past the
+  // sentence written to explain exactly this situation and the person was shown
+  // a page that looked like it had worked.
+  const choice = packageOptions(
+    record({
+      pinCount: nothing<number>(),
+      pins: nothing<PinRecord[]>(),
+      packageVariants: [],
+      // A document that DOES carry per-package sections, none of which carries a
+      // pin table this reader could use. That is the shape that reached the
+      // empty success.
+      packagesInThisDocument: [
+        { packageType: "PDIP-16", outlineCode: null },
+        { packageType: "SOIC-16", outlineCode: null }
+      ]
+    } as never)
+  );
+
+  assert.equal(choice.ok, false, "an empty list of options is not a choice, and must not be reported as one");
+  if (choice.ok) return;
+  assert.ok(choice.blockedBy.length > 0, "and the screen needs the field names to say what is missing");
+});

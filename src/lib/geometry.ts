@@ -125,6 +125,77 @@ export interface ThermalVia {
  * because `geometryViolations` requires the pad set to be exactly 1..N plus this
  * one, and every CAD tool expects the same.
  */
+/**
+ * A terminal addressed by GRID POSITION: a row letter and a column number.
+ *
+ * `A1`, `B12`, `AA3`. The addressing scheme of every ball-, land- and
+ * column-grid array, whatever the vendor calls the package. Matched on the SHAPE
+ * rather than on a package name, so it covers any grid-addressed part rather
+ * than the one that prompted it.
+ *
+ * Deliberately NOT `EP`, `DAP` or `TAB`: those are letters with no column
+ * number, and the extraction reader tests its thermal-pad vocabulary first.
+ */
+const GRID_DESIGNATOR = /^[A-Za-z]{1,2}\d{1,3}$/;
+
+/**
+ * Whether a pin table addresses its terminals by grid position.
+ *
+ * Here rather than in the extraction layer because both halves of the product
+ * need it and neither owns it: the reader keeps such a pinout instead of
+ * throwing it away, and the generator refuses the FOOTPRINT for one, because it
+ * places lands in rows along the sides of a package and a grid is none of those.
+ * A second copy of this rule would let those two disagree about what a BGA is.
+ */
+/**
+ * The row letters a grid array uses, in order.
+ *
+ * JEDEC's convention, and the reason for the gaps is that the omitted letters
+ * are the ones that read as digits or as each other on a drawing: I as 1, O as
+ * 0, Q as O, S as 5, X as a cross-hair, Z as 2. Every vendor's BGA follows it,
+ * which is what makes a row letter positional rather than merely a label.
+ *
+ * The alphabet is the whole point. Ordering the rows a part HAPPENS to have
+ * would place them correctly only while none is missing, and a depopulated grid
+ * - a BGA with a whole row left out under the die - would then be compressed
+ * into a footprint whose every ball after the gap is a pitch out of place.
+ */
+const JEDEC_ROW_LETTERS = "ABCDEFGHJKLMNPRTUVWY";
+
+/**
+ * A row letter's absolute position in the grid, or null when it is not one.
+ *
+ * Two-letter rows continue past the alphabet the way JEDEC continues them: `AA`
+ * follows `Y`, then `AB`, `AC`. Refused rather than guessed when a letter is not
+ * in the alphabet at all, because a designator this cannot place is one that
+ * would be placed WRONGLY, and a ball a pitch out of position is a board that
+ * looks correct and does not work.
+ */
+export function gridRowIndex(row: string): number | null {
+  const letters = row.toUpperCase();
+  if (letters.length === 1) {
+    const index = JEDEC_ROW_LETTERS.indexOf(letters);
+    return index < 0 ? null : index;
+  }
+  if (letters.length === 2) {
+    const first = JEDEC_ROW_LETTERS.indexOf(letters[0]);
+    const second = JEDEC_ROW_LETTERS.indexOf(letters[1]);
+    if (first < 0 || second < 0) return null;
+    return JEDEC_ROW_LETTERS.length + first * JEDEC_ROW_LETTERS.length + second;
+  }
+  return null;
+}
+
+export function isGridAddressed(pins: readonly { number: string }[]): boolean {
+  return pins.length > 0 && pins.every((pin) => GRID_DESIGNATOR.test(pin.number));
+}
+
+/** One terminal's designator, as a grid position, or null when it is not one. */
+export function gridPosition(designator: string): { row: string; column: number } | null {
+  const match = /^([A-Za-z]{1,2})(\d{1,3})$/.exec(designator.trim());
+  return match ? { row: match[1].toUpperCase(), column: Number(match[2]) } : null;
+}
+
 export function thermalPadNumber(pinCount: number): string {
   return String(pinCount + 1);
 }
@@ -191,7 +262,7 @@ export interface FootprintProvenance {
    * are owed the pitch and the span: it is a decision this generator made about
    * their package, and it is not otherwise stated anywhere in the output.
    */
-  arrangement: "single" | "dual" | "quad";
+  arrangement: "single" | "dual" | "quad" | "grid";
   /**
    * THE SECOND, INDEPENDENT SOURCE FOR THIS COPPER, and what it said.
    *

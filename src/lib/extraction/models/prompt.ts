@@ -1,5 +1,5 @@
 import { extractionFields, MAX_PAGES_TO_MODEL, type ExtractionField, type ExtractionRequest, type ExtractionResult, type ModelValue } from "../contracts";
-import type { PinRecord } from "../../types";
+import { pinTypeFrom, type PinRecord } from "../../types";
 
 /**
  * Shared prompt construction and response parsing for extraction models.
@@ -724,7 +724,7 @@ function coercePinRows(rows: unknown[]): PinRecord[] {
     out.push({
       number,
       name,
-      electricalType: "unspecified",
+      electricalType: pinTypeFrom(row.electricalType),
       ...(typeof row.description === "string" ? { description: row.description } : {})
     });
   }
@@ -734,6 +734,10 @@ function coercePinRows(rows: unknown[]): PinRecord[] {
 export function parseModelResponse(text: string): ExtractionResult {
   const unreadable = (): ExtractionResult => ({
     values: {},
+    // FLAGGED, not just noted. The note reached `part.notes` and nothing read
+    // it, so an unreadable reader answer was indistinguishable from a silent
+    // datasheet all the way to the screen. See `ExtractionResult.unreadable`.
+    unreadable: true,
     notes: [`Model response was not valid JSON (${text.length} characters); it was discarded.`]
   });
 

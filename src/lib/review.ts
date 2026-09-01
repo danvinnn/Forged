@@ -1,5 +1,6 @@
 import type { Extracted, PartRecord, PinRecord } from "./types";
 import { isUntraceable } from "./provenance";
+import { pinTableFor } from "./packagevariants";
 
 /**
  * What a person should look at before this record is trusted.
@@ -393,4 +394,63 @@ export function reviewPages(items: readonly ReviewItem[], limit = 3): number[] {
     .sort((left, right) => right[1] - left[1] || left[0] - right[0])
     .slice(0, limit)
     .map(([page]) => page);
+}
+
+/**
+ * THE RECORD FOR THE PACKAGE THE USER IS LOOKING AT.
+ *
+ * ## The defect this exists to end
+ *
+ * A family datasheet states nothing at the top level. Its dimensions live in one
+ * entry per package under `packagesInThisDocument`, because a body size, a pitch
+ * and a land pattern belong to a package and not to a part number, and the
+ * merge has stored them that way since per-package tables were added.
+ *
+ * Every screen that showed "what we read" read the FLAT block instead. On
+ * OPA333, whose five package entries carry seventeen cited dimensions each and
+ * five correctly-read pins, the flat block is null in every field. So the
+ * product rendered:
+ *
+ *     Body length mm  -  not read      Pitch mm  -  not read
+ *     Land length mm  -  not read      PINS 0
+ *
+ * under a green banner reading "Ready to build. Every value was agreed by two
+ * independent readings of this datasheet", beside a zip containing every one of
+ * those numbers, correct, cited to real pages.
+ *
+ * An engineer read that screen on 2026-08-28 and said the panel is the entire
+ * reason to use the tool and it is blind, and that they only trusted the
+ * footprint because they unzipped it and checked it against the datasheet
+ * themselves - which is the work the product exists to save.
+ *
+ * ## Third time in this shape
+ *
+ * `bench:dimensions` had exactly this bug and was fixed on 2026-08-22: it
+ * compared the flat block while the product built from the per-package table,
+ * and scored 27 of 27 hand-read comparisons as "not read". The bench was fixed
+ * and the SCREEN was not. See `forge-dimensions-bench-per-package`.
+ *
+ * ## Why this shows uncited values where the exporter drops them
+ *
+ * `citedDimensions` in `exporters.ts` filters to values that can be traced,
+ * because an untraceable number must never reach copper. This does not filter,
+ * because the panel's job is the opposite one: to show what was READ, including
+ * what was read and could not be placed. `Provenance` renders those as
+ * "unverified", which is the honest label, and hiding them would leave a user
+ * wondering why the export asked for a number the document states.
+ */
+export function shownRecord(
+  part: PartRecord,
+  designator: string | null
+): { dimensions: PartRecord["dimensions"]; pins: PinRecord[] } {
+  const table = designator ? pinTableFor(part.packagesInThisDocument, designator) : null;
+  if (!table) return { dimensions: part.dimensions, pins: part.pins.value ?? [] };
+  return {
+    // The package's own values WIN, and the flat block fills the gaps. Not the
+    // other way round: a family datasheet's flat block is either empty or the
+    // leftovers of whichever package happened to be read last, and neither is
+    // about the package on screen.
+    dimensions: { ...part.dimensions, ...(table.dimensions ?? {}) },
+    pins: table.pins ?? part.pins.value ?? []
+  };
 }

@@ -13,7 +13,7 @@ rule 4.** That rule forbids fitting PRODUCT CODE to a datasheet you happened to
 look at. Evidence for a process lesson is the opposite: an entry that cannot name
 what it cost is the one to distrust.
 
-Claims in this file were last verified against the code on **2026-08-17**. Section
+Claims in this file were last verified against the code on **2026-08-30**. Section
 8 says how to keep that true.
 
 ---
@@ -34,6 +34,8 @@ npm run bench:discards          # what the code THREW AWAY. free, one second.
 npm run bench:questions         # is it asking for a number that is ON THE PAGE? free.
 npm run bench:dimensions        # are the numbers we read RIGHT? free.
 npm run bench:browser           # THE PRODUCTION BUILD, IN A REAL BROWSER. free.
+npm run bench:joints            # does the LEAD sit on the LAND? free.
+npm run bench:published         # our pads against KiCad's official ones. free.
 npm start                       # then POST a real export and READ the files
 ```
 
@@ -4247,3 +4249,1169 @@ chooser drift - were measurable offline and nobody had thought to ask.
 
 **When an instrument finds nothing for a while, the question is not whether the
 product is clean. It is what the instrument cannot see.**
+
+---
+
+# THE FOURTH ARRANGEMENT, 2026-08-27
+
+Anthony's challenge, in his words: *"why is this not possible for us to read if we
+are just having an LLM read it? why are we forcing ourselves to only read in a
+certain way and refuse for everything else."*
+
+He was right and the framing I gave him was wrong. **Reading was never the
+blocker.** The refusal message said so in its own words - "the pinout was read
+correctly, but every terminal is addressed by grid position" - and I described it
+to him as a reading limit twice before opening the file.
+
+## The real split, and the thing that leaked
+
+Reading is general; generating is hand-written code that only knows the shapes
+somebody wrote. That split is deliberate and stays: a model that draws copper
+directly is auditable at neither end, because there is no number in the middle to
+check anything against.
+
+What was NOT deliberate is that the generator's assumptions had leaked backwards
+into extraction. A pin had to be an integer at `normalizeModelPins`, before
+anything geometric happened, because the placer counts pads. So a perfectly read
+BGA pinout was destroyed at the door and the screen reported the datasheet as
+unreadable.
+
+**UT32M0R500 went from zero pins to 143 by deleting that assumption.** Two other
+defects fell out of the same line: every grid terminal was also being flagged as
+an exposed thermal pad, so a BGA would have carried a phantom pad; and the
+confidence check "pin table matches the pin count" reported 0 of 143 for a pinout
+that is entirely correct.
+
+## Refuse late, on the narrowest thing
+
+The rule this establishes, and the codebase already had one instance of it: the
+exposed pad, recorded rather than fatal since 2026-08-10.
+
+A missing capability should cost you the ONE output it affects. A grid array now
+costs a footprint and nothing else - the pinout is on the record, the review panel
+works, and the symbol builds. Checking that the symbol actually built is what
+caught the promise being false: `buildSymbolGeometry` split pins with
+`dualRowSides`, which counts 1..N, so on a BGA every lookup missed and the symbol
+came out EMPTY. **The claim was written before the code was true.**
+
+## Then it turned out to be buildable
+
+Having said "not built" honestly, building it took an afternoon, because a BGA
+footprint is the simplest geometry in this codebase: circles on a regular grid.
+
+THE GRID IS FREE. The designators state it. `A1` through `M12` is thirteen rows
+of twelve, nothing is counted and nothing is asked. The one thing needed is the
+land diameter, which the datasheet prints, and where it does not this asks for
+one number.
+
+**The row letters are the part with teeth.** JEDEC's alphabet omits I, O, Q, S, X
+and Z because they read as digits or as each other, and the letters are
+POSITIONAL. Ordering the rows a part happens to have would place them correctly
+only while none is missing - and a depopulated grid, a BGA with a row left out
+under the die, is normal. Every ball after the gap would be a pitch out of place,
+on a board that looks correct.
+
+`LP5907 ships as a DSBGA`, the first ball-grid array this product has built.
+
+## Two arrangements measured and NOT built, with the numbers
+
+**Radial cans (TO-5, TO-18, TO-99).** Four corpus parts offer one and all four
+ship as another package, so nothing is blocked. Building it needs a lead-circle
+diameter, which is not a record field, which means a prompt change, which
+invalidates 2400 cached model answers and costs a full corpus and hold-out
+re-read. Not free, and not blocking anything.
+
+**AD590 ships as a can and its footprint is wrong**: three plated holes in a
+straight line at 2.54 mm for a package whose leads are on a circle. The pitch is a
+misread - `bench:dimensions` has been reporting `WRONG AD590 pitchMm read 2.54,
+expected the drawing states none` - and `DIMENSION_ORACLE` records why: the
+drawing prints `0.100 T.P.`, a true-position note, and reading it as a lead pitch
+builds three collinear pads for a triangular package.
+
+The invariant already puts that pitch in front of the user, which is what it is
+for. Fixing it properly is a READING problem, not a generating one.
+
+**No-lead computed land patterns. NOT A GAP, and putting it on the list was the
+mistake.**
+
+It went on the list of things to build when the five arrangements were first
+sketched, which was before anything was measured. Measured afterwards:
+**not one refusal in either corpus names it.** Thirteen tuned parts carry
+`land-pattern/no-ipc-model-for-lead-form` and all thirteen SHIP, from their
+datasheet's own printed footprint. It costs a corroboration, not a footprint.
+
+Having measured zero, I then wrote two messages explaining how to obtain
+IPC-7351B. Anthony's reply: *"i just dont understand why you need this so
+badly."* He was right. **An item that has failed its own test gets dropped, not
+defended.** It comes back if a design partner hits it and not before.
+
+The reason it is still worth a paragraph: the reasoning that would be needed IF
+it came back is real and easy to get wrong. Its fillet goals are published per
+lead form, only the gull-wing set is transcribed here, and the previous attempt
+reverse-engineered the no-lead set from four TI drawings and shipped one vendor's
+house rule to everybody. Writing those numbers from recall would be worse: it
+would look authoritative and nothing could check it.
+
+## What "generate everything" actually means
+
+There are five arrangements in the world and this now builds four.
+
+```
+  leads on 2 sides   SOIC, TSSOP, flatpack, DIP    yes
+  leads on 4 sides   QFP, QFN, LQFP                yes
+  leads on 1 side    SOT-223, TO-220               yes
+  grid underneath    BGA, LGA, CSP                 yes, 2026-08-27
+  leads on a circle  TO-5, TO-18 cans              measured, not blocking
+```
+
+It is a closed list, which is worth saying out loud: "we support a subset of an
+infinite space" was never true, and believing it is what made the gap feel
+unfixable.
+
+---
+
+# THE RULES APPLY TO THE CODE I WRITE, 2026-08-27
+
+Anthony: *"so when i ask you to follow the rules, you just ignore me?"*
+
+Not ignored. Applied to the code being REVIEWED and not to the code being
+WRITTEN, which is worse, because it looks like compliance.
+
+## What was actually broken
+
+**Rule 1, do not invent.** `pinevidence.ts` shipped with nine constants -
+`COLLINEAR_TOLERANCE_PT`, `OFFSET_TOLERANCE_X_PT`, `MIN_PAGE_AGREEMENTS`,
+`SAME_PINOUT_THRESHOLD`, `WORD_SPACE_RATIO`, `MAX_RUNS_PER_NAME` and others -
+every one chosen because it worked on the corpus in front of me and then defended
+in a paragraph of prose. Rule 1 says name the source. A well-argued comment is
+not a source; it is the argument you make when you do not have one.
+
+That is tailoring, spread thin enough across a file to look like design.
+
+**Rule 2, do not assume.** Told Anthony the footprint refuses a grid array "but
+the symbol can be built", while `buildSymbolGeometry` was splitting pins with
+`dualRowSides` and returning an EMPTY symbol for one. Told him twice that BGAs
+were a reading limit without opening the file whose refusal message says "the
+pinout was read correctly, but".
+
+## The fix is a sweep, not an argument
+
+Every constant was made overridable, and each swept across its plausible range on
+all 107 cached parts, scoring two things: how many pinouts come back fully
+corroborated, and how many of those the hand-read oracle DISAGREES with.
+
+```
+                     value         confirmed     FALSE CONFIRMATIONS
+  COLLINEAR_PT       2 / 4 / 8     71 / 72 / 66      0 / 0 / 0
+  OFFSET_X_PT        6 / 12 / 24   66 / 72 / 75      0 / 0 / 0
+  OFFSET_Y_PT        2 / 3 / 5     70 / 72 / 72      0 / 0 / 0
+  SAME_PINOUT_THRESH 0.5/0.75/1.0  73 / 72 / 71      0 / 0 / 0
+  MIN_PAGE_AGREE     3 / 4 / 6     72 / 72 / 72      0 / 0 / 0
+  WORD_SPACE_RATIO   0.4/1.2/2.5   70 / 72 / 72      0 / 0 / 0
+  MAX_RUNS_PER_NAME  3 / 6 / 10    71 / 72 / 72      0 / 0 / 0
+```
+
+**Not one setting of any constant produces a false confirmation.** They trade
+coverage and nothing else. That is now the answer to "name the source" for each
+of them, and every comment states its own band: not "this felt right" but
+"measured over 107 parts, flat from here to here, and it cannot make a
+confirmation wrong."
+
+## Two of them were worse than unsourced
+
+`SAME_PINOUT_THRESHOLD` moved the result by ONE part across its entire range,
+0.5 to 1.0. A constant that spans its whole range for one part is not carrying
+the check, it is decorating it. **Deleted, and the strict end kept as a rule with
+no number in it:** a page that draws a name this record does not have, for a pin
+it does have, is not the pinout we are holding.
+
+`MIN_PAGE_AGREEMENTS` changes nothing at all - 3, 4 and 6 all give exactly 72.
+Kept, and the comment now says so outright: it is a floor against coincidence
+that has never fired on any real part, which is the same thing `bench:guards`
+reports about plausibility guards and is worth knowing rather than hiding.
+
+## And one measurement that must NOT be acted on
+
+Widening `OFFSET_TOLERANCE_X_PT` from 12 to 24 buys three more corroborated parts
+with zero false confirmations. It stays at 12.
+
+Coverage measured on the tuned corpus is exactly the evidence the hold-out rule
+exists to distrust: a window twice as wide is twice as likely to reach a name
+belonging to something else on a document nobody has seen. **A sweep that says
+"looser is free" on the set you tuned against is the most persuasive form of the
+mistake, not an exemption from it.**
+
+## Then Anthony asked whether ALL of it was general, and the audit found three more
+
+Two tests, run over every module touched this session.
+
+**Does a part number or a vendor reach executable code?** No. Scanned with block
+comments stripped: zero hits across eleven files. Every part named in this
+codebase is in a comment explaining WHY a rule exists, which is the right place
+for evidence and the wrong place for a rule.
+
+**Are the bounds fitted?** Three were, and one of them was worse than anything in
+the sweep above.
+
+`TWIN_WINDOW = 48` decided how far past an inch callout to look for its
+millimetre twin on a dual-dimensioned drawing. Swept over all 57 cached
+documents, **8, 16, 48 and 200 characters each produced a DIFFERENT set of land
+dimensions.** A tuned number moving emitted copper is the worst version of this
+mistake, and it survived the first pass because I listed it as invented and then
+never swept it.
+
+Replaced with structure and no number at all: a callout's twin is the bracketed
+value that appears before the NEXT parenthesised callout. That is what "this
+dimension's twin" means, and it holds at any distance. Verified against the
+hand-read footprints - `bench:copper` clean, `bench:dimensions` clean, the
+flagged-per-part number unchanged.
+
+The trademark strip carried a `>= 4` length guard, fitted to the one title that
+prompted it, and it was a real hazard: a package code beginning with those two
+letters would have been truncated into a different token. Replaced by trying the
+token AS PRINTED first and the stripped form only as a fallback, which needs no
+bound and cannot truncate anything.
+
+**One that is still partly fitted, and is left that way deliberately.** The
+hyphen rule in `pinNameAlternatives` splits `PC14-OSC32_IN` into alternatives and
+refuses to split `V-`, because a trailing hyphen is a SIGN and splitting it would
+free a bare `V` to agree with `V+`. The principle is general typography; the
+character counts in the regex came from the examples. It is covered by fourteen
+named cases in `pinevidence.test.ts`, including every sign case, and tightening it
+further would be tuning against the same corpus. Recorded rather than polished.
+
+## The rule this leaves
+
+Before shipping a constant: sweep it, publish the band, and say what it trades.
+If the outcome is flat across the range, say that - it is a real answer. If the
+constant changes nothing, say that too, or delete it. If it changes the OUTPUT,
+it is not a constant, it is a decision, and it needs structure instead. What is
+not allowed is a number with a paragraph.
+
+And the audit is two greps, so it is cheap enough to run every time: no part
+number in a code path, and every bound swept.
+
+---
+
+# 2026-08-28: the overlay, and three instruments that could not see each other
+
+## Nothing had ever laid the lead on the land
+
+Every check in this repo compared a number to another number. The pinout against
+a second reading of the pinout, the printed land against IPC-7351B's arithmetic,
+the emitted copper against the record it came from. Not one of them took the
+physical lead and the physical pad and asked whether there was metal underneath.
+
+`leadWidthMm` was read on 39 corpus parts and used in exactly two places, both of
+them band arithmetic on the toe-to-toe extent. **Nothing in the project had ever
+compared a lead's width to the width of the copper it lands on.**
+
+`src/lib/solderjoint.ts` does that now. It found ADXL345 emitting 0.25 mm lands
+under 0.50 mm terminals: less than half the width, on a part shipping four files.
+
+## And the reading was already known to be wrong
+
+This is the part worth remembering. `bench:dimensions` had
+
+```
+WRONG ADXL345  CC-14-1  landPadWidthMm  read 0.25  expected 0.55
+```
+
+on every run, against a hand-read entry whose own comment quotes the correct
+0.55. The part shipped that copper anyway, because `bench:copper` compares the
+emitted pads against the RECORD, and the record was consistently wrong. One
+instrument knew and the instrument next to it could not hear it.
+
+Same shape as `forge-we-had-it-and-threw-it-away`. **When two instruments measure
+adjacent halves of one question, check what happens when one of them says no.**
+
+## The bar was measured, and the first formulation was wrong
+
+The first version compared fillets against zero and reported 22 of 60 correct
+footprints as defective, including eleven SOIC-8s: JEDEC MS-012 tolerances the
+seated foot from 0.40 to 1.27 mm, and a fillet computed from the LONGEST span and
+the LONGEST foot at once describes a lead that cannot exist.
+
+The fix was to evaluate at each CONSISTENT corner of the tolerance box and ask
+what FRACTION of the foot lands on copper. Then the sweep, which `bench:joints`
+now re-runs on every invocation rather than trusting a number in a comment:
+
+```
+bar    as built   land span x0.1   axes swapped   sibling land   inches   lead span x0.1
+0.95     24/62         0/50            2/52          14/63        8/57       51/51
+0.80     17/62         0/50            2/52          14/63        8/57       45/51
+0.70      3/62         0/50            2/52          14/63        8/57       44/51
+0.60      3/62         0/50            2/52          14/63        8/57       44/51
+```
+
+The correct population falls off a cliff between 0.80 and 0.70 while every
+injected-defect column stays flat. That is what a real separation looks like, and
+it is why the bar is 0.6 and not a number anybody argued for.
+
+## It flags. It does not confirm. `bench:confirm` proved why
+
+Wiring the overlay in as a second source for the copper looked obviously right:
+it needs no fillet table, so it covers every QFN, DFN, SON and LGA, which are
+exactly the packages whose land pattern carries a permanent unfixable flag. The
+flagged average went 1.57 to 1.17 and parts with nothing to check went 33% to
+38%.
+
+And `bench:confirm` reported the project's **first false confirmation on the
+copper**: STM32F103C8's UFQFPN48 emits a 6.55 mm centre span where the datasheet
+prints 6.75. Every terminal still sits entirely on its land, so the overlay was
+perfectly happy about a footprint 0.1 mm out of position on every pad.
+
+**Proving the joint will form is not proving the pattern was read.** They are
+different claims and only one of them is what the confirmation is labelled. The
+overlay is consulted for disagreement only, and the 1.57 came back.
+
+Worth stating plainly because the improvement was real, the reasoning was
+plausible, and it was still wrong. The measurement is what caught it.
+
+## An independent third source exists and is free
+
+KiCad's official footprint library is generated by their own IPC-7351 tooling
+from JEDEC and vendor data, by other people, with no knowledge of this project.
+`bench:published` matches our footprints to theirs on pin count, pitch and body
+size (never on package NAME, which is a coin toss) and compares pad for pad.
+
+48 of 64 matched. Ours minus theirs:
+
+```
+span    median  +0.100   range -0.250 to +0.550
+length  median  -0.100   range -0.430 to +0.450
+width   median   0.000   range -0.350 to +0.070
+```
+
+Zero gross outliers, and the worst width disagreement in the whole set is
+ADXL345 at -0.350: a third, fully independent source landing on the same defect
+the overlay found.
+
+**Its first run reported a defect that was the instrument.** A 20-pin TSSOP has
+ten lands a side at 0.65 mm, so its row is 5.85 mm long and its centre span is
+5.85 to 5.90. Deciding the lead axis by which one is WIDER is a coin flip there,
+and it picked x for our file and y for the published one, reporting LM5117 with
+its land length and width almost exactly exchanged. That is precisely what a real
+rotated land looks like. Deciding by pad SHAPE instead is not degenerate, because
+a land is long in the direction its lead runs on every footprint either generator
+produces.
+
+Fourth time an instrument has manufactured a finding. Validate the instrument.
+
+## One definition of READ, in one file
+
+`classify` lived in `holdout.ts`. A second blind corpus needed the same question
+answered and copying it would have given the project two definitions of "read",
+which is exactly how `SHIPS` came to have two and how one of them quietly
+measured something the product does not do. It is now `readclassify.ts` and both
+benches import it.
+
+## The hold-out rule held, and it cost something
+
+Three parts flagged by the new check are hold-out parts. ADXL345 could be settled
+without opening anything, because a hand-read entry for it already exists in the
+repo. The other two could not, and they are reported as flags with no diagnosis
+rather than opened.
+
+That is the rule working as intended. **A finding you cannot chase is still worth
+having.** The product's job is to put it in front of the user, and it does that
+without anyone knowing which side is right.
+
+---
+
+# 2026-08-28, later: what a stranger found in thirty seconds
+
+A subagent with no context, told only that it was an engineer who needed a KiCad
+library for an OPA333, drove the running app with Playwright and looked at the
+screenshots. It got a correct library out. Everything below is what it found on
+the way, and every item was verified against the code before being acted on.
+
+## The verification panel was blind, and it is the whole product
+
+"Show the full record" reported **every dimension as "not read" and PINS 0** for
+a part whose exported JSON carried all of them, under a green banner reading
+"Ready to build. Every value was agreed by two independent readings."
+
+Confirmed in one command: OPA333's flat dimension block is null in every field
+while its five per-package entries carry seventeen cited dimensions each. The
+panel rendered `part.dimensions`; the product builds from
+`packagesInThisDocument`.
+
+**`bench:dimensions` had this exact bug and was fixed on 2026-08-22.** It scored
+27 of 27 hand-read comparisons as "not read" for the same reason. The bench was
+fixed and the SCREEN was not, for six days, while being the one surface a user
+is asked to trust. See `shownRecord` in `review.ts`.
+
+Their words, which are the reason this is the top entry: *"the panel is the
+entire reason an engineer would use an AI tool for this, and it is blind"*, and
+*"I only trust this footprint because I unzipped the archive and checked it
+against the datasheet myself, which is the work the tool was supposed to save
+me."*
+
+## Two lists of packages, and the screen read the weaker one
+
+The chooser said "2 were read from this datasheet" and offered two. The record
+held **five** located package tables, and `packageOptions` builds a complete,
+shipping bundle from every one.
+
+`packageVariants` is a scan of the ordering table's text. `packagesInThisDocument`
+is one entry per package the reader located, with its own pin table, outline
+drawing and printed land pattern. Three OPA333 packages a user could have had -
+SC70, VSON, VSSOP - were never offered, and the heading stated a falsehood about
+the document while doing it. Same shape as
+`forge-false-claims-about-documents`.
+
+## The screen that enforces RULES.md 1 caused the invention it forbids
+
+Two forming-die numbers had to be answered before ANY datasheet could be read.
+The engineer hit it on a plastic SOT-23, could not answer either, and **made two
+numbers up** to get past it.
+
+Measured with both fields blank: all five OPA333 packages still ship, and
+RHF310A - a ceramic flat pack - comes back `needs-input` naming those two fields
+precisely. The product already asks when a part needs them. The gate was pure
+friction and is gone.
+
+**The button that enforced it looked enabled and did nothing**, with the reason
+in grey text at the foot of the window. A primary action that silently refuses is
+worse than a disabled one.
+
+## The benches measured a record the product does not build
+
+`withPrintedFootprint` locates the page a datasheet prints its own footprint on.
+`buildReadout` calls it, so `/api/parse` and `/api/lookup` both hand downstream a
+record that knows. `bench:blind` and `bench:holdout` called `shipOutcome` on the
+raw record and therefore scored a different record from the one a user gets:
+
+```
+                              before        after
+blind corpus, flagged/part     2.33         1.73
+blind corpus, nothing to check 0/30         6/30
+hold-out, flagged/part         1.82         1.40
+```
+
+Nothing about the product changed. `oracle-match.ts` had it right and the other
+two did not, which is `forge-ships-two-definitions` in the instruments.
+
+## A bus range is not a pin name
+
+UT7R995, a Frontgrade 48-lead ceramic flat pack read blind. Its Figure 1 prints
+`4F0` at pin 1, `3Q1` at pin 8, `DS0` at pin 22. Eighteen of forty-eight names
+came back as three range templates - `nF[1:0]`, `nQ[1:0]`, `DS[1:0]` - copied out
+of the pin-description table, where one row legitimately covers several pins.
+Eight outputs shared one name. A schematic built from that symbol shorts them.
+
+Cannot be repaired by expanding the range: the template is `nQ[1:0]` where `n` is
+the bank, so `3Q1` is not recoverable from it. The information is not in the
+string. So the NAME is dropped and the number kept, which leaves thirty correct
+names and eighteen honest blanks.
+
+Measured on the live pipeline across both corpora before shipping: **1 of 89
+records with a pinout carries one.** Zero correct records are touched.
+
+The pinout was already FLAGGED, so the invariant held and no wrong netlist was
+ever confirmed. That is the safety net working, and
+`forge-refusal-bar` applies: refusing is not an achievement, so the names are now
+read correctly or not at all.
+
+## An outside footprint library catches what our own instruments cannot
+
+`bench:published` compares our pads against KiCad's official library, matched on
+pin count, pitch, body and LEAD FORM. On the last sweep it flagged `tps7a8300`:
+a VQFN-20, 5x5 mm, 0.65 mm pitch, emitting a 3.90 mm centre span where the
+tuned corpus's TPS7A4700 - the same package, same body, same lead span, same
+0.75 x 0.31 land - emits 4.65.
+
+The lead-on-land overlay scored it 0.61 against a bar of 0.60 and let it through.
+Two instruments, different sensitivities, and the second one caught it. The
+product flags that land pattern twice and cites page 41, so nothing shipped
+silently.
+
+## The rule that keeps paying
+
+Five instruments manufactured a finding today: the joints check twice (mixed
+tolerance extremes, then a cross-axis fallback), the published comparison twice
+(a degenerate axis test, then a QFN matched to a QFP), and the confirmation
+wiring once. **Every one was caught by looking at the finding instead of acting
+on it.**
+
+And one check could not fail: the first blank-settings browser stage asserted the
+moment a file is CHOSEN, while the gate fires when Read is CLICKED. It passed
+with the defect deliberately put back. It now presses the button with a file that
+is not a PDF, so the route refuses on the bytes and no model call is spent.
+
+---
+
+# 2026-08-28, third pass: two values read correctly and thrown away
+
+A blind reader was given rendered pages from six blind-corpus parts and told
+nothing. 161 of 177 pin names matched what we emit. Chasing the sixteen that did
+not, and one aside in its report, found two defects that had nothing to do with
+reading.
+
+## Five of five QFNs shipped with no thermal land
+
+The reader mentioned in passing that four of its six parts have a centre pad.
+Checking that against what we emit:
+
+```
+dac81404    thermalPad 3.45 x 3.45   exposedPad false   land emitted NONE
+di-AP7361C  thermalPad 2.25 x 1.50   exposedPad false   land emitted NONE
+ti-lp5890   thermalPad 6.30 x 6.30   exposedPad false   land emitted NONE
+ti-tps1663  thermalPad 2.70 x 2.70   exposedPad false   land emitted NONE
+lmk04828    thermalPad 7.20 x 7.20   exposedPad false   land emitted NONE
+```
+
+**The dimensions were read correctly, cited, and sitting on the record.** The
+boolean that decides whether to emit the land was set from ONE source: a row in
+the pin table naming itself a pad. Most no-lead drawings do not give the pad a
+numbered row - they dimension it D2 x E2 on the bottom view - so the flag stayed
+false beside its own measurements.
+
+On a QFN the exposed pad is the heat path and usually a required ground. Every
+one of those footprints was unsolderable as the part intends.
+
+The implication is not an inference, it is one fact stated twice, and this file
+already enforced the converse: `thermalPadLengthMm`'s doc comment says
+"`exposedPad` without these is still a refusal". A boolean contradicting two
+cited dimensions off the same drawing is simply wrong.
+
+**It had to be fixed in TWO places.** `merge.ts` fixed the flat record and moved
+two of the five. `asPackage` overrides the flag per package, so the other three
+still shipped bare until the same rule was added there. A per-package override
+that drops a fact the record established is the third instance of that shape
+today; see `shownRecord` and the package chooser.
+
+## Every pin ever emitted was `unspecified`, and the model was answering
+
+Two independent reviewers reported within an hour of each other that KiCad ERC
+has nothing to work with. The cause was one line:
+
+```ts
+// coercePinRows destructured row.electricalType, then:
+electricalType: "unspecified",
+```
+
+The answer was read and discarded unconditionally, at the parse boundary.
+
+**And the model had been answering all along**, in the datasheet's own
+vocabulary, because that is what a faithful reader does:
+
+```
+TPS23881   I, I/O, O          UCC21750   I, O, P
+TPS548B22  G, I, I/O, O, P    and Ground, Input, Power on another page
+UT7R995    Power, LVTTL, 3-Level, N/A
+```
+
+None of those are in `pinElectricalTypes`. The prompt asked for the field and
+never named the values it would accept - `forge-unanswerable-question` again,
+the same shape as `leadForm` coming back null for 37 of 81 parts because the
+prompt offered two of its three legal answers.
+
+**Mapping the vocabulary is free; tightening the prompt would cost a re-read of
+the whole corpus**, because the cache key is the prompt. So the industry's
+spellings are mapped onto the enum and the ~2,400 cached answers are read as
+they stand. `LVTTL` and `3-Level` stay `unspecified`: a logic family describes
+the standard a pin speaks, not whether it drives.
+
+**Fixing the parser alone changed nothing.** `normalizeModelPins` had its own
+strict enum check and dropped the value at the next gate. Two gates asking one
+question in two vocabularies, and only fixing both moved a single pin. The
+mapping now lives in `types.ts` beside the enum, with one caller each side.
+
+## And the lint caught what the tests could not
+
+`case "oc":` twice in one switch. Harmless, and `no-duplicate-case` is the only
+thing in the toolchain that would ever have said so. Run the linter.
+
+---
+
+# 2026-08-28, fourth pass: the second pass was overwriting the better read
+
+## Two readings of one pinout, and the worse one won
+
+`combine` merged the two extraction passes with `{...first.values, ...second.values}`,
+so pass 2 won every field. One guard existed for the pinout: keep pass 1 where
+the two cite DIFFERENT pages. Where they cite the SAME page and disagree about
+the names, pass 2 won silently.
+
+UT54LVDS032, a Frontgrade rad-hard flat pack:
+
+```
+pass A   RIN1-  RIN1+  ROUT1  EN  ROUT2 ... EN̅      16 distinct, 0 collisions
+pass B   RIN-   RIN+   ROUT   EN  ROUT  ... EN       6 distinct, 10 collisions
+```
+
+We shipped B. Four outputs shared one name, and **enable and enable-bar were the
+same net.** A blind reader shown only the rendered page confirmed the document
+prints the specific names.
+
+## The obvious rule was the wrong rule
+
+"Prefer pass 1, it saw the whole document" is what the existing guard's comment
+argues and what I was about to write. `bench:passes` says it is wrong: of the 27
+parts whose two passes disagree, five differ on how many nets they collapse, and
+**pass 2 is the better read on two of them** - UT54LVDS031 reads `DIN/DOUT+` on
+one pass and `DIN1/DOUT1+` on the other, the right way round.
+
+The rule that survives measurement is about the READING, not about which pass
+produced it: **between two readings of the same part, prefer the one with fewer
+NAME COLLISIONS.** A collision is two pins sharing a name. On its own it means
+nothing, because a part really does have four pins called GND. Between two
+readings of the SAME pinout it means everything: the one with more has merged
+nets the other kept apart.
+
+```
+fg-ut54lvds032    0 collisions vs 10      RIN1-/ROUT1   over  RIN-/ROUT
+ut54lvds031      10 collisions vs  0      DIN1/DOUT1+   over  DIN/DOUT+
+ut7r995_3        16 collisions vs 31      4F0/3Q1       over  nF[1:0]
+ti-tps25990       0 of 4 pins vs 6 of 26  the fuller table
+lmk04828          2 of 65 vs 2 of 64      the one carrying DAP
+```
+
+The other 22 disagreements are level on the measure - typography, or fuller
+alternate-function names - and keep the previous behaviour exactly.
+
+**This also dissolved the bus-range defect at its source.** UT7R995 now reads
+`4F0, 4F1, sOE, PD/DIV...` straight off the figure. The `nF[1:0]` template names
+came from the pass that lost, so the rule added earlier that morning to blank
+them never fires on this part. It stays, because it is about what a pin name IS
+rather than about which pass wrote it.
+
+## And the scan that found nothing real
+
+A sweep for non-ASCII pin names reported 15 of 128 records carrying `V–`,
+`−IN A`, `IN A⁻`. Every one was an artifact: the sweep read REPLAY records, which
+are reassembled from the cache and never run `normalizeModelPins`, so
+`asciiSigns` had not been applied. On the live path all of them are already
+`V-`, `-IN A`, `IN A-`.
+
+Sixth instrument today to manufacture a finding. The tell each time was the same:
+the finding was too tidy, and one live check dissolved it.
+
+One real residue: UT54LVDS031 emits pin 12 as `ÈÀǸ`, an overbar mangled into
+grave accents. One pin, one part, 128 records. Recorded, not built for - a rule
+fitted to a single instance is what RULES.md 4 forbids.
+
+---
+
+# 2026-08-28, fifth pass: the citation that belonged to another package
+
+A rad-hard engineer drove the product on two ceramic parts. RHF310A came out
+correct in five steps and they said so. LM139AQML-SP could not be completed at
+all, and on the way they found the worst defect of the day.
+
+## One page cited by three different packages
+
+`printedFootprintFor` asks `findUnreadableFootprint` for the page a package's
+footprint is drawn on. That function ends:
+
+```ts
+return drawings.length === 1 ? drawings[0]! : null;
+```
+
+with a comment defending it: "One candidate is not a choice, so there is nothing
+to guess between." True of a document that sells one package. **False of one
+that sells four**, where attributing the single drawing found to all of them is a
+guess and wrong for at least three.
+
+Measured on LM139AQML-SP:
+
+```
+LCC      NAJ0020A   20 terminals, four sides    ->  page 31
+CFP      NAD0014B   14 leads                    ->  page 31
+CERPACK  NAC0014A   14 leads                    ->  page 31
+```
+
+Page 31 is NAC0014A. The screen rendered it beside four questions about the
+twenty-terminal LCC and told the user to read the numbers off it.
+
+Their verdict, and the reason this outranked everything else in their report:
+
+> "A wrong-copper defect delivered through the guided path, wearing a page
+> citation that looks like traceability... everywhere else its honesty is its
+> selling point. That makes the one bad citation far more dangerous than a plain
+> error, because the whole product trains me to trust the page next to the
+> number."
+
+**A citation is a claim, and a wrong one is worse than none** on a product whose
+entire pitch is that you can check it.
+
+Fixed two ways. The lone-drawing fallback now requires the document to describe
+ONE package. And a package's own outline code is matched against the text of the
+candidate PAGE - not a sixty-character window before the heading, which found the
+code on none of these four sheets, because a drawing prints its code in a title
+block below itself. Result: LCC and CFP now correctly say they have no page, and
+CERPACK correctly recovers 31.
+
+Coverage unchanged either side: READ 95%/84%, SHIPS 93%/70%, 0 false
+confirmations.
+
+## Three smaller ones, all of them the screen lying quietly
+
+- **Every millimetre answer box was pre-seeded `1.55`** - the same hint for a
+  seated foot (plausible) and a toe-to-toe span (impossible on an 8-lead flat
+  pack). "An invitation to type a wrong number." Now the unit, never an example.
+- **A refusal told the user to open a section called "Worth a look".** No section
+  on the page is headed that; the list is "The reading" and a different one is
+  "Worth a glance". For their part the list was not rendered at all, so the
+  sentence was a dead end twice over. A refusal that tells someone to do
+  something they cannot do is a refusal with no way out.
+- **"All 2 runnable consistency checks passed"** on a record where the manifest in
+  the same bundle said "2 of 8 checks passed, 6 could not run" - and the six
+  included the two they cared about. The screen counted passes and called them
+  all. What could not run is part of the answer.
+
+## Still open from that report, deliberately
+
+Named here rather than fixed, because each needs measuring first: the package
+cards' "cannot build" badge appearing on packages that build; `OUTLINE` blank on
+the record while the card displays the code; a pin shipping as `NC(1)` with a
+footnote marker in its name; the formed-lead numbers living only in one browser's
+`localStorage` and appearing nowhere in the export, which makes them
+un-auditable; and non-determinism across identical reads of one PDF.
+
+---
+
+# 2026-08-28, sixth pass: the same document, two different answers
+
+## It was not the model, and it was not sampling
+
+A rad-hard engineer read one PDF three times and got a package list of 2 cards,
+then 4, then 5, with the real flat pack missing from one run, and one part's
+mounting reading `smd` and then blank.
+
+The obvious causes were both wrong. Temperature is already 0 in every model
+adapter. And `bench:repeatable`, written for this, runs the same document three
+times with every model answer replayed off disk: **100 documents, 3 passes, every
+record and every emitted footprint byte-identical.** Our half does not drift.
+
+## The route was silently degrading, and timing decided when
+
+`/api/parse` treats a drawing-pass FAILURE as a retryable 503 - the record is not
+handed back half-built. A TIMEOUT did the opposite: it kept the deterministic
+record, appended a note saying nothing was read, and returned 200. The screen
+then said "Ready to build".
+
+Two measured facts make that untenable together:
+
+    the parser ALONE scores READ 0 of 59      `bench:holdout` without --model
+    which branch runs is decided by the clock  a slow call, a loaded model
+
+So the preserved record is not a thinner answer. It is very nearly an empty one
+wearing a success, and whether the user gets it depends on how busy the model was.
+That is the whole of the non-determinism.
+
+The rule was already written in that same file, one branch up - Anthony's call,
+2026-08-20: *"a caveat on the deliverable is worse than useless, because it makes
+the user check everything and that is the job they came here to avoid. Either
+files nobody has to second-guess, or 'we could not read it, try again'."* It was
+applied to the error that prompted it and not to the timeout, which reaches the
+identical state. Both now return a retryable 503, as does the branch where
+retrieval ate the budget before the model was ever called.
+
+**A rule written for one branch is worth checking against every branch that
+reaches the same place.**
+
+## The provenance named the wrong source
+
+A straight-lead package has no seated span or foot on any drawing; both come from
+the settings screen. The bundle said "computed from this datasheet's own package
+drawing" - false for exactly the packages that are most of this product's market,
+and it was the only provenance in the file. The engineer's two numbers, 9.40 and
+0.90, appeared nowhere in the zip, the JSON or the manifest. "Un-auditable."
+
+Now the source line names them and says whose they are. Two defects in one
+sentence: a false claim about where the copper came from, and the absence of the
+inputs a reviewer needs to reproduce it.
+
+## The badges were honest; the banner was not
+
+Reported as "the package cards are inverted - every card badged 'cannot build'
+selects fine and reports Ready to build". Half right, and the half matters.
+
+`resolveForExport` refuses LM139AQML-SP's whole record, so all four "cannot
+build" badges are correct. The lie was the headline above them: the verdict
+consulted the review list, which was empty for that part, and fell through to
+"Ready to build." over four unbuildable cards.
+
+It now reads the same outcomes the cards are drawn from, so the headline and the
+cards cannot disagree - the rule `optionFor` keeps between the chooser and the
+export, applied one layer up.
+
+**Check the claim before fixing it.** Fixing the badges would have been fixing
+the one thing that was already right.
+
+---
+
+# 2026-08-28, seventh pass: a short that passed its own check
+
+A PCB librarian unpacked a TPS7A4700 bundle and measured it against TI drawing
+4219039/A. The land pattern is dimensioned `(4.65)`; they rendered page 30 at 8x
+and confirmed the extension line runs down the centreline through pad 1, so 4.65
+is centre to centre. `DIMENSION_ORACLE` agrees: `RGW0020A land spanMm 4.65`.
+
+Three of their four builds emitted **3.9**, which is `4.65 - 0.75`: one land
+length subtracted from a dimension that was already a centre span.
+
+At 3.9 the twenty lead lands have an inner edge at 1.575 mm. The exposed pad is
+3.15 mm square, half extent 1.575 mm. **Every signal pin abuts the ground pad.**
+
+## Two safety nets, both blind, for the same reason
+
+```ts
+/** Floating-point slack. Two lands that share an edge exactly are not overlapping. */
+const TOUCHING_MM = 1e-6;
+```
+
+The export gate required a strict overlap wider than a micron. That sentence is
+true about rectangles and false about copper: two features sharing an edge are
+one region, and a fabricator etches them as one. Twenty exact abutments, no
+violation.
+
+And the confidence check measured the distance between opposing rows and called
+all of it clear:
+
+    "3.150 mm of clear board between the opposing rows"
+
+which is the exact width of the pad filling it. It compared signal rows to each
+other and never asked what sits in the middle.
+
+Both now account for it. The gate treats meeting copper as joined copper - no
+minimum clearance is invented, only the arithmetic that copper which meets is
+one piece. The check subtracts the exposed pad per axis and reports the board
+that is actually left: at the correct 4.65 span it reads **0.375 mm**, which is
+what the librarian measured off the drawing.
+
+**Measured cost of tightening the gate: zero.** 865 tests, `bench:copper` clean,
+hold-out unchanged at READ 95% / SHIPS 93% / 1.49 to check. No correct footprint
+in either corpus has abutting pads.
+
+## The shape, again
+
+The value was flagged. The panel said "Land pattern (the pads), page 30 - nothing
+independent could check this", because IPC-7351B has no no-lead model. That was
+the one uncorroborated value in the bundle and it was the one that was wrong; on
+the same run OPA333's SOIC agreed with IPC and was correct. **The mechanism
+works.**
+
+What failed was everything downstream of the flag: a gate that would not call
+touching copper a short, a check that reported the short as clearance, and a
+green "Ready to build" over all of it. Their sentence is the one to keep:
+
+> "A wrong footprint that announces itself is a nuisance. A wrong footprint that
+> passes its own checks and varies run to run is a recall."
+
+## Still open from that report
+
+- **`landSpanMm` has no stated convention.** Centre-to-centre or tip-to-tip is
+  not written down anywhere, and the same record produced 4.65 on one run and 3.9
+  on another. Until the field says which it is, the subtraction that made 3.9 can
+  come back.
+- **No Cadence generator**, disabled in the UI and discovered only after a
+  90-second read.
+- **No `.IntLib` and no component parameters** in the Altium SchLib: designator
+  and comment only, so ~14 mandatory library fields are hand entry, and the
+  per-pin descriptions on the record never reach the symbol.
+- **The symbol has no pin for the exposed pad** while the footprint has pad 21,
+  so Altium reports an unmatched pad and the thermal land floats.
+- **Nine thermal vias with empty designators**, netless, sitting on the pad.
+- **The courtyard is inside the silkscreen** on the QFN path (±2.575 against
+  ±2.625). Not present on the SOIC path.
+- **`test-data/lmp7704-sp.PcbLib` is a Forge export, not an Altium artifact.** It
+  is named as the reference in `ipc7351.ts` and used as one. Comparing our output
+  to it proves only that we agree with ourselves. Nothing in this project has
+  ever been opened in Altium.
+
+---
+
+# 2026-08-28, the audit: can a value be wrong and still say "confirmed"?
+
+Anthony asked whether the design was solid or whether more assumptions were
+hiding. Three instruments were written to answer it rather than reason about it.
+
+## `bench:courtyard` — 7 of 91 courtyards do not contain the part
+
+IPC-7351B's courtyard is the greater of the land extent and the BODY, plus an
+excess. `assemble` takes the land extent on both axes of a quad and never
+compares it to the body. Seven footprints have a courtyard inside their own
+outline, five of them ceramic flat packs. A courtyard inside the body lets the
+placement checker put another component on top of the physical part.
+
+I had repeated a reviewer's claim that the defect was "courtyard inside the
+silkscreen, wrong by IPC-7351". It is not that; silkscreen is a drawing layer.
+Reading the code first found the real one.
+
+## The formed lead span is not a property of their line
+
+`formedLeadSpanMm` is one global setting applied to every part. A toe-to-toe span
+depends on the package body, so it cannot be.
+
+    LX7730 CQFP 132L   body 24.125 mm   formed span 7.62 mm
+    RHF1201 SO48       body  9.650 mm   formed span 7.62 mm
+
+**Six of twelve straight-lead parts get a span inside their own body**, which no
+flat pack can have: its leads extend outward. This is what produces five of the
+seven courtyard failures.
+
+The rad-hard engineer said it outright - *"my die gives a repeatable foot and
+bend; it does not give one toe-to-toe span across a CFP-8 and a CQFP-128"* - and
+it was written into this file that morning and not acted on. **A finding recorded
+is not a finding fixed.**
+
+The check that would catch it, `span-covers-body`, reads `dimensions.leadSpanMm`,
+the DRAWING's span, which is null on exactly these packages. So it reports
+"unavailable" and the impossible number ships. Same shape as every other defect
+this week: a check that exists and does not look at the value that ships.
+
+## `bench:unchecked` — corrupt each value, see whether anything notices
+
+Written after the map-based version over-reported twice. The first carried a
+hand-written table of which check covers which value and knew nothing of the
+export gate. The second compared flag COUNTS, so a value already flagged looked
+"silent" when the user had been told.
+
+The third asks the product's own question. THE INVARIANT defines shipping
+silently as being CONFIRMED, so: corrupt a value wherever its confirmation
+currently says confirmed, and see whether it still does.
+
+```
+mutation                      confirmed  caught  STILL CONFIRMED
+landSpanMm x0.5                      40      40                0
+landPadLengthMm x3                   40      40                0
+landPadWidthMm x3                    40      40                0
+pitchMm x2                            0       0                0
+thermalPad x2                         0       0                0
+formed span x0.4                      0       0                0
+bodyWidthMm x0.4                     74      17               57   <- HOLE
+leadSides 2<->4                      86      27               59   <- see below
+```
+
+**The copper is well guarded.** All three land-pattern values are caught 40 out
+of 40, and pitch, thermal pad and formed span are never confirmed in the first
+place - always flagged, so they cannot ship silently wrong. That is the invariant
+working.
+
+**The body confirmation is a one-sided bound.** `confirmBody` confirms when
+`span.maxMm >= min(length, width)`. Shrink the body and that stays true, so a
+body at 40% of its real size keeps saying "confirmed" on 57 parts. Worse, it is
+not two sources: the span and the body come off the SAME drawing, and a one-sided
+sanity check is not a second reading. Calling that "confirmed" misuses the word
+the whole product rests on.
+
+**Nothing vouches for `leadSides` at all.** The 59 above is really measuring my
+own mapping - I attached it to `pin-count`, which is about something else. The
+correct statement is that no confirmation covers the arrangement, and getting 2
+against 4 wrong rebuilds the entire footprint. `bench:copper` checks the
+arrangement against the RECORD, which is consistency, not correctness.
+
+## What the audit is worth
+
+Three instruments, two real holes, and two confirmations that the parts I was
+most worried about are sound. The method that produced it: **write the instrument
+that finds the class, not the fix for the instance** - and validate the
+instrument, because two of its three versions reported nonsense before this one
+reported something.
+
+## An oracle cannot see a reading you got wrong (2026-08-29)
+
+`pinevidence.ts`'s two floors were swept on 2026-08-27 and the sweep scored one
+thing: how many pinouts came back corroborated, with a hand-read oracle checking
+that none of them was wrong. That is half a measurement, and the missing half is
+the important one.
+
+Every record in the corpus the oracle covers is one the model read CORRECTLY. So
+the sweep could tell you a right answer was confirmed. It could not tell you what
+the check would do with a wrong one, and the answer turned out to be: confirm it.
+Swapping two pin names left the pinout CONFIRMED on 46 of 107 parts.
+
+A mutation sees what an oracle cannot. `bench:symbol` corrupts the record and
+asks whether anything objects, and it found in one run what two sweeps and a
+hand-read oracle had missed. **When a check is scored only against correct data,
+it has been scored on half its job.**
+
+## A fix that reads well and buys nothing is the expensive kind of wrong (2026-08-29)
+
+The first diagnosis of the above was the page-level union: a pinout was
+"confirmed" when no single page agreed with it and the pages between them added
+up. AD8221 proves it - two pages that draw the pinout both decline to agree about
+pin 1 after a swap, and a third supplies it.
+
+The argument is good. "A second source that can be assembled out of pages that
+individually disagree is not a second source" is true, and it fixes that part.
+
+Measured across the corpus it cost SEVEN corroborated pinouts, three of them
+oracle-verified, and changed the number of corrupted pinouts still confirmed by
+**zero** once the real defect was closed. It was reverted.
+
+The real defect was one line away: an offset supported by a single pin is
+circular, because the offset is derived from the match it then confirms. Stray
+pairs of collinear numbers picked an offset two hundred points across the page
+and agreed with themselves.
+
+**Measure the fix, not the argument for it.** A plausible fix next to a real one
+looks identical until you score them.
+
+## Three instrument bugs, each of which read as a product defect (2026-08-29)
+
+`bench:emitters` compares the KiCad and Altium output of the same record. Its
+first three runs reported, in order: 200 pad disagreements, 1623 pin
+disagreements, and 3 footprints with paste in the wrong place. All three were the
+bench.
+
+- paste apertures carry no designator in either format, so keying on the empty
+  string collapsed fourteen of them onto one entry
+- Altium stores the pin end that touches the BODY and KiCad stores the far end -
+  `schlib.ts` says so in a comment, and the bench did not convert
+- Altium stores coordinates on an integer 1/10000 mil grid, so 0.9125 mm comes
+  back as 0.913 and a string comparison called it a disagreement
+
+The bench now moves a land, renames a pin and inflates a solid on the first part
+it sees, and refuses to print anything if all three are not reported. **A clean
+sheet from an instrument that has never been shown to fail is not evidence.**
+
+## A stage that reports "not exercised" may mean "cannot fire" (2026-08-29)
+
+`bench:browser --full` lists which optional user paths a run exercised.
+`question-answered` had been in the NOT-exercised list every run since it was
+written, and it was read as "these datasheets happened not to ask anything".
+
+The selector was `.ask input`. No element has the class `ask` - the markup is
+`.ask-group > .ask-list > .ask-row-full > .ask-row > input`. The stage had never
+fired, on any run, ever. It was also placed BEFORE the export it depends on: the
+question boxes only appear once the export has refused and named what it needs.
+
+Two defects were behind it, and one of them would have reached a customer: the
+screen was overwriting a user's part-specific answer with the install-wide value
+that had just been rejected, so a question could be answered correctly and asked
+again in the same words forever.
+
+**"Not exercised" is a claim about the instrument as much as about the data.**
+When a path is never reached, check that it CAN be, before concluding anything
+about the corpus. Same shape as the check that matched a pad number the emitter
+never emits.
+
+## Guards travel in pairs, because the routes do (2026-08-29)
+
+`/api/parse` and `/api/lookup` are the same operation past the point where the
+bytes are in hand - `buildReadout` says so and is shared. They still hold their
+own copies of every guard.
+
+The no-reader-configured refusal went onto parse alone, and the parity test
+between the two routes failed within the minute. That is the third time: the
+per-package table door, the relabel door, and now this. When adding a guard to
+one of these two routes, add it to both in the same change, or expect the parity
+test to tell you off.
+
+## Break the check before you trust it (2026-08-30)
+
+Four instruments were found on 2026-08-29 that could not fire. That looked like
+bad luck. A systematic pass the next day - run every bench twice, once with a
+deliberate defect injected where a real one would enter - found more, and one of
+them was in the instrument the whole copper claim rests on.
+
+**`bench:copper` was blind to a land moved 0.9 mm on 66 of 80 footprints.** Its
+PITCH and SPAN checks examine only the rows whose membership equals the widest
+row, and a land that moves OUT of its row shrinks that row below the threshold.
+So both checks skipped the row containing the defect, and the displaced land was
+examined by nothing at all. A single land out of position is the likeliest
+emitter defect there is, and the instrument written to catch it looked away from
+exactly that case.
+
+**Three of `bench:unchecked`'s eight mutations had nothing to corrupt.** The row
+read `0 confirmed, 0 caught, 0 still confirmed` and was taken for a clean sheet.
+The cause was one line: `replayRecords` hardcoded `vendorLandPattern: null`, so
+no replayed part could ever confirm its pitch. `readout.ts` names that exact
+failure - a bench measuring a product where no footprint has a second source -
+in its own header, for a different bench, one level up.
+
+So: `bench:instruments` now runs each bench clean and injected and refuses the
+run if the output does not change. `inject.ts` holds the seam and is inert
+without `FORGE_INJECT`. Placement is the whole claim, so every call site says
+which real failure it stands for.
+
+Three habits fall out of it, all in `RULES.md`:
+
+- A row of zeros is not a pass. Where a bench had nothing to measure, say NO DATA.
+- "Never fires" and "is dead" look identical from outside. Six of seven
+  land-pattern guards fired on nothing in any corpus; all six work, and that
+  could not be known until each was given a record built to trip it.
+- **A mutation that changes nothing is not a finding.** This bench committed the
+  sin it exists to catch: "a plated hole with no drill" reported 86 of 86
+  shipping wrong, because all 86 corpus parts are surface mount and the mutation
+  returned the footprint unchanged.
+
+## An independent reader is not the customer's tool (2026-08-30)
+
+`bench:emitters` reads every emitted file back with `kiutils` and cross-checks it
+against AltiumSharp. Both are real, independent implementations, and neither is
+KiCad.
+
+`kicad-cli` plotted all 80 emitted footprints and **refused 2 of 80 symbol
+libraries.** Both carried a pin typed `nc`, and the emitter wrote
+`not_connected`; KiCad's token is `no_connect`. KiCad does not skip the pin or
+warn - it refuses the whole library with "Unable to load library", so every part
+in the file is lost over one pin. kiutils parsed it happily and 890 tests passed.
+
+The electrical type had only started being emitted two days earlier, so for two
+days every part with an unused pin shipped a symbol library that would not open.
+The same look found `open_collector` and `open_emitter` falling through to
+`unspecified` in KiCad and to Passive in Altium, which both formats have and
+neither was being told.
+
+**Run the customer's tool where it can be run at all.** `brew install --cask
+kicad` wants an administrator password for a directory the CLI does not use; the
+binary runs straight from the mounted disk image with nothing installed:
+
+    hdiutil attach -nobrowse -readonly -mountpoint /tmp/kicadmnt <the .dmg>
+    FORGE_KICAD_CLI=/tmp/kicadmnt/KiCad/KiCad.app/Contents/MacOS/kicad-cli npm run bench:kicad
+
+## Coverage finds what you would not think to look for (2026-08-30)
+
+Coverage had never been run on this repository. Node's own
+`--experimental-test-coverage` crashes on tsx source maps; `c8` works.
+
+84% of statements, and the gaps were not where memory said they were:
+
+    vertex.ts              188 lines, 0%   the provider the product BILLS
+    api/config/route.ts     24 lines, 0%   a live route
+    api/parse/route.ts      51%             the model section, lines 282-453
+
+Writing tests for the parse route's uncovered failure branches found a live
+defect: a reader that answers in prose instead of JSON produced HTTP 200 and an
+empty record, so an operator with a misconfigured local model was told their
+DATASHEET was the problem. The route's own comment three lines up says "A PARSE
+THAT LOST THE MODEL PASS IS A FAILED PARSE, NOT A THINNER ONE" - the discard
+raised no error, so the catch enforcing that rule never ran.
+
+**Untested and untestable are different, and only coverage tells you which.**
+`resolver.ts` is 0% and correct - it is types only. `page.tsx` is 0% and covered
+by `bench:browser`. `vertex.ts` was 0% and covered by nothing.
+
+## Writing down what you deliberately do NOT check finds what nobody checked (2026-08-31)
+
+`bench:outputs` breaks every value that reaches an emitted file. Its rule is that
+each field an emitter reads ends up in one of three buckets: caught by the export
+gate, flagged to the user, or **listed with a reason for being neither**.
+
+The first two buckets found two real holes. The third found the worst one. Writing
+out the "deliberately not mutated" list meant giving a reason for each field, and
+one field had no reason available: `thermalVias` appears nowhere in
+`confidence.ts`, so the export gate had never looked at a thermal via array. A via
+is copper *and* a hole. One drifting off the pad drills through the board where no
+land is; one drifting further reaches a lead land and shorts the pad to a signal.
+
+Exactly one part in the corpus emits any (TPS54360, six of them), so no amount of
+running the corpus would have surfaced it, and the check needed a fixture as well.
+
+**The forcing function is the requirement to give a reason.** "We do not check X"
+is a sentence nobody writes until something makes them, and the moment it is
+written the ones with no defensible reason stand out. A list of what you check is
+easy to feel good about; a list of what you have decided not to check is the one
+that finds things.
+
+The same pass had the bench commit the sin it exists to catch: "a plated hole with
+no drill" reported 86 of 86 shipping wrong, because all 86 corpus footprints are
+surface mount and the mutation returned the footprint unchanged. **A mutation that
+changes nothing is not a finding.** It reports NO DATA now, which is the same rule
+as "a row of zeros is not a pass".

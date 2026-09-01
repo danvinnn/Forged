@@ -99,8 +99,20 @@ const DIMENSION = /(?:(\d{1,3})X\s*)?\(\s*(\d{0,3}(?:\.\d{1,4})?)\s*\)/g;
  */
 const TWIN = /\[\s*(\d{0,3}(?:\.\d{1,4})?)\s*\]/;
 
-/** How far past a callout its bracketed twin may sit, in characters. */
-const TWIN_WINDOW = 48;
+/**
+ * A callout's twin is the bracketed value that comes before the NEXT callout.
+ *
+ * Structural rather than a distance. The first version looked a fixed number of
+ * characters ahead, and swept on 2026-08-27 that number changed the land
+ * dimensions actually emitted - 8, 16, 48 and 200 characters each produced a
+ * different set. A number that moves copper and was chosen because it suited the
+ * drawings I happened to open is the exact thing RULES.md rule 1 forbids.
+ *
+ * The structure says it without a number: a dual-dimensioned drawing prints
+ * `8X (.061  )` and then `[1.55]`, and the next parenthesised callout begins the
+ * next dimension. Anything bracketed before that belongs to this one; anything
+ * after it does not, at any distance.
+ */
 
 /** Millimetres per inch, and the ratio that identifies a dual-dimensioned pair. */
 const MM_PER_INCH = 25.4;
@@ -118,7 +130,10 @@ function dimensionsIn(block: string): VendorLandDimension[] {
   for (const match of block.matchAll(DIMENSION)) {
     const parenMm = Number(match[2]);
     if (!Number.isFinite(parenMm) || parenMm <= 0) continue;
-    const ahead = block.slice(match.index + match[0].length, match.index + match[0].length + TWIN_WINDOW);
+    const after = block.slice(match.index + match[0].length);
+    // Bounded at the next callout, which is where this dimension ends.
+    const nextCallout = /\((?:\s*\d{0,3}(?:\.\d{1,4})?\s*)\)/.exec(after);
+    const ahead = nextCallout ? after.slice(0, nextCallout.index) : after;
     const twin = TWIN.exec(ahead);
     const twinMm = twin ? Number(twin[1]) : null;
     found.push({ repeat: match[1] ? Number(match[1]) : null, parenMm, twinMm: Number.isFinite(twinMm) ? twinMm : null });
@@ -153,20 +168,22 @@ const DRAWING_WINDOW = 1200;
  * line above the callouts, so that is what selects the right one.
  */
 /**
- * A drawing title token, with trademark decoration removed.
+ * Does a drawing-title token name this package family?
  *
- * TI sets a superscript trademark beside the family word and the text layer
- * folds it back in, so `VSSOP` arrives as `TMVSSOP` and an equality test against
- * the package family fails on a drawing that is the right one. Measured on
- * LM358, whose DGK drawing is titled `DGK0008A TMVSSOP`.
+ * BOTH FORMS ARE TRIED, which is what removes the guesswork. The text layer
+ * folds a superscript trademark into the token beside it, so `VSSOP` arrives as
+ * `TMVSSOP` and an equality test fails on a drawing that is the right one.
  *
- * The literal `TM` is stripped only when something substantial is left, so a
- * family whose own name begins with those letters is not truncated.
+ * An earlier version stripped a leading `TM` whenever four or more characters
+ * were left. That bound was fitted to the one title that prompted it and it was
+ * a real hazard: a package code beginning with those letters would have been
+ * truncated into a different token. Trying the token AS PRINTED first and the
+ * stripped form only as a fallback needs no bound at all and cannot truncate
+ * anything, because a token that already matches never reaches the strip.
  */
-function withoutTrademark(token: string): string {
+function tokenNames(token: string, wanted: string): boolean {
   const bare = token.toUpperCase().replace(/[^A-Z0-9-]/g, "");
-  const stripped = bare.replace(/^TM/, "");
-  return stripped.length >= 4 ? stripped : bare;
+  return bare === wanted || bare.replace(/^TM/, "") === wanted;
 }
 
 /**
@@ -188,8 +205,8 @@ function titleNames(block: string, wanted: string | undefined, outlineCode: stri
   if (outlineCode && header && key(header[1]) === key(outlineCode)) return true;
   if (!wanted) return header ? !outlineCode : true;
   if (header) {
-    const tokens = `${header[1]} ${header[2]}`.split(/\s+/).map(withoutTrademark);
-    if (tokens.includes(withoutTrademark(wanted))) return true;
+    const bare = wanted.toUpperCase().replace(/[^A-Z0-9-]/g, "");
+    if (`${header[1]} ${header[2]}`.split(/\s+/).some((token) => tokenNames(token, bare))) return true;
     // A code we know about that this title does not carry means this is another
     // package's drawing, whatever its caption says.
     if (outlineCode) return false;
@@ -285,7 +302,17 @@ const UNREADABLE_FOOTPRINT_HEADING =
 const TOC_LEADER = /\.{4,}|(?:\.\s){4,}/;
 
 /** Page of a footprint drawing for this family that cannot be parsed, if any. */
-export function findUnreadableFootprint(doc: DatasheetText, family?: string): number | null {
+export function findUnreadableFootprint(
+  doc: DatasheetText,
+  family?: string,
+  /**
+   * The drawing's own code, and how many packages the document describes.
+   *
+   * Both are needed to stop this handing one page to several packages. See the
+   * fallback at the bottom of the function.
+   */
+  options: { outlineCode?: string; packagesInDocument?: number } = {}
+): number | null {
   const wanted = family?.trim().split(/\s+/)[0]?.toUpperCase();
   const headings = [...doc.text.matchAll(new RegExp(UNREADABLE_FOOTPRINT_HEADING.source, "gi"))];
 
@@ -320,6 +347,31 @@ export function findUnreadableFootprint(doc: DatasheetText, family?: string): nu
     // `LQFP64 - Footprint example`. Punctuation is stripped so `LQFP-64`,
     // `LQFP64` and `LQFP 64` all compare equal to the family's first word.
     const caption = doc.text.slice(Math.max(0, heading.index - 60), heading.index);
+
+    // THE DRAWING'S OWN CODE SETTLES IT, where the document prints one.
+    //
+    // TI titles these by code rather than by family - `NAC0014A`, `NAJ0020A` -
+    // so the family-word gate below never matches on their documents and every
+    // package fell through to the fallback. A code in the caption is the
+    // strongest evidence available about which package a drawing belongs to,
+    // and it is the same identity `sameOutlineCode` compares everywhere else.
+    // A POSITIVE MATCH ONLY. If the caption names OUR code the drawing is ours;
+    // if it names nothing we recognise, this says nothing either way and the
+    // family gate below decides. Deliberately not "does the caption hold SOME
+    // other code, therefore skip": that needs a pattern for what a code looks
+    // like across every vendor, which is the kind of invented rule this codebase
+    // keeps deleting.
+    if (options.outlineCode && page !== null) {
+      const bare = options.outlineCode.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      // THE WHOLE PAGE, not a window before the heading. A drawing prints its
+      // code in its title block, which is usually below the drawing and always
+      // somewhere on the same sheet; a sixty-character look-behind found the
+      // code on none of LM139AQML-SP's four package pages. The page is the unit
+      // the citation is expressed in, so it is the right unit to match on.
+      const sheet = doc.pages.find((candidate) => candidate.page === page)?.text ?? "";
+      if (bare.length >= 4 && sheet.toUpperCase().replace(/[^A-Z0-9]/g, "").includes(bare)) return page;
+    }
+
     if (wanted) {
       const bare = wanted.replace(/[^A-Z0-9]/g, "");
       const seen = caption.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -328,9 +380,26 @@ export function findUnreadableFootprint(doc: DatasheetText, family?: string): nu
     return page;
   }
 
-  // Nothing named the family, but the document drew exactly one footprint. See
-  // `drawings`.
-  return drawings.length === 1 ? drawings[0]! : null;
+  // Nothing named the family, but the document drew exactly one footprint.
+  //
+  // ONLY WHERE THE DOCUMENT DESCRIBES ONE PACKAGE. "One candidate is not a
+  // choice, so there is nothing to guess between" is true of a document that
+  // sells one package and false of one that sells four: attributing the single
+  // drawing we found to all of them is a guess, and a wrong one for at least
+  // three.
+  //
+  // Measured on LM139AQML-SP, 2026-08-28, by an engineer using the product: its
+  // LCC (NAJ0020A, twenty terminals on four sides), CFP (NAD0014B) and CERPACK
+  // (NAC0014A) all came back citing PAGE 31. The screen then rendered page 31 -
+  // a fourteen-land, two-sided CERPACK pattern - beside four questions about the
+  // twenty-terminal LCC, and told them to read the numbers off it.
+  //
+  // Their words, and the reason this is the top fix of the day: "a wrong-copper
+  // defect delivered through the guided path, wearing a page citation that looks
+  // like traceability... the whole product trains me to trust the page next to
+  // the number."
+  const oneKnownPackage = (options.packagesInDocument ?? 1) <= 1;
+  return drawings.length === 1 && oneKnownPackage ? drawings[0]! : null;
 }
 
 /** Whether any vendor dimension sits within tolerance of a computed value. */

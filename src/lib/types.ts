@@ -18,6 +18,104 @@ export const pinElectricalTypes = [
 ] as const;
 
 /**
+ * The datasheet's word for a pin's type, mapped onto the enum this product
+ * emits.
+ *
+ * ## Why a mapping rather than a stricter prompt
+ *
+ * This line read `electricalType: "unspecified"`. It destructured the model's
+ * answer one line above and then threw it away unconditionally, so EVERY pin
+ * this product has ever emitted has been `unspecified` and KiCad's ERC has had
+ * nothing to work with. Two independent reviewers reported it on 2026-08-28
+ * within an hour of each other.
+ *
+ * The model was answering. Sampled across the cache that day, it returns the
+ * DATASHEET'S OWN vocabulary, because that is what a faithful reader does:
+ *
+ *     TPS23881   I, I/O, O          TI's Type column
+ *     UCC21750   I, O, P
+ *     TPS548B22  G, I, I/O, O, P    and elsewhere Ground, Input, Power
+ *     UT7R995    Power, LVTTL, 3-Level, N/A
+ *
+ * None of those are in `pinElectricalTypes`, so a strict enum check would also
+ * have discarded them. The prompt never named the values it would accept -
+ * `forge-unanswerable-question` exactly, where `leadForm` came back null for 37
+ * of 81 parts because the prompt offered two of the three legal answers.
+ *
+ * Tightening the prompt would work and would invalidate roughly 2,400 cached
+ * answers, because the cache key is the prompt. Mapping the vocabulary costs
+ * nothing and reads the answers already on disk. The vocabulary is an industry
+ * convention rather than one vendor's habit, so this is a general rule and not a
+ * table fitted to the datasheets that happened to be sampled.
+ *
+ * ## What is NOT mapped
+ *
+ * Anything unrecognised stays `unspecified`, which is the honest answer and the
+ * behaviour every existing record already has. A logic family ("LVTTL") or a
+ * signalling level ("3-Level") describes the electrical STANDARD a pin speaks,
+ * not whether it drives or is driven, so it is not evidence about direction and
+ * is not guessed at.
+ *
+ * GROUND MAPS TO `power`. A ground pin is a power connection in every library
+ * format this emits, and KiCad's own symbols type GND as a power input. Giving
+ * it `passive` would let ERC pass a floating ground.
+ */
+export function pinTypeFrom(value: unknown): PinElectricalType {
+  if (typeof value !== "string") return "unspecified";
+  // The SLASH goes too. Without it `I/O` matched a literal case below while
+  // `Input/Output` - the same answer written out, which TPS548B22's table uses
+  // on the very next page - fell through to unspecified. A normaliser that
+  // leaves one separator in place is a lookup table with a hole in it.
+  const word = value.trim().toLowerCase().replace(/[\s_/-]+/g, "");
+  // Already one of ours, whatever case the model chose.
+  if ((pinElectricalTypes as readonly string[]).includes(word)) return word as PinElectricalType;
+  switch (word) {
+    case "i":
+    case "in":
+    case "input":
+      return "input";
+    case "o":
+    case "out":
+    case "output":
+      return "output";
+    case "io":
+    case "inout":
+    case "inputoutput":
+    case "bidir":
+    case "bidirectional":
+      return "bidirectional";
+    case "p":
+    case "pwr":
+    case "power":
+    case "supply":
+    case "g":
+    case "gnd":
+    case "ground":
+      return "power";
+    case "nc":
+    case "na":
+    case "noconnect":
+    case "notconnected":
+    case "donotconnect":
+    case "dnc":
+      return "nc";
+    case "pas":
+    case "passive":
+      return "passive";
+    case "oc":
+    case "opencollector":
+    case "opendrain":
+      return "open_collector";
+    case "oe":
+    case "openemitter":
+    case "opensource":
+      return "open_emitter";
+    default:
+      return "unspecified";
+  }
+}
+
+/**
  * How a value was produced. "deterministic" is the code parser, "vlm" is a
  * vision-language model, "user" is a human edit in the UI. null means the
  * value was never determined.

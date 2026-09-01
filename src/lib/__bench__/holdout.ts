@@ -50,7 +50,6 @@ import {
   type CacheMode,
   type CachingModel
 } from "./modelcache";
-import { looksLikeWrongDocument } from "../pdftext";
 import { checkFetchedDatasheet } from "./fetchcheck";
 import { loadBenchEnv } from "./env";
 import { getDeploymentMode } from "../retrieval/deployment";
@@ -152,69 +151,6 @@ async function fetchToCache(part: HoldoutPart): Promise<boolean> {
   }
 }
 
-/**
- * Why one part produced no bundle, in a form that GROUPS.
- *
- * The point of the hold-out is not a list of parts to go and fix, it is a
- * histogram of causes. A cause with one part behind it is a document; a cause
- * with nine is a hole in the reader.
- */
-function classify(record: PartRecord, doc?: DatasheetText): string {
-  const pins = record.pins.value ?? [];
-  const count = record.pinCount.value;
-
-  // WHAT WE FETCHED IS NOT ALWAYS A DATASHEET, and that is a different failure.
-  //
-  // AD8495 resolved to a three-page Soldered Electronics breakout-board product
-  // page: 2,318 characters, no pinout, no mechanical section, a shipping weight
-  // and an order code. The model correctly refused all 36 fields, including the
-  // manufacturer, because none of them is in the document.
-  //
-  // Counting that as "we could not read the datasheet" is wrong in both
-  // directions: it makes extraction look worse than it is, and it hides a
-  // retrieval failure that a user would hit exactly as hard. Retrieval is out of
-  // scope for this bench, so it is named and set aside rather than scored.
-  //
-  // The test is deliberately about SIZE and not about content: a document with
-  // no pinout section might still be a datasheet whose pinout is a figure, and
-  // that is a reading problem. A component datasheet that is three pages long
-  // with two thousand characters is not a component datasheet.
-  // The rule lives in `pdftext.ts` so the PRODUCT applies the same one. It was
-  // duplicated here, which meant the bench could classify a case the product had
-  // no way to detect.
-  if (doc && looksLikeWrongDocument(doc)) {
-    return "NOT A DATASHEET (retrieval fetched the wrong document)";
-  }
-
-  // A PINOUT PER PACKAGE IS A PINOUT.
-  //
-  // A family datasheet whose part number does not name a package gets `pins`
-  // null, correctly: the model is told not to pick among several pinouts. It
-  // returns them all, labelled, and each is located on a page before it is
-  // stored. Counting that as "no pins, no count" is what made twelve of the
-  // fifty-one parts with a reading look unreadable when the document had been
-  // read fine and the answer was on the record. The package chooser offers
-  // exactly these, one option per table.
-  //
-  // Only tables that were LOCATED count. An entry that matched no page in the
-  // document is not evidence, and `resolveForExport` refuses it downstream.
-  //
-  // AND A PIN COUNT DOES NOT STOP IT BEING ONE. This asked additionally for
-  // `count === null`, so a document that named its lead count AND tabulated a
-  // pinout per package was filed as "count but no pins" and never offered to
-  // the chooser at all: the run stopped one step before the product, for the
-  // third time in this file's history. TCA9548A, LD39050 and ADG1211 each carry
-  // two or three located per-package tables and were counted as unread.
-  const located = (record.packagesInThisDocument ?? []).filter((table) => table.citation).length;
-  if (pins.length === 0 && located > 0) {
-    return "read (one pinout per package, user picks)";
-  }
-
-  if (pins.length === 0 && count === null) return "no pins, no count";
-  if (pins.length === 0) return "count but no pins";
-  if (count === null) return "pins but no count (nothing corroborates them)";
-  return "read";
-}
 
 
 /**
@@ -231,6 +167,8 @@ function classify(record: PartRecord, doc?: DatasheetText): string {
  * whole reason these are settings.
  */
 import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
+import { classify } from "./readclassify";
+import { withPrintedFootprint } from "../readout";
 import { confirmations, MAX_FLAGGED } from "../confirm";
 import { buildFootprintGeometry } from "../exporters";
 import { densityOf } from "../settings";
@@ -389,6 +327,20 @@ async function main(): Promise<void> {
     if (reason.startsWith("read")) {
       read += 1;
       kind.read += 1;
+      // THE PRINTED FOOTPRINT'S PAGE, located exactly as the product locates it.
+      //
+      // `buildReadout` calls this before anything downstream sees the record, so
+      // `/api/parse` and `/api/lookup` both hand `shipOutcome` a record that knows
+      // which page prints its pads. This bench called `shipOutcome` on the raw
+      // record and therefore measured a DIFFERENT record from the one a user gets:
+      // `confirmPitch` looks for the pitch among the printed pattern's own
+      // numbers, and with no pattern located it can only ever report
+      // `no-printed-footprint`. Measured 2026-08-28 on the blind corpus: 30 of 30
+      // shipping parts carried that flag and 0 of 34 had a located pattern.
+      //
+      // Same two-definitions drift as `forge-ships-two-definitions`, in the
+      // instrument this time. `oracle-match.ts` had it right and these did not.
+      if (parsed) record = withPrintedFootprint(record, parsed);
       const outcome = await shipOutcome(record, BENCH_SETTINGS);
       if (outcome.ships) ships += 1;
       else shipRefusals.set(outcome.why, [...(shipRefusals.get(outcome.why) ?? []), part.partNumber]);
@@ -405,7 +357,21 @@ async function main(): Promise<void> {
             undefined,
             BENCH_SETTINGS.formedLeadContactMm
           );
-          flagged.push(confirmations(outcome.shippedPart, geometry, parsed ?? null).flagged.length);
+          // THE SAME ANSWERS THE FOOTPRINT WAS BUILT FROM, threaded 2026-08-28.
+          // `confirmations` now overlays the leads onto the lands, and a flat
+          // pack's seated span and foot come from the settings screen rather
+          // than any drawing. Passing the geometry built WITH them and a
+          // confirmation report built WITHOUT them is the two-definitions drift
+          // this file has been bitten by twice.
+          flagged.push(
+            confirmations(
+              outcome.shippedPart,
+              geometry,
+              parsed ?? null,
+              BENCH_SETTINGS.formedLeadSpanMm,
+              BENCH_SETTINGS.formedLeadContactMm
+            ).flagged.length
+          );
         } catch {
           // A bundle that only exists once a question is answered cannot be
           // rebuilt from the bare record here. Left out of the distribution

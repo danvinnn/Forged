@@ -153,7 +153,20 @@ function namesAnotherPin(printed: string, number: number, claimed: ReadonlyMap<n
   return false;
 }
 
-/** Numbers whose centres sit within this of each other are collinear. */
+/**
+ * Numbers whose centres sit within this of each other are collinear.
+ *
+ * MEASURED, not chosen: swept over the 107 cached parts on 2026-08-27, the count
+ * of fully corroborated pinouts runs 71 / 72 / 72 / 70 / 66 at 2 / 3 / 4 / 6 / 8
+ * points, and the FALSE-CONFIRMATION count is zero at every one of them. So this
+ * trades coverage only, it is flat across the middle of that range, and 4 sits
+ * in the flat part.
+ *
+ * Widening it past 6 merges neighbouring columns and loses evidence; narrowing
+ * it past 2 splits a column that rounding moved. Neither direction can make a
+ * confirmation wrong, which is the property that matters and the reason this is
+ * a tolerance rather than a judgement.
+ */
 const COLLINEAR_TOLERANCE_PT = 4;
 
 /**
@@ -163,6 +176,18 @@ const COLLINEAR_TOLERANCE_PT = 4;
  * and its runs begin wherever their glyphs do, so `OUT1` and `IN1+` start a few
  * points apart where two numbers never would. Tight across the other axis,
  * because a row is a row.
+ *
+ * MEASURED 2026-08-27 over 107 parts. X at 6 / 8 / 12 / 18 / 24 points gives
+ * 66 / 70 / 72 / 74 / 75 corroborated pinouts; Y at 2 / 3 / 5 gives 70 / 72 / 72.
+ * Zero false confirmations at every setting of either.
+ *
+ * **X IS DELIBERATELY NOT WIDENED**, and the measurement is the reason to be
+ * careful rather than the reason to move: 24 points buys three more parts on the
+ * corpus this was written against, and a window twice as wide is twice as likely
+ * to reach a name that belongs to something else on a document nobody has seen.
+ * Coverage measured on the tuned set is exactly the evidence the hold-out rule
+ * exists to distrust. Twelve points is about two characters at the sizes these
+ * drawings use, which is what "the next cell along" means.
  */
 const OFFSET_TOLERANCE_X_PT = 12;
 const OFFSET_TOLERANCE_Y_PT = 3;
@@ -182,9 +207,30 @@ const OFFSET_TOLERANCE_Y_PT = 3;
 const MIN_SEQUENCE_ENTRIES = 2;
 
 /**
+ * How many pins have to sit at the SAME offset before that offset is evidence.
+ *
+ * Swept by `bench:symbol`, which is the first instrument able to see what this
+ * constant does: the 2026-08-27 sweep scored corroborated pinouts against the
+ * hand-read oracle, and an oracle cannot see a pinout that was never wrong. A
+ * mutation can. See the sweep's own output for the numbers.
+ */
+const MIN_OFFSET_SUPPORT = 3;
+
+/**
  * How many pins a page must agree on before it counts as having read the pinout.
  *
  * Bounded by the part, so a three-pin regulator is not asked for four.
+ *
+ * A FLOOR THAT NEVER FIRES ON REAL DATA, and that is said plainly rather than
+ * dressed up: swept 2026-08-27, 3 / 4 / 6 all give exactly 72 corroborated
+ * pinouts and zero false confirmations. It changes nothing on any part in the
+ * corpus.
+ *
+ * Kept anyway, for the same reason `bench:guards` reports plausibility guards
+ * that never fire: it bounds the COINCIDENCE case, where two numbers happen to
+ * sit at a constant offset from two matching strings on a page that is not a
+ * pinout at all. Nothing in this corpus is that unlucky. A floor is worth having
+ * before it is needed, and it is worth knowing it has never been needed.
  */
 const MIN_PAGE_AGREEMENTS = 4;
 
@@ -212,25 +258,46 @@ const GLUE_RATIO = 0.3;
  * widened: `printedAt`, which reads a cell back without being told what to look
  * for, still stops at the first space, because there it would have no way to
  * know where the name ended.
+ *
+ * Swept 2026-08-27: 0.4 / 1.2 / 2.5 give 70 / 72 / 72 corroborated pinouts and
+ * zero false confirmations. Flat from 1.2 up, which is what "one word space" is
+ * meant to mean - past that the extra reach finds nothing, because a wider gap
+ * than a space is a different cell.
  */
 const WORD_SPACE_RATIO = 1.2;
 
-/** Names spanning more runs than this are not names. Bounds the index below. */
+/**
+ * Names spanning more runs than this are not names. Bounds the index below.
+ *
+ * Swept 2026-08-27: 3 / 6 / 10 give 71 / 72 / 72 corroborated pinouts and zero
+ * false confirmations. Flat from 6 up, so this is a bound on WORK - the index is
+ * built once per page and this caps how many concatenations it holds - rather
+ * than a judgement about what a name is.
+ */
 const MAX_RUNS_PER_NAME = 6;
 
+
+
 /**
- * How much of a sequence's own pins must line up before its disagreements are
- * believed.
+ * The two floors above, as an argument, so a bench can sweep them.
  *
- * Below this the sequence is a different table that happens to share some names,
- * and its "disagreements" would be noise. Above it the sequence is demonstrably
- * the same pinout, so a pin that does not match is a real contradiction.
- *
- * Three quarters rather than a bare majority: a sequence supporting half the
- * claim is as consistent with the claim being half invented as with the sequence
- * being the wrong one, and neither reading earns the right to accuse.
+ * A seam and nothing more: the defaults ARE the constants, every caller in the
+ * product omits it, and no behaviour depends on it being passed. It exists
+ * because both numbers were last set by a sweep that could not see the failure
+ * they turned out to permit, and a constant nobody can re-measure is a constant
+ * nobody can defend.
  */
-const SAME_PINOUT_THRESHOLD = 0.75;
+export interface EvidenceLimits {
+  /** Numbers that have to line up before a run counts as a pin sequence. */
+  minSequenceEntries: number;
+  /** Pins that have to share one offset before that offset is evidence. */
+  minOffsetSupport: number;
+}
+
+const DEFAULT_LIMITS: EvidenceLimits = {
+  minSequenceEntries: MIN_SEQUENCE_ENTRIES,
+  minOffsetSupport: MIN_OFFSET_SUPPORT
+};
 
 /** A run that is a bare number and nothing else. */
 function asNumber(item: TextItem): number | null {
@@ -391,10 +458,11 @@ function evaluateSequence(
   sequence: Sequence,
   claimed: ReadonlyMap<number, string>,
   index: ReadonlyMap<string, TextItem[]>,
-  runs: readonly TextItem[]
+  runs: readonly TextItem[],
+  limits: EvidenceLimits
 ): SequenceMatch | null {
   const mine = sequence.entries.filter((entry) => claimed.has(entry.number));
-  if (mine.length < Math.min(MIN_SEQUENCE_ENTRIES, claimed.size)) return null;
+  if (mine.length < Math.min(limits.minSequenceEntries, claimed.size)) return null;
 
   // THE TOLERANCE CANNOT REACH THE NEXT PIN.
   //
@@ -441,6 +509,25 @@ function evaluateSequence(
     }
   }
 
+  // AN OFFSET ONE PIN AGREES WITH IS NOT A CONSTANT OFFSET.
+  //
+  // The whole mechanism is "the claimed name is drawn at the SAME vector from
+  // every number in this run". With a single supporter there is no sameness to
+  // find: the offset is derived from the one match it then goes on to confirm,
+  // which is circular, and it confirms whatever it is given.
+  //
+  // `bench:symbol` measured what that costs. ADG1211's page 7 throws off two
+  // stray pairs of collinear numbers, [2,16] and [1,15]. Each picks an offset of
+  // two hundred points to a name on the other side of the page, each agrees with
+  // itself, and the page-level union then counts pins 1 and 2 as corroborated -
+  // erasing the dissent that the page's real pin table had just recorded against
+  // them. Swap two pin names on that part and the product still called the
+  // pinout confirmed.
+  //
+  // Two is the minimum that makes the word "constant" mean anything, and it is
+  // the same floor `MIN_SEQUENCE_ENTRIES` puts on the run itself.
+  if (bestSupport < limits.minOffsetSupport) return null;
+
   const agreeing: number[] = [];
   const dissenting: PinDissent[] = [];
   for (const candidate of candidates) {
@@ -475,7 +562,7 @@ function evaluateSequence(
  * column and a figure edge are the same shape rotated and nothing on the page
  * says which one is being looked at.
  */
-function sequences(numbers: readonly Numbered[], pinCount: number): Sequence[] {
+function sequences(numbers: readonly Numbered[], pinCount: number, limits: EvidenceLimits): Sequence[] {
   // Grouped by the coordinate they SHARE, so a group sharing an x advances along
   // y and a group sharing a y advances along x.
   const group = (shared: (entry: Numbered) => number, axis: Axis): Sequence[] => {
@@ -503,7 +590,7 @@ function sequences(numbers: readonly Numbered[], pinCount: number): Sequence[] {
     // a footnote marker rather than a pin.
     const counts = new Map<number, number>();
     for (const entry of sequence) counts.set(entry.number, (counts.get(entry.number) ?? 0) + 1);
-    return [...counts.values()].every((count) => count === 1) && sequence.length >= MIN_SEQUENCE_ENTRIES;
+    return [...counts.values()].every((count) => count === 1) && sequence.length >= limits.minSequenceEntries;
   });
 }
 
@@ -518,7 +605,8 @@ function sequences(numbers: readonly Numbered[], pinCount: number): Sequence[] {
 export function pinoutEvidence(
   doc: DatasheetText,
   pins: readonly PinRecord[],
-  pinCount: number
+  pinCount: number,
+  limits: EvidenceLimits = DEFAULT_LIMITS
 ): PinoutEvidence | null {
   const claimed = new Map<number, string>();
   for (const pin of pins) {
@@ -537,13 +625,13 @@ export function pinoutEvidence(
       const number = asNumber(item);
       if (number !== null) numbers.push({ number, item });
     }
-    if (numbers.length < MIN_SEQUENCE_ENTRIES) continue;
-    const found = sequences(numbers, pinCount);
+    if (numbers.length < limits.minSequenceEntries) continue;
+    const found = sequences(numbers, pinCount, limits);
     if (found.length === 0) continue;
     const index = nameIndex(runs);
     const onThisPage: SequenceMatch[] = [];
     for (const sequence of found) {
-      const match = evaluateSequence(page.page, sequence, claimed, index, runs);
+      const match = evaluateSequence(page.page, sequence, claimed, index, runs, limits);
       if (match) onThisPage.push(match);
     }
 
@@ -557,18 +645,44 @@ export function pinoutEvidence(
     const agreed = new Set(onThisPage.flatMap((match) => match.agreeing));
     const denied = new Set(onThisPage.flatMap((match) => match.dissenting.map((item) => item.number)));
     for (const number of agreed) denied.delete(number);
-    const decided = agreed.size + denied.size;
     if (agreed.size < Math.min(MIN_PAGE_AGREEMENTS, claimed.size)) continue;
-    if (agreed.size / decided < SAME_PINOUT_THRESHOLD) continue;
+    // NO DISAGREEMENT AT ALL, which is a rule rather than a number.
+    //
+    // This was a tuned fraction - three quarters of the page's decided pins had
+    // to agree - and the sweep on 2026-08-27 measured what the fraction actually
+    // buys: from 0.5 to 1.0 the result moves by ONE part, 73 to 71, and the
+    // false-confirmation count is zero at every setting. A constant that spans
+    // its whole range for one part is not carrying the check, it is decorating
+    // it.
+    //
+    // So it is gone and the strict end is kept. A page that draws a name this
+    // record does not have for a pin it does have is not the pinout we are
+    // holding, and there is no version of that worth a percentage.
+    if (denied.size > 0) continue;
     matches.push(...onThisPage);
   }
 
   if (matches.length === 0) return null;
 
-  // EVERY SUPPORTING SEQUENCE COUNTS, not just the best one. A figure draws pins
-  // 1 to 4 down its left side and 5 to 8 down its right, which is two sequences
-  // of four, and taking only one of them would confirm half a pinout and call it
-  // whole.
+  // EVERY SUPPORTING SEQUENCE AND EVERY SUPPORTING PAGE COUNTS, not just the
+  // best one. A figure draws pins 1 to 4 down its left side and 5 to 8 down its
+  // right, which is two sequences of four, and taking only one of them would
+  // confirm half a pinout and call it whole. A table on another page carries the
+  // pins whose names in the figure came back through a broken font encoding.
+  //
+  // POOLING WAS TRIED AS THE CULPRIT AND MEASURED INNOCENT. `bench:symbol` found
+  // AD8221 confirming a pinout with two names exchanged, where page 1's
+  // connection diagram and page 9's pin table both declined to agree about pin 1
+  // and a third page supplied it. Restricting the confirmation to a single page
+  // fixes that part, and `bench:pinsweep` scored what it costs across the
+  // corpus: SEVEN corroborated pinouts, three of them vouched for by the
+  // hand-read oracle, in exchange for no change at all in how many corrupted
+  // pinouts still come back confirmed.
+  //
+  // The self-confirming offset in `evaluateSequence` was the whole defect. Once
+  // that is closed, the page that "supplied" pin 1 no longer does. So this stays
+  // as it was, on the measurement rather than on the argument: the fix that
+  // reads well and buys nothing is the expensive kind of wrong.
   const agreeing = new Set<number>();
   const dissent = new Map<number, PinDissent>();
   const pages = new Set<number>();

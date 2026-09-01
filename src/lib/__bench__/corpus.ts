@@ -50,6 +50,7 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
+import { defect } from "./inject";
 import { extractDatasheetText, looksLikeWrongDocument, namesThePart } from "../pdftext";
 import { BENCH_CORPUS } from "../retrieval/__bench__/corpus";
 import { HOLDOUT_CACHE_DIR, HOLDOUT_CORPUS, holdoutCachePath } from "./holdout-corpus";
@@ -128,7 +129,16 @@ async function checkCorpus(spec: CorpusSpec): Promise<{ findings: Finding[]; che
       continue;
     }
 
-    if (!namesThePart(doc, part.partNumber)) {
+    // A DOCUMENT FILED UNDER THE WRONG PART, which is the failure this bench was
+    // written for and which has reported zero since the day it was fixed. The
+    // part number is corrupted rather than the document, so `namesThePart` is
+    // asked exactly the question it exists to answer.
+    //
+    // Asked about a DIFFERENT part rather than a mangled one. A suffix does not
+    // work: `namesThePart` walks the stem back a character at a time, so
+    // `LM358-NOTAREAL` still matches on `LM358` and only 1 of 116 was reported.
+    const asked = defect("corpus.text", part.partNumber, () => "QX9987654B");
+    if (!namesThePart(doc, asked)) {
       findings.push({
         corpus: spec.name,
         part: part.partNumber,

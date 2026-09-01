@@ -1418,3 +1418,68 @@ button:disabled {
   font-size: 0.75rem;
   color: var(--ink-3);
 }
+
+/* THE FOOTPRINT, DRAWN.
+   Dark ground on purpose and in both themes: this is a picture of copper, and
+   every CAD tool an engineer opens shows copper on black. Rendering it on paper
+   would be the one place in this product that looks like nothing they use. */
+.fp-preview {
+  margin: 1rem 0 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.fp-preview svg {
+  display: block;
+  width: 100%;
+  /* Bounded so a 2 mm chip does not fill the screen and a 25 mm one still fits.
+     The viewBox keeps the drawing to scale inside whatever this resolves to. */
+  max-height: 340px;
+  background: #1b1b1b;
+  padding: 0.75rem;
+  box-sizing: border-box;
+}
+
+.fp-preview figcaption {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+/* The legend carries the only colour words on the page, so each one is set in
+   the colour it names rather than beside a swatch. */
+.fp-legend {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.fp-legend b {
+  font-weight: 600;
+}
+
+.fp-facts {
+  color: var(--ink-2);
+}
+
+.fp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
+/* The provenance line. Long, and the least urgent thing here, so it wraps onto
+   its own row and never pushes the counts off the end. */
+.fp-source {
+  flex-basis: 100%;
+  color: var(--ink-3);
+  line-height: 1.4;
+}

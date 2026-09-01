@@ -31,6 +31,7 @@
  */
 
 import { loadBenchEnv } from "./env";
+import { defect } from "./inject";
 import { buildCachedParts, documentFor } from "./oracle-match";
 import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
 import { checkPinNames, entryDescribes, pinoutEntriesFor } from "./pinout-oracle";
@@ -156,6 +157,35 @@ async function main(): Promise<void> {
     const doc = await documentFor(entry.part);
     const report = confirmations(part, geometry, doc);
 
+    // A CONFIRMED READING THAT IS ACTUALLY WRONG, which is the one outcome the
+    // two zeros below claim never happens - and neither counter had ever been
+    // shown able to move.
+    //
+    // Corrupted AFTER `confirmations` has run, so the product still says
+    // "confirmed" and only the ground truth changes underneath it. That is
+    // exactly the shape of a false confirmation: the value shipped silently and
+    // the drawing disagrees.
+    const truthPart = defect("confirm.part", part, (one) =>
+      one.pins.length < 2
+        ? one
+        : {
+            ...one,
+            pins: [
+              { ...one.pins[0], name: one.pins[1].name },
+              { ...one.pins[1], name: one.pins[0].name },
+              ...one.pins.slice(2)
+            ]
+          }
+    );
+    const truthGeometry = defect("confirm.part", geometry, (one) => ({
+      ...one,
+      pads: one.pads.map((pad) => ({
+        ...pad,
+        centre: { ...pad.centre, xMm: pad.centre.xMm * 1.4 },
+        widthMm: pad.widthMm * 1.4
+      }))
+    }));
+
     // THE ORACLE'S VERDICT ON THE SAME PINOUT, where one was hand-read.
     const oracle = pinoutEntriesFor(entry.part).filter((candidate) =>
       entryDescribes(candidate, part.packageType, part.pinCount)
@@ -163,7 +193,7 @@ async function main(): Promise<void> {
     const pinoutTruth =
       oracle.length === 0
         ? null
-        : oracle.some((candidate) => checkPinNames(candidate, part.pins).length === 0)
+        : oracle.some((candidate) => checkPinNames(candidate, truthPart.pins).length === 0)
           ? ("agrees" as const)
           : ("DISAGREES" as const);
 
@@ -174,7 +204,7 @@ async function main(): Promise<void> {
       items: report.items,
       pinoutTruth,
       pinoutState: report.items.find((item) => item.id === "pinout")!.state,
-      copperTruth: copperAgreesWithDrawing(part, geometry),
+      copperTruth: copperAgreesWithDrawing(part, truthGeometry),
       copperState: report.items.find((item) => item.id === "land-pattern")!.state
     });
   }

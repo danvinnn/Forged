@@ -266,6 +266,27 @@ export interface ExtractionResult {
   /** Free-form observations to surface as record notes. */
   notes?: string[];
   /**
+   * The reader's ANSWER could not be read, as distinct from the DOCUMENT not
+   * being readable.
+   *
+   * Those two are opposite problems wearing the same face. A datasheet whose
+   * drawings are artwork is a document outcome: the honest answer is a record
+   * with the fields blank and the screen saying which are missing. A reader that
+   * replies in prose, or with truncated JSON, is a broken deployment, and
+   * telling that operator "this datasheet states no pin table" sends them to
+   * check the wrong thing.
+   *
+   * Found on 2026-08-30 by pointing the route at a local endpoint that answered
+   * in sentences: HTTP 200, an empty record, and a note nobody surfaces. The
+   * route's own comment says "A PARSE THAT LOST THE MODEL PASS IS A FAILED
+   * PARSE, NOT A THINNER ONE", and this was the door around it.
+   *
+   * Set where the answer is discarded. Only acted on when the reader also
+   * contributed nothing, because a prose first pass followed by a good drawing
+   * pass is a successful read.
+   */
+  unreadable?: true;
+  /**
    * Pages the model wants to LOOK at, named after it has read the whole text.
    *
    * The second pass. A mechanical drawing states its dimensions as labels beside
