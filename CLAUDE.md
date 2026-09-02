@@ -9,7 +9,9 @@ Read these two before doing anything, every session:
   environment, and what has already been measured and settled.
 
 Deeper references, read when the work touches them: `ARCHITECTURE.md`,
-`src/lib/retrieval/LAYER1.md`, `src/lib/emitters/ALTIUM.md`.
+`src/lib/retrieval/LAYER1.md`, `src/lib/emitters/ALTIUM.md`, and `SPICE.md`
+before any work on the model half, which is unbuilt and has eight open decisions
+in front of it.
 
 ## Precedence when docs disagree
 

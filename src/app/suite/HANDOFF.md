@@ -83,6 +83,13 @@ page count and the ordering table's designators come from a text pass with no mo
    parameters, exactly like the footprint emitters. No model writes the netlist. A parameter the
    datasheet does not state is asked for by name, or the model is refused — the same contract as
    `422 INCOMPLETE_EXTRACTION`.
+
+   **That is the contract, and it is not a specification. See [`SPICE.md`](../../../SPICE.md)
+   before writing any of it.** This bullet names no parameters, no device class, no file set and
+   no confirmation pairing, and `RULES.md` 7 has no rows for parameters at all. `SPICE.md`
+   separates what is already decided from the eight questions that are open, and two of them
+   (generate vs. retrieve the vendor's published model; whether a parameter block fits inside
+   `MAX_FLAGGED`) can change what this half of the product is.
 5. **Panels to move from `src/app/page.tsx`, unchanged:** the verdict card, "worth a glance",
    **"Show the full record"**, the review list with page images and corrections, the
    export-refusal panel (`missing` vs `untraceable`), install-scoped answers, and the reader's
@@ -213,8 +220,15 @@ of RULES.md 1. Both rows are typed into directly, by whoever knows their own die
 - **Failure states are not designed** in the new shell: scanned/no-text PDF, part not found,
   `422` on export, and "no package can be built".
 - **No SPICE review screen yet** — the parameter/citation correction loop that is the product's
-  whole argument exists for CAD only.
-- **The `.asc` symbol is not drawn** anywhere; only the `.lib` netlist is shown.
+  whole argument exists for CAD only. It should stay open until there is something real to
+  review; see `SPICE.md` §10.
+- **The symbol is not drawn** anywhere; only the netlist is shown. *Corrected 2026-09-02:* this
+  said "the `.asc` symbol". In LTspice `.asy` is the symbol and `.asc` is a schematic, and the
+  file set is an open question rather than a settled one (`SPICE.md` §7).
+- **The SPICE export path builds the wrong thing.** For `intent === "spice"` the format picker is
+  not rendered, so `format` keeps its `"kicad"` default and "Take the model" posts
+  `/api/export` with `format: "kicad"`. It does not refuse; it builds a KiCad bundle. UI-only
+  fix, one line, and it should refuse by name instead.
 - **Dark theme** exists in the mockups but `suite.css` inherits `globals.css`'s dark tokens
   without a dedicated pass.
 
