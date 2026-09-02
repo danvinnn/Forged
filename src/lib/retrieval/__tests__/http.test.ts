@@ -125,3 +125,58 @@ test("re-checks the SSRF guard on every redirect hop", { concurrency: false }, a
     globalThis.fetch = original;
   }
 });
+
+// --- One retry on a server error ---------------------------------------------------------------
+// Found 2026-09-01 while measuring live coverage: onsemi answered `ncp1200-d.pdf` with HTTP 504
+// while serving `bss138-d.pdf` from the same host seconds later. A 504 is not an answer about the
+// part, but it reached the user as one.
+
+test("retries once on a 5xx and returns the second answer", async () => {
+  let calls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    calls++;
+    return calls === 1
+      ? new Response("gateway timeout", { status: 504 })
+      : new Response("ok", { status: 200 });
+  }) as typeof fetch;
+  try {
+    const response = await fetchWithTimeout("https://www.ti.com/x.pdf", {}, 5000);
+    assert.equal(response.status, 200);
+    assert.equal(calls, 2, "a transient gateway error must not be reported as an answer");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("does NOT retry a 429, which would consume the quota we are waiting for", async () => {
+  let calls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response("slow down", { status: 429 });
+  }) as typeof fetch;
+  try {
+    const response = await fetchWithTimeout("https://www.ti.com/x.pdf", {}, 5000);
+    assert.equal(response.status, 429);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("does NOT retry a 404, which is a real answer about the part", async () => {
+  let calls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  try {
+    const response = await fetchWithTimeout("https://www.ti.com/x.pdf", {}, 5000);
+    assert.equal(response.status, 404);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

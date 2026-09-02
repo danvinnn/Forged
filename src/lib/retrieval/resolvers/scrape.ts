@@ -24,6 +24,7 @@ import {
   DOWNLOAD_TIMEOUT_MS
 } from "./http";
 import { buildPartVariants, normalizePartNumber } from "../partnumber";
+import { buildProductPageUrls } from "./manufacturer";
 import { logger } from "../logging";
 
 /**
@@ -34,6 +35,15 @@ import { logger } from "../logging";
  * datasheet landing page carries and far short of what a link farm does.
  */
 const MAX_PDF_LINKS_PER_PAGE = 8;
+
+/**
+ * Ceiling on links harvested from one page BEFORE ranking.
+ *
+ * Distinct from the cap above and needed because of it: ranking has to see the whole list to pick
+ * the best eight out of it, so the list itself now needs its own bound. A real vendor product page
+ * carries tens of PDF links (Microchip's ATMEGA328P page has 92); a link farm carries thousands.
+ */
+const MAX_PDF_LINKS_HARVESTED = 200;
 
 const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Forge/1.0";
@@ -132,25 +142,68 @@ function buildDirectCandidates(partNumber: string, manufacturer?: string): strin
     candidates.add(`https://www.mouser.com/pdfdocs/${variant}.pdf`);
   }
 
+  // Vendor PRODUCT PAGES, last among the direct candidates because they are the expensive ones: a
+  // page fetch, a parse, then up to eight downloads, versus one GET that either is a PDF or is not.
+  //
+  // They belong HERE rather than in the manufacturer resolver because this is the only place that
+  // knows what to do with an HTML answer. `inspectCandidate` already fetches a URL, harvests its
+  // PDF links, ranks them and tries the best. So a vendor that files its datasheets under document
+  // numbers needs no new code path at all, only a page to point at. See `manufacturer.ts`.
+  for (const url of buildProductPageUrls(partNumber, manufacturer)) {
+    candidates.add(url);
+  }
+
   return [...candidates];
 }
 
+/**
+ * Every PDF this page points at.
+ *
+ * TWO SCANS, because one of them was missing an entire class of page. The href scan finds links in
+ * markup and is the only one that can resolve a RELATIVE path, so it stays. But a modern vendor
+ * page renders its document list from embedded JSON, and those URLs are never inside an `href`
+ * attribute. Microchip's ATMEGA328P page is the standing example: it carries 92 PDF URLs and
+ * ZERO of them are in an href, so the harvester returned nothing and the part was reported as
+ * having no datasheet. The second scan takes absolute PDF URLs from anywhere in the body.
+ *
+ * Bounded, like every other reach in this file. A hostile or link-farm page must not be able to
+ * hand us an unbounded list to score and slice.
+ */
 function extractPdfLinks(html: string, baseUrl: string): string[] {
   const links = new Set<string>();
+
+  const add = (value: string) => {
+    if (links.size >= MAX_PDF_LINKS_HARVESTED) return;
+    try {
+      links.add(new URL(value, baseUrl).href);
+    } catch {
+      // Not a URL we can resolve. Skip it rather than abort the page.
+    }
+  };
+
   for (const match of html.matchAll(/href="([^"]+)"/gi)) {
     const href = match[1].replace(/&amp;/g, "&");
     if (!/\.pdf(\?|#|$)/i.test(href) && !/download.*pdf/i.test(href)) {
       continue;
     }
+    add(href);
+  }
 
-    try {
-      links.add(new URL(href, baseUrl).href);
-    } catch {
-      continue;
-    }
+  for (const match of html.matchAll(/https?:\/\/[^"'\s<>\\)]+?\.pdf/gi)) {
+    add(match[0].replace(/&amp;/g, "&"));
   }
 
   return [...links];
+}
+
+/** The path and query of a URL, or the whole string when it will not parse. */
+function pathOf(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
+  }
 }
 
 function scoreCandidate(url: string, partNumber: string, manufacturer?: string): number {
@@ -160,6 +213,18 @@ function scoreCandidate(url: string, partNumber: string, manufacturer?: string):
 
   if (/\.pdf(\?|#|$)/i.test(lowerUrl)) score += 100;
   if (lowerParts.some((part) => lowerUrl.includes(part))) score += 20;
+  // A PATH or filename that says "datasheet". Worth its own points because the close competition on
+  // a vendor product page is other documents ABOUT THE SAME PART: without this, ATMEGA328P's
+  // datasheet ties exactly with an app note titled "Differences between ATmega328P and ATmega328PB",
+  // and a tie is decided by document order, which is what we are trying to stop relying on.
+  //
+  // The PATH and not the whole URL, because a vendor puts the word in the path
+  // (`/data-sheets/`, `/ProductDocuments/DataSheets/`) while an aggregator puts it in the HOSTNAME
+  // (`datasheetspdf.com`). Scoring the whole string handed those sites a bonus meant for
+  // first-party documents. Measured over seven representative URLs this changes exactly one, so it
+  // is a small correction rather than a big one: it is here because the rule should mean what it
+  // says, not because it moved a number.
+  if (/data.?sheet/.test(pathOf(lowerUrl))) score += 15;
   if (manufacturer && lowerUrl.includes(slugify(manufacturer))) score += 8;
   // A known datasheet host, manufacturer or distributor, beats a random aggregator or forum. This
   // is what steers us toward the distributor-hosted copy for parts whose vendor publishes nothing.
@@ -174,7 +239,11 @@ function scoreCandidate(url: string, partNumber: string, manufacturer?: string):
 // Returns null for anything unusable so the caller simply tries the next candidate. These URLs come
 // from search-result HTML, which we do not control, so one hostile or broken entry must never abort
 // the whole lookup: that would be a trivial denial of service via a single poisoned result.
-async function inspectCandidate(url: string): Promise<{ pdfUrl: string; sourcePageUrl: string } | null> {
+async function inspectCandidate(
+  url: string,
+  partNumber: string,
+  manufacturer?: string
+): Promise<{ pdfUrl: string; sourcePageUrl: string } | null> {
   let response: Response;
   try {
     response = await fetchWithTimeout(
@@ -212,9 +281,18 @@ async function inspectCandidate(url: string): Promise<{ pdfUrl: string; sourcePa
   // capped at 12 candidates, the redirect chain at 5 and the body at 50MB, and
   // this one was not: a link-heavy or hostile page turned one lookup into an
   // unbounded outbound fan-out from a public endpoint, each hop carrying a 30
-  // second download timeout. Ranked highest first so the cap drops the least
-  // likely link rather than the last one on the page.
-  const pdfLinks = extractPdfLinks(html, finalUrl).slice(0, MAX_PDF_LINKS_PER_PAGE);
+  // second download timeout.
+  //
+  // RANKED HIGHEST FIRST so the cap drops the least likely link rather than the
+  // last one on the page. This comment claimed the ranking before the sort below
+  // existed, which is the exact shape of defect this project keeps finding: a
+  // check that documents behaviour it does not have. It mattered here. A vendor
+  // product page lists app notes, errata, white papers and selection guides
+  // alongside the datasheet, so "the first eight in document order" is close to
+  // a random eight, and the datasheet does not reliably survive the cut.
+  const pdfLinks = extractPdfLinks(html, finalUrl)
+    .sort((left, right) => scoreCandidate(right, partNumber, manufacturer) - scoreCandidate(left, partNumber, manufacturer))
+    .slice(0, MAX_PDF_LINKS_PER_PAGE);
 
   for (const pdfLink of pdfLinks) {
     let pdfResponse: Response;
@@ -234,40 +312,126 @@ async function inspectCandidate(url: string): Promise<{ pdfUrl: string; sourcePa
       continue;
     }
 
+    // Fall back to the link we asked for when the response carries no url of its own, the same way
+    // `finalUrl` does above. The two lines were inconsistent: this one trusted `response.url` alone,
+    // so a response without one produced an EMPTY pdfUrl that the caller then tried to fetch and
+    // the SSRF guard rejected as "not a valid URL". The redirected url still wins when present,
+    // because that is the address the bytes actually came from and the citation has to say so.
+    const resolvedPdfUrl = pdfResponse.url || pdfLink;
     const pdfType = pdfResponse.headers.get("content-type")?.toLowerCase() || "";
-    if (pdfType.includes("pdf") || /\.pdf(\?|#|$)/i.test(pdfResponse.url)) {
-      return { pdfUrl: pdfResponse.url, sourcePageUrl: finalUrl };
+    if (pdfType.includes("pdf") || /\.pdf(\?|#|$)/i.test(resolvedPdfUrl)) {
+      return { pdfUrl: resolvedPdfUrl, sourcePageUrl: finalUrl };
     }
   }
 
   return null;
 }
 
+/** A candidate that was downloaded AND confirmed to be the requested part. */
+interface LocatedPdf {
+  pdfUrl: string;
+  sourcePageUrl: string;
+  bytes: ArrayBuffer;
+}
+
 // Result of the location phase. `searchBlocked` is the important part: it distinguishes "we
 // searched and found nothing" from "we could not search", so the caller never tells a user their
 // part has no datasheet when the truth is that every search backend refused us.
 interface LocateOutcome {
-  found: { pdfUrl: string; sourcePageUrl: string } | null;
+  found: LocatedPdf | null;
   searchBlocked: boolean;
+}
+
+/**
+ * How many real PDFs we will download and identity-check before giving up.
+ *
+ * Verification costs a full download, so this cannot be unbounded. Six is well past the point
+ * where a search result list stops being about the part you asked for.
+ */
+const MAX_VERIFIED_DOWNLOADS = 6;
+
+/**
+ * Downloads a located candidate and returns it only if the document names the part.
+ *
+ * Null means "try the next candidate", for every reason: a dead link, an oversized body, a blocked
+ * URL, or a perfectly good datasheet for a DIFFERENT device.
+ */
+async function downloadIfItNamesThePart(
+  located: { pdfUrl: string; sourcePageUrl: string },
+  partNumber: string
+): Promise<LocatedPdf | null> {
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      located.pdfUrl,
+      { headers: { "User-Agent": userAgent, Accept: "application/pdf,*/*;q=0.8" }, redirect: "follow" },
+      DOWNLOAD_TIMEOUT_MS
+    );
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await readBodyWithLimit(response, located.pdfUrl);
+  } catch {
+    return null;
+  }
+
+  // Search ranks by URL text and host, which says nothing about what is INSIDE the document. Asked
+  // for TPS7A4700 it returned TPS7A20's datasheet: same vendor, same family prefix, a real PDF, and
+  // completely the wrong chip.
+  if (!(await documentNamesPart(bytes, partNumber))) {
+    logger.info({ event: "resolver_wrong_part", resolver: "scrape", partNumber, url: located.pdfUrl });
+    return null;
+  }
+
+  return { ...located, bytes };
 }
 
 async function locatePdf(
   partNumber: string,
   manufacturer: string | undefined,
-  search: SearchClient
+  search: SearchClient,
+  deadlineAt?: number
 ): Promise<LocateOutcome> {
+  // Checked before each new candidate and each new query, which is where this resolver's time
+  // actually goes. Anything already in flight finishes; we simply stop STARTING work.
+  const outOfTime = () => deadlineAt !== undefined && Date.now() >= deadlineAt;
+
+  // VERIFICATION HAPPENS HERE, not after this function returns, and that is the whole point of the
+  // shape. It used to commit to the first candidate that looked like a PDF, and the caller then
+  // identity-checked it and returned null on failure, throwing away every remaining candidate. So
+  // one aggregator copy of the wrong device at the top of the ranking lost the part outright.
+  //
+  // `identity.ts` already says this is wrong, in its own words: "A rejected candidate has to mean
+  // 'try the next URL', not 'this resolver failed'." The manufacturer resolver had always worked
+  // that way. This one did not, and the comment acknowledging the gap sat here instead of a fix.
+  let verified = 0;
+  const consider = async (candidate: string): Promise<LocatedPdf | null> => {
+    if (verified >= MAX_VERIFIED_DOWNLOADS || outOfTime()) return null;
+    const located = await inspectCandidate(candidate, partNumber, manufacturer);
+    if (!located) return null;
+    verified++;
+    return downloadIfItNamesThePart(located, partNumber);
+  };
+
   // Deterministic candidates first: no search engine involved, so these keep working even when
   // every engine is blocking us. This is the tier that makes production degradation graceful
   // rather than total.
   const directCandidates = buildDirectCandidates(partNumber, manufacturer);
   for (const candidate of directCandidates) {
-    const resolved = await inspectCandidate(candidate);
+    const resolved = await consider(candidate);
     if (resolved) return { found: resolved, searchBlocked: false };
   }
 
   let blocked = false;
   const queries = buildSearchQueries(partNumber, manufacturer);
   for (const query of queries) {
+    // A part with a manufacturer hint generates a dozen query variants. Without this the resolver
+    // would keep asking new questions long after the answer stopped being wanted.
+    if (outOfTime()) break;
     const outcome = await search.search(query);
     if (outcome.blocked) {
       blocked = true;
@@ -282,7 +446,7 @@ async function locatePdf(
     );
 
     for (const candidate of ranked.slice(0, 12)) {
-      const resolved = await inspectCandidate(candidate);
+      const resolved = await consider(candidate);
       if (resolved) return { found: resolved, searchBlocked: false };
     }
   }
@@ -304,10 +468,9 @@ export class ScrapeResolver implements DatasheetResolver {
   }
 
   async resolve(partNumber: string, opts?: ResolveOptions): Promise<DatasheetRef | null> {
-    let located: { pdfUrl: string; sourcePageUrl: string } | null;
-    let response: Response;
+    let located: LocatedPdf;
     try {
-      const outcome = await locatePdf(partNumber, opts?.manufacturer, this.search);
+      const outcome = await locatePdf(partNumber, opts?.manufacturer, this.search, opts?.deadlineAt);
 
       if (!outcome.found) {
         // The distinction this whole file exists to preserve. If search was blocked we do NOT know
@@ -325,12 +488,6 @@ export class ScrapeResolver implements DatasheetResolver {
       }
 
       located = outcome.found;
-
-      response = await fetchWithTimeout(
-        located.pdfUrl,
-        { headers: { "User-Agent": userAgent, Accept: "application/pdf,*/*;q=0.8" }, redirect: "follow" },
-        DOWNLOAD_TIMEOUT_MS
-      );
     } catch (error) {
       // An already-typed failure (notably the search-blocked case above) passes through with its
       // kind intact, so a block is not silently relabelled as a generic transport error.
@@ -341,38 +498,14 @@ export class ScrapeResolver implements DatasheetResolver {
       throw new ResolverError("transport", "scrape", message);
     }
 
-    // A dead download link is "not found", not a failure: fall through to the next resolver.
-    if (!response.ok) return null;
-
-    let bytes: ArrayBuffer;
-    try {
-      bytes = await readBodyWithLimit(response, located.pdfUrl);
-    } catch (error) {
-      // An oversized body is not a datasheet. Not found, so the user can still upload.
-      if (error instanceof ResponseTooLargeError) return null;
-      throw error;
-    }
-
-    // Search ranks by URL text and host, which says nothing about what is INSIDE
-    // the document. Asked for TPS7A4700 it returned TPS7A20's datasheet: same
-    // vendor, same family prefix, a real PDF, and completely the wrong chip.
-    //
-    // Unlike the manufacturer resolver this cannot fall through to the next
-    // candidate - `locatePdf` has already committed to one - so a rejection ends
-    // the chain and the user is offered the upload path. That is the right trade:
-    // a lower-ranked candidate we never try is a miss the user can fix in one
-    // step, and a wrong datasheet is a wrong footprint nobody downstream can see.
-    if (!(await documentNamesPart(bytes, partNumber))) {
-      logger.info({ event: "resolver_wrong_part", resolver: "scrape", partNumber, url: located.pdfUrl });
-      return null;
-    }
-
+    // Downloaded and identity-checked inside `locatePdf`, so that a rejection could try the next
+    // candidate instead of ending the resolver. Nothing left to do but package it.
     try {
       return finalizeRef({
         fileName: `${normalizePartNumber(partNumber)}.pdf`,
         pdfUrl: located.pdfUrl,
         sourcePageUrl: located.sourcePageUrl,
-        bytes
+        bytes: located.bytes
       });
     } catch (error) {
       // The link served something that was not a real PDF. Treat as not found.

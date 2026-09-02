@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ManufacturerResolver, buildCandidateUrls } from "../resolvers/manufacturer";
+import { ManufacturerResolver, buildCandidateUrls, buildProductPageUrls } from "../resolvers/manufacturer";
 import { ResolverError } from "../resolvers/errors";
 
 // Candidates are now split into a CLAIMED tier (vendors whose prefix or manufacturer hint matched)
@@ -89,8 +89,11 @@ test("an unclaimed part still resolves to null, via the speculative tier", async
   }
 });
 
-test("a hint naming a known vendor skips speculation entirely", async () => {
-  // The user told us who makes it, so trying other vendors' URL shapes is pure waste.
+test("a hint naming a known vendor is tried FIRST, not exclusively", async () => {
+  // This used to assert that speculation was skipped entirely when the hint named a known vendor.
+  // That rule LOST PCF8574 the moment NXP entered the registry: the corpus hints it as NXP, NXP
+  // really does make it, `nxp.com/docs/en/data-sheet/PCF8574.pdf` really does 404, and the copy
+  // that resolves is TI's. Adding a vendor made a working part stop working.
   const requested: string[] = [];
   const restore = stubFetch((url) => {
     requested.push(url);
@@ -98,11 +101,27 @@ test("a hint naming a known vendor skips speculation entirely", async () => {
   });
   try {
     await new ManufacturerResolver().resolve("LMP7704-SP", { manufacturer: "Texas Instruments" });
-    assert.ok(requested.length > 0);
-    assert.ok(
-      requested.every((u) => u.includes("ti.com")),
-      `speculation should be skipped, got: ${requested.join(", ")}`
-    );
+    const tiFirst = requested.findIndex((u) => u.includes("ti.com"));
+    const otherFirst = requested.findIndex((u) => !u.includes("ti.com"));
+    assert.ok(tiFirst === 0, "the hinted vendor must be tried first");
+    assert.ok(otherFirst > 0, "other vendors must still be tried once the hinted one misses");
+  } finally {
+    restore();
+  }
+});
+
+test("a second-sourced part resolves from a vendor the hint did not name", async () => {
+  // The regression above, as a test. PCF8574 is hinted NXP and answered by TI.
+  const tiUrl = "https://www.ti.com/lit/ds/symlink/pcf8574.pdf";
+  const restore = stubFetch((url) =>
+    url === tiUrl
+      ? new Response(PDF_BYTES, { status: 200, headers: { "content-type": "application/pdf" } })
+      : new Response("not found", { status: 404 })
+  );
+  try {
+    const ref = await new ManufacturerResolver().resolve("PCF8574", { manufacturer: "NXP" });
+    assert.ok(ref, "NXP publishes it and does not host it; TI does");
+    assert.equal(ref!.pdfUrl, tiUrl);
   } finally {
     restore();
   }
@@ -246,13 +265,21 @@ test("vendors stay isolated: a TI part never queries ST or ADI", () => {
 // A connector part was being sent to ti.com. Short aliases must match the whole string.
 
 test("a short alias does not match as a substring of an unrelated vendor", () => {
-  assert.deepEqual(
-    claimedUrls("282836-2", "TE Connectivity"),
-    [],
-    "connecTIvity must not be read as Texas Instruments"
-  );
-  assert.deepEqual(claimedUrls("43045-0400", "Molex"), []);
-  assert.deepEqual(claimedUrls("S2B-PH-K-S", "JST"), []);
+  // This used to assert "no candidates at all", which was a proxy for the real property only
+  // while the registry had no connector vendors in it. TE and Molex are now in it and correctly
+  // claim their own parts, so the proxy would fail for a good reason and hide the bad one.
+  // Assert what the regression was actually about: these must not be sent to ti.com.
+  const te = claimedUrls("282836-2", "TE Connectivity");
+  assert.ok(!te.some((u) => u.includes("ti.com")), "connecTIvity must not be read as Texas Instruments");
+  assert.ok(te.some((u) => u.includes("te.com")), "TE should claim its own part");
+
+  const molex = claimedUrls("43045-0400", "Molex");
+  assert.ok(!molex.some((u) => u.includes("ti.com")));
+  assert.ok(molex.some((u) => u.includes("molex.com")), "Molex should claim its own part");
+
+  const jst = claimedUrls("S2B-PH-K-S", "JST");
+  assert.ok(!jst.some((u) => u.includes("ti.com")));
+  assert.ok(jst.some((u) => u.includes("jst-mfg.com")), "JST should claim its own part");
 });
 
 test("short aliases still work when they ARE the whole hint", () => {
@@ -269,4 +296,112 @@ test("corporate suffixes are tolerated on full names", () => {
     "a trailing corporate suffix must not break the match"
   );
   assert.ok(claimedUrls("RHF310A", "STMicroelectronics N.V.").some((u) => u.includes("st.com")));
+});
+
+// --- Vendors added 2026-09-01 ------------------------------------------------------------------
+// Each URL below was fetched through Node's `fetch` on 2026-09-01 and returned a real PDF. These
+// assertions are the tripwire for a vendor changing its scheme, which is the only thing that can
+// silently take the coverage back down. See the per-vendor notes in `manufacturer.ts`.
+//
+// Verified with `fetch` and NOT curl, deliberately: vendor CDNs fingerprint curl's TLS handshake,
+// and ST, ADI, onsemi and Microchip all refuse it while answering fetch normally. A pattern
+// "verified" with curl would have been recorded as unreachable when it works fine.
+
+test("builds the verified URL for each vendor added in the 2026-09-01 pass", () => {
+  const cases: Array<[string, string | undefined, string]> = [
+    ["NCP1200", "onsemi", "https://www.onsemi.com/download/data-sheet/pdf/ncp1200-d.pdf"],
+    ["TJA1050", "NXP", "https://www.nxp.com/docs/en/data-sheet/TJA1050.pdf"],
+    ["AP2112", "Diodes", "https://www.diodes.com/assets/Datasheets/AP2112.pdf"],
+    ["RP2040", "Raspberry Pi", "https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf"],
+    ["ISL71001M", "Renesas", "https://www.renesas.com/en/document/dst/isl71001m-datasheet"],
+    ["43045-0400", "Molex", "https://www.molex.com/pdm_docs/sd/430450400_sd.pdf"],
+    // JST documents a SERIES, not an orderable part: the series is the second dash-separated token.
+    ["S2B-PH-K-S", "JST", "https://www.jst-mfg.com/product/pdf/eng/ePH.pdf"]
+  ];
+  for (const [part, manufacturer, expected] of cases) {
+    assert.ok(
+      claimedUrls(part, manufacturer).includes(expected),
+      `${part} should produce the verified URL ${expected}`
+    );
+  }
+});
+
+test("ESP32-WROOM-32 keeps its suffix: the datasheet is filed under the full module name", () => {
+  // A module's suffix is part of its identity rather than an ordering code, so the variant list's
+  // habit of stripping after a dash must not be what wins here.
+  assert.ok(
+    claimedUrls("ESP32-WROOM-32", "Espressif").includes(
+      "https://www.espressif.com/sites/default/files/documentation/esp32-wroom-32_datasheet_en.pdf"
+    )
+  );
+});
+
+// --- Vendors decline to guess ------------------------------------------------------------------
+// The speculative tier tries every registry vendor's shape against a part no vendor claimed. That
+// was affordable at three vendors. With connector vendors in the registry it is not: their paths
+// are built from digits, so speculating them against `LM358` spends a real outbound request to
+// learn nothing. A vendor that cannot apply its shape returns nothing rather than a garbage URL.
+
+test("a digits-only vendor produces no URL for an alphabetic part", () => {
+  const all = buildCandidateUrls("LM358");
+  const urls = [...all.claimed, ...all.speculative];
+  for (const host of ["molex.com", "te.com", "amphenol-cs.com", "espressif.com", "raspberrypi.com"]) {
+    assert.ok(!urls.some((u) => u.includes(host)), `${host} has no URL shape that fits LM358`);
+  }
+});
+
+test("the speculative tier stays bounded as the registry grows", () => {
+  // The tier is fetched in PARALLEL, and its whole justification is that parallel speculation costs
+  // about one round trip. Unbounded, every vendor added multiplies into every part variant and one
+  // user request becomes dozens of outbound ones from a public endpoint.
+  for (const part of ["LM358", "XYZ1234", "9999-9999", "SOMETHINGWEIRD99"]) {
+    assert.ok(
+      buildCandidateUrls(part).speculative.length <= 24,
+      `${part} produced an unbounded speculative tier`
+    );
+  }
+});
+
+// --- Product pages -----------------------------------------------------------------------------
+// Microchip files datasheets under document numbers (`39582C.pdf`), so no part-number pattern can
+// reach them. Its product page is derivable and carries the link, which the scrape resolver
+// harvests. Verified 2026-09-01 on ATMEGA328P, PIC16F877A and MCP2515: the correct datasheet ranked
+// FIRST out of 92, 53 and 11 harvested links.
+
+test("a document-number vendor contributes a product page instead of a datasheet URL", () => {
+  assert.deepEqual(claimedUrls("ATMEGA328P", "Microchip"), [], "no derivable datasheet filename");
+  assert.ok(
+    buildProductPageUrls("ATMEGA328P", "Microchip").includes(
+      "https://www.microchip.com/en-us/product/ATMEGA328P"
+    )
+  );
+});
+
+test("product pages are claimed-only, never speculative", () => {
+  // A product page costs a page fetch, a parse and up to eight further downloads. That is
+  // affordable once for a vendor that plausibly owns the part, and not affordable across the whole
+  // registry on a guess.
+  assert.deepEqual(buildProductPageUrls("LMP7704-SP", "Texas Instruments"), []);
+  assert.deepEqual(buildProductPageUrls("RHF310A", "STMicroelectronics"), []);
+});
+
+test("no vendor claims a part outside its own class", () => {
+  // RULES.md rule 4, as a check rather than an intention. Found by sweeping all 142 part numbers in
+  // the two retrieval corpora: the JST shape rule matched ESP32-WROOM-32, so every Espressif module
+  // lookup also asked jst-mfg.com for `eWROOM.pdf`. A rule whose wording says JST and whose
+  // behaviour says Espressif is tailored, whatever its comment claims.
+  const connectorHosts = ["molex.com", "te.com", "amphenol-cs.com", "jst-mfg.com"];
+  const chips: Array<[string, string]> = [
+    ["ESP32-WROOM-32", "Espressif"],
+    ["LMP7704-SP", "Texas Instruments"],
+    ["STM32G071RB", "STMicroelectronics"],
+    ["ADA4522-2", "Analog Devices"],
+    ["PIC32MX250F128B", "Microchip"]
+  ];
+  for (const [part, mfr] of chips) {
+    const urls = [...claimedUrls(part, mfr), ...buildProductPageUrls(part, mfr)];
+    for (const host of connectorHosts) {
+      assert.ok(!urls.some((u) => u.includes(host)), `${part} must not be sent to ${host}`);
+    }
+  }
 });

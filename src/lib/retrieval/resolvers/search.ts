@@ -59,6 +59,26 @@ function looksBlocked(html: string): boolean {
   return BLOCK_MARKERS.some((marker) => head.includes(marker));
 }
 
+/**
+ * Bing wraps every result as `/ck/a?...&u=a1<base64url>` and emits NO absolute result URL at all.
+ *
+ * That is why Bing measured useless the first time it was tried: 102 links extracted, zero of them
+ * a result. Unwrapped, the same page returns 14 real URLs, and for AD8628 the first one is
+ * `ad8628-8629-8630.pdf`, which is the combined-family filename no part-number pattern can derive.
+ *
+ * Returns null when the value is not Bing's encoding, so Mojeek's plain `?u=<encoded>` still takes
+ * the ordinary path below.
+ */
+function unwrapBing(value: string): string | null {
+  if (!value.startsWith("a1")) return null;
+  try {
+    const decoded = Buffer.from(value.slice(2).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    return /^https?:\/\//i.test(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
 // Pulls absolute URLs out of result HTML, unwrapping the redirect hops engines use.
 export function extractResultUrls(html: string): string[] {
   const urls = new Set<string>();
@@ -66,11 +86,13 @@ export function extractResultUrls(html: string): string[] {
   for (const match of html.matchAll(/href="([^"]+)"/gi)) {
     let href = match[1].replace(/&amp;/g, "&");
 
-    // DuckDuckGo wraps results as /l/?uddg=<encoded>. Mojeek uses /out?u=<encoded>.
+    // DuckDuckGo wraps results as /l/?uddg=<encoded>. Mojeek uses /out?u=<encoded>. Bing uses
+    // /ck/a?u=a1<base64url>, which is why the &amp; decode above has to happen FIRST: without it
+    // the parameter is named `amp;u` and every Bing result is silently dropped.
     try {
       const parsed = new URL(href, "https://duckduckgo.com");
       const wrapped = parsed.searchParams.get("uddg") ?? parsed.searchParams.get("u");
-      if (wrapped) href = decodeURIComponent(wrapped);
+      if (wrapped) href = unwrapBing(wrapped) ?? decodeURIComponent(wrapped);
     } catch {
       continue;
     }
@@ -83,6 +105,33 @@ export function extractResultUrls(html: string): string[] {
 }
 
 // Shared implementation for the engines we reach by scraping their HTML endpoint.
+/** The registrable-ish domain, so `html.duckduckgo.com` and `duckduckgo.com` compare equal. */
+function siteOf(url: string): string {
+  try {
+    return new URL(url).hostname.split(".").slice(-2).join(".");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Drops links that point back at the search engine itself.
+ *
+ * THE THIRD KIND OF REFUSAL, found 2026-09-02 and the reason the other two were not enough. A
+ * degraded DuckDuckGo answered HTTP 200, carried no challenge markers, and returned ten links that
+ * were all `duckduckgo.com` chrome and zero results. `extractResultUrls` reported ten URLs, the
+ * client recorded a healthy backend with a real answer, and stopped, so brave-html was never asked
+ * even though it had the correct PDF sitting in 45 results.
+ *
+ * Measured cost of that one degraded backend: coverage fell from 95% to 69%, with every single
+ * miss being a part that needs search. Self-links are chrome by definition, so removing them turns
+ * this case into an empty result, which the client now falls through on.
+ */
+function withoutSelfLinks(urls: string[], endpoint: string): string[] {
+  const own = siteOf(endpoint);
+  return own ? urls.filter((u) => siteOf(u) !== own) : urls;
+}
+
 class HtmlSearchBackend implements SearchBackend {
   constructor(
     readonly name: string,
@@ -94,8 +143,9 @@ class HtmlSearchBackend implements SearchBackend {
   }
 
   async search(query: string): Promise<string[]> {
+    const endpoint = this.buildUrl(query);
     const response = await fetchWithTimeout(
-      this.buildUrl(query),
+      endpoint,
       { headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" } },
       SEARCH_TIMEOUT_MS
     );
@@ -115,7 +165,7 @@ class HtmlSearchBackend implements SearchBackend {
       throw new SearchBlockedError(this.name, "challenge or rate-limit page returned with HTTP 200");
     }
 
-    return extractResultUrls(html);
+    return withoutSelfLinks(extractResultUrls(html), endpoint);
   }
 }
 
@@ -159,6 +209,19 @@ export function defaultBackends(): SearchBackend[] {
   return [
     new HtmlSearchBackend("ddg-html", (q) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`),
     new HtmlSearchBackend("ddg-lite", (q) => `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`),
+    // Brave's own index, scraped from its public HTML endpoint. This is NOT `BraveSearchBackend`
+    // below, which is the paid API and stays inert without a key.
+    //
+    // Added 2026-09-01 after measuring every free engine through `extractResultUrls` on two parts
+    // the pattern registry cannot reach. It returned the most usable results of any backend, found
+    // the correct PDF for both, and was the only one still answering while ddg and mojeek were
+    // rate-limiting us. Startpage, Bing and Marginalia were measured and dropped: Startpage returns
+    // one self-link, Bing wraps every result in an r.bing.com redirect this extractor does not
+    // unwrap, and Marginalia's index does not carry datasheets.
+    new HtmlSearchBackend("brave-html", (q) => `https://search.brave.com/search?q=${encodeURIComponent(q)}`),
+    // A genuinely independent index, and the point of having it is that it fails at different times
+    // from the others. Added 2026-09-02 once `unwrapBing` made its results readable.
+    new HtmlSearchBackend("bing", (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}`),
     new HtmlSearchBackend("mojeek", (q) => `https://www.mojeek.com/search?q=${encodeURIComponent(q)}`),
     new BraveSearchBackend()
   ];
@@ -217,6 +280,7 @@ export class SearchClient {
   async search(query: string): Promise<SearchOutcome> {
     let anyBlocked = false;
     let anyAttempted = false;
+    let emptyFrom: string | null = null;
 
     for (const backend of this.backends) {
       if (!backend.isConfigured()) continue;
@@ -229,8 +293,16 @@ export class SearchClient {
       try {
         const urls = await backend.search(query);
         this.recordSuccess(backend.name);
-        // An empty result from a healthy backend is a real answer; stop and report it.
-        return { urls, blocked: false, backend: backend.name };
+        // An empty result USED TO stop here, on the reasoning that a healthy backend saying "no
+        // results" is a real answer. It is not a credible one. No search engine genuinely has zero
+        // results for a real part number, and a degraded engine that returns 200 with nothing is
+        // indistinguishable from one that does, so believing it threw away every other backend.
+        //
+        // Measured 2026-09-02: one degraded DuckDuckGo took coverage from 95% to 69%, and brave-html
+        // was never asked despite carrying the right answer. Falling through costs one extra request
+        // in the rare case the query really has no hits, and recovers every case where it does.
+        if (urls.length > 0) return { urls, blocked: false, backend: backend.name };
+        emptyFrom = backend.name;
       } catch (error) {
         if (error instanceof SearchBlockedError) {
           this.recordBlock(backend.name);
@@ -246,7 +318,10 @@ export class SearchClient {
       }
     }
 
-    // Nothing usable. blocked=true tells the caller not to claim the part has no datasheet.
-    return { urls: [], blocked: anyBlocked || !anyAttempted, backend: null };
+    // Nothing usable anywhere. If some backend answered cleanly with nothing, that is a real (if
+    // weak) "no results" and blocked stays false so the caller may report a miss. If every backend
+    // refused or none was reachable, blocked=true tells the caller not to claim the part has no
+    // datasheet.
+    return { urls: [], blocked: anyBlocked || !anyAttempted, backend: emptyFrom };
   }
 }

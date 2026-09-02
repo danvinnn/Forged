@@ -5415,3 +5415,180 @@ no drill" reported 86 of 86 shipping wrong, because all 86 corpus footprints are
 surface mount and the mutation returned the footprint unchanged. **A mutation that
 changes nothing is not a finding.** It reports NO DATA now, which is the same rule
 as "a row of zeros is not a pass".
+
+## Probe a vendor with the client the product uses, never with curl (2026-09-01)
+
+Vendor CDNs fingerprint curl's TLS handshake. A first probing pass reported onsemi,
+Microchip, ST and ADI as blocking us. Node's `fetch` reached all four normally, and two of
+them were patterns already in the registry and working in production.
+
+Had I trusted the curl result I would have recorded four working vendors as unreachable and
+written that into the docs as fact. The general rule is the one `bench:instruments` exists
+for: the instrument has to be the thing that ships, or the measurement is about the
+instrument.
+
+## A comment claiming a behaviour is not that behaviour (2026-09-01)
+
+    // Ranked highest first so the cap drops the least likely link rather than the
+    // last one on the page.
+    const pdfLinks = extractPdfLinks(html, finalUrl).slice(0, MAX_PDF_LINKS_PER_PAGE);
+
+There was no sort. This is the third time this shape has cost real coverage
+(`bench:copper`'s exposed-pad check that matched a pad number nothing emitted; the pin-name
+check that never compared 20 of 44 entries). When a comment states a property, grep for the
+code that provides it.
+
+## Adding a vendor can LOSE a part (2026-09-01)
+
+`hintNamesKnownVendor` skipped the speculative tier whenever the manufacturer hint named a
+vendor in the registry, reasoning that the user had already told us who makes it.
+
+Adding NXP lost PCF8574. The corpus hints it NXP, NXP genuinely makes it, NXP genuinely does
+not host a datasheet at a derivable URL, and the copy that resolves is TI's. Before NXP was
+in the registry the hint named nobody we knew, speculation ran, and TI answered.
+
+A hint says where to look FIRST, not where to look ONLY. Second-sourcing is common, and the
+failure gets more likely with every vendor added, so it would have kept biting.
+
+## Verify before committing, not after (2026-09-01)
+
+`ScrapeResolver` picked the first candidate that looked like a PDF, and the caller
+identity-checked it afterwards. A rejection then ended the resolver, discarding every
+remaining candidate. Three FPGA parts were reported as having no datasheet when the truth
+was that one aggregator copy of the wrong device happened to rank first.
+
+`identity.ts` already stated the correct rule, and `scrape.ts` carried a comment
+acknowledging it did not follow it. A known deviation written down is still a defect.
+
+## The third kind of refusal: 200, no markers, no results (2026-09-02)
+
+`search.ts` already handled two refusals: an honest 403/429, and a 200 carrying a challenge
+marker. A third appeared in live measurement and neither caught it.
+
+A degraded DuckDuckGo answered HTTP 200, carried no challenge marker, and returned ten links
+that were all `duckduckgo.com` chrome. `extractResultUrls` reported ten URLs, so the client
+recorded a healthy backend with a real answer and **returned**, never asking brave-html,
+which was next in the list and had the correct PDF in 22 results.
+
+Live coverage fell from 95% to 69% and every single miss was a search-dependent part. Two
+fixes, both small:
+
+- Links back to the engine's own domain are chrome, not results. Filtered.
+- An empty result now falls THROUGH to the next backend. An engine genuinely having zero
+  results for a real part number is far less likely than an engine being degraded, and the
+  other engines are sitting right there. Only "every backend empty" is a real miss.
+
+The general lesson: when a component can fail in a way that looks like a valid answer,
+enumerate the ways rather than adding one marker at a time. Both earlier fixes here were
+also written in response to one observed instance.
+
+## Running a live bench repeatedly measures your own throttling (2026-09-02)
+
+Five `bench:coverage --live` runs in a few hours produced 65%, 93%, 95%, 70%, 69%. onsemi
+answered one part with HTTP 504 while serving another from the same host seconds later.
+
+Two consequences. The bench needs spacing between runs, and it now says so in `corpus.ts`.
+And the product needed one retry on 5xx: a gateway error was reaching the user as "no
+datasheet found" for a part whose datasheet was right there. Narrow on purpose, in
+`http.ts`: 5xx only, never 429, never on timeout, once.
+
+## Bing emits no result URLs at all, and that made it look useless (2026-09-02)
+
+Bing was measured and rejected on first inspection: 102 links extracted through
+`extractResultUrls`, zero of them a result. The conclusion "Bing wraps everything in an
+r.bing.com redirect this extractor does not unwrap" was right; the conclusion "so Bing is
+not worth having" was wrong.
+
+Every Bing result is `/ck/a?...&u=a1<base64url>`. Unwrapped, the same page yields 14 real
+URLs, and for AD8628 the first is `ad8628-8629-8630.pdf`, the combined-family filename no
+part-number pattern can derive.
+
+The trap inside the trap: the href is emitted with `&amp;`, so decoding entities has to
+happen BEFORE reading the query parameter. Without it the parameter is named `amp;u` and
+every result is dropped silently. My own first probe had exactly this bug and reported zero.
+
+## Measured negative: vendor and distributor site search (2026-09-02)
+
+Tried as a way to stop depending on general search engines, since the vendor obviously knows
+where its own datasheet is. All of it failed:
+
+    analog.com/en/search.html      403
+    mouser.com/c/?q=               403
+    digikey.com/.../result         403
+    arrow.com/.../search           403
+    st.com search                  200, results are JS-rendered, only the legal PDF in HTML
+    nxp.com/search                 200, zero PDFs, JS-rendered
+
+Vendor product pages work (that is what unlocked Microchip) because they are server-rendered.
+Vendor SEARCH pages are not. Do not retry this.
+
+## Test stubs should match a shape, not a list of names (2026-09-02)
+
+Two scrape tests broke twice in one session, once when `brave-html` was added and again when
+`bing` was added, because the stub matched `/duckduckgo|mojeek/` and left every other backend
+to 404. A 404 reads as a refusal, so tests asserting a clean miss threw instead.
+
+Now matched on `[?&](q|query)=`, which is what a search URL IS and what no vendor candidate
+URL has. A stub coupled to a list needs editing every time the list grows, and the failure
+looks like a product bug.
+
+## A budget checked between components stops bounding anything as they grow (2026-09-02)
+
+`composite.ts` enforced the 12s chain budget only BETWEEN resolvers, documented reasoning: a
+single resolver can overshoot by at most its own per-call timeout.
+
+That was true when the scrape resolver made a handful of calls. It now walks direct
+candidates, then several queries across several search backends, then up to twelve ranked
+results each of which can be a page fetch plus further downloads. Measured on a clean run: a
+MISS took a median of 12.8s and hit the 30s ceiling, against the 12s budget.
+
+Not just slow. The budget exists to sit UNDER the host's function timeout so a miss produces
+our own "upload instead" answer rather than a platform 504, and 30s on a 10-to-15-second
+serverless function produces exactly that 504. The comment explaining why 12s was chosen was
+still correct while the mechanism enforcing it had quietly stopped working.
+
+Fixed by passing the deadline down through `ResolveOptions` and checking it before each new
+candidate and each new query. Miss p90 30.0s to 14.1s, coverage unchanged. The residual 2s
+is one in-flight request finishing, which is the intended behaviour: stop STARTING work.
+
+The general shape: when you add work inside a component, re-check every bound that was
+justified by how much work it used to do.
+
+## Sweep your own new constants the same day you invent them (2026-09-02)
+
+Three constants went in with a paragraph of reasoning each: `MAX_SPECULATIVE = 24`,
+`MAX_VERIFIED_DOWNLOADS = 6`, `MAX_PDF_LINKS_HARVESTED = 200`. The first called itself a
+backstop. A sweep over all 142 part numbers in the two retrieval corpora showed the real
+maximum was 27, so 24 was silently CLIPPING 13 of 142 lookups. Prose said backstop, behaviour
+said "drops three candidates on 9% of parts".
+
+This is the same finding as the nine invented constants recorded earlier, made by the same
+person who wrote that entry, on the same day he re-read it. Writing the lesson down does not
+prevent it. Running the sweep does.
+
+The same sweep also justified KEEPING the tier, which arguing could not have settled: 40 of
+142 parts have no claiming vendor at all, so for 28% of lookups speculation is the only path
+the manufacturer resolver has.
+
+## A shape regex fitted to one vendor will match another (2026-09-02)
+
+`JST_SHAPE` was written from four JST part numbers and ended `[A-Z0-9-]+$`. It matched
+`ESP32-WROOM-32`: `ESP` + `32` + `-WROOM-` + `32`. Every Espressif module lookup also asked
+jst-mfg.com for `eWROOM.pdf`.
+
+Nothing broke, which is why it would have survived: Espressif claims the part too and the
+`%PDF` check discards the 404. A rule whose comment says JST and whose behaviour says
+"Espressif modules as well" is what RULES.md rule 4 is for, and the only thing that found it
+was sweeping every part number in both corpora against every vendor's `claims`.
+
+The fix has to be a real property of the numbering, not another special case. JST's option
+codes are alphabetic (`-K-S`, `-A`, `-TB`) and a module suffix ends in digits, so requiring
+letters separates them for a reason rather than by exclusion. `bench`-free test added.
+
+## Check where a scoring term actually fires, not just that it helps (2026-09-02)
+
+A `+15` bonus for `datasheet` in a candidate URL was meant to prefer a vendor's
+`/data-sheets/` path over an app note. Tested against the whole URL, it also rewarded
+aggregator DOMAINS like `datasheetspdf.com`, which is the opposite of the intent. Scoring the
+path only changes one URL in seven measured, so it is a correctness-of-intent fix rather than
+a coverage win, and the comment says so.

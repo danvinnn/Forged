@@ -10,6 +10,7 @@
     "test": "tsx --test 'src/lib/**/__tests__/*.test.ts'",
     "test:retrieval": "tsx --test 'src/lib/**/__tests__/*.test.ts'",
     "bench:coverage": "tsx src/lib/retrieval/__bench__/coverage.ts",
+    "bench:retrieval-holdout": "tsx src/lib/retrieval/__bench__/holdout.ts",
     "bench:extraction": "tsx src/lib/__bench__/extraction.ts",
     "bench:holdout": "tsx src/lib/__bench__/holdout.ts",
     "bench:replay": "tsx src/lib/__bench__/replay.ts",

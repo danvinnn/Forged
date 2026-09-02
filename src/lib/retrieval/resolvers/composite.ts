@@ -75,7 +75,10 @@ export class CompositeResolver implements DatasheetResolver {
 
       const attemptedAt = Date.now();
       try {
-        const ref = await resolver.resolve(partNumber, opts);
+        // Hand down what is LEFT of the budget, not just the fact that some remains. A resolver that
+        // loops (scrape) can otherwise burn far past the ceiling on its own, which is what turned a
+        // 12s budget into a measured 30s miss. Advisory: a resolver may ignore it.
+        const ref = await resolver.resolve(partNumber, { ...opts, deadlineAt: startedAt + this.budgetMs });
         // Stamp the winning child so the audit trail records who actually resolved it, not just
         // which chain was configured. A nested composite that already stamped keeps its inner name.
         if (ref) {

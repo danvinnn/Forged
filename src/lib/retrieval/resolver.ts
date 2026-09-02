@@ -31,6 +31,24 @@ export interface DatasheetRef {
 
 export interface ResolveOptions {
   manufacturer?: string;
+  /**
+   * Wall-clock instant (Date.now() milliseconds) after which a resolver should stop starting new
+   * work and report what it has.
+   *
+   * Added 2026-09-02. The chain budget used to be enforced only BETWEEN resolvers, on the reasoning
+   * that a single resolver could overshoot by at most its own per-call timeout. That stopped being
+   * true as the scrape resolver grew: it now walks direct candidates, then several queries across
+   * several search backends, then up to twelve ranked results each of which can be a page fetch plus
+   * further downloads. Measured on a clean run, a MISS took a median of 12.8s and hit the 30s
+   * ceiling, against a 12s budget.
+   *
+   * That is not just slow. The budget exists to sit UNDER the host's function timeout so a miss
+   * produces our own "upload instead" answer rather than a platform 504, and a 30s miss on a 10 to
+   * 15 second serverless function produces exactly the 504 the design is trying to avoid.
+   *
+   * Optional, and advisory: a resolver that ignores it still behaves correctly, just slowly.
+   */
+  deadlineAt?: number;
 }
 
 // Turns a part number into a downloaded datasheet PDF. A resolver is the ONLY kind of

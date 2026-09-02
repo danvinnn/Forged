@@ -43,6 +43,28 @@ export interface BenchPart {
   note?: string;
 }
 
+// EXPECTATIONS RESET 2026-09-01 against two clean live runs. Before that reset, 35 of 80 parts were
+// still marked `miss` from the era when the registry held three vendors, so a live run reported 29
+// surprises and could no longer show a regression: the field exists to make a DROP visible, and it
+// cannot do that when almost everything is expected to fail.
+//
+// The remaining `miss` rows are ONE class, and it is a real limit rather than a gap to fill: a
+// FAMILY or SERIES document does not name the ordering part number in its front matter, so
+// `namesThePart` rejects the correct file. Confirmed on each of them: the JST pattern fetches the
+// right `ePH.pdf` and the document says "PH", never "S2B-PH-K-S"; the Artix-7 datasheet never says
+// "XC7A35T"; the Intel datasheet says "MAX 10", never "10M08SAU169".
+//
+// `namesThePart` already accepts a family STEM, but only as a PREFIX ("L78" for L7805). These are
+// infixes, and accepting infixes would match "PH" against half the internet. Loosening the check is
+// how three wrong datasheets reached the corpus caches before, and a rejection sends the user to
+// upload, which is the safe outcome. Left alone on purpose.
+//
+// TWO CAVEATS ON READING A LIVE RUN:
+//   - The connector and memory-fpga tails depend on SEARCH RESULT ORDERING and move run to run.
+//     A miss there is weak evidence; a miss in the other six categories is worth investigating.
+//   - Running this bench repeatedly gets us throttled. A run immediately after several others
+//     measured 70% while a rested run measured 93%, with onsemi answering 504 to one part and
+//     serving another from the same host seconds later. Space the runs out.
 export const BENCH_CORPUS: BenchPart[] = [
   // --- rad-hard from vendors with derivable patterns: the thesis parts we CAN serve -------------
   { partNumber: "LMP7704-SP", manufacturer: "Texas Instruments", category: "radhard-major", expect: "hit", note: "primary test part, QMLV RHA 100krad" },
@@ -60,12 +82,12 @@ export const BENCH_CORPUS: BenchPart[] = [
   { partNumber: "AD590", manufacturer: "Analog Devices", category: "radhard-major", expect: "hit", note: "ad590s.pdf is the space-grade variant" },
 
   // --- rad-hard from pure-play specialists: expected misses, kept visible on purpose ------------
-  { partNumber: "VA10820", manufacturer: "VORAGO", category: "radhard-specialist", expect: "miss", note: "vendor publishes NO public datasheets; only distributor copies exist" },
-  { partNumber: "VA41630", manufacturer: "VORAGO", category: "radhard-specialist", expect: "miss" },
-  { partNumber: "UT32M0R500", manufacturer: "CAES", category: "radhard-specialist", expect: "miss" },
-  { partNumber: "UT54LVDS217", manufacturer: "CAES", category: "radhard-specialist", expect: "miss" },
-  { partNumber: "ISL71001M", manufacturer: "Renesas", category: "radhard-specialist", expect: "miss", note: "Renesas uses document-numbered filenames" },
-  { partNumber: "RTAX2000S", manufacturer: "Microchip", category: "radhard-specialist", expect: "miss", note: "Microchip names datasheets by doc number" },
+  { partNumber: "VA10820", manufacturer: "VORAGO", category: "radhard-specialist", expect: "hit", note: "distributor-hosted; found via mouser.com/pdfdocs" },
+  { partNumber: "VA41630", manufacturer: "VORAGO", category: "radhard-specialist", expect: "hit", note: "distributor-hosted" },
+  { partNumber: "UT32M0R500", manufacturer: "CAES", category: "radhard-specialist", expect: "hit", note: "vendor-hosted at frontgrade.com, found by search" },
+  { partNumber: "UT54LVDS217", manufacturer: "CAES", category: "radhard-specialist", expect: "hit", note: "vendor-hosted at frontgrade.com, found by search" },
+  { partNumber: "ISL71001M", manufacturer: "Renesas", category: "radhard-specialist", expect: "hit", note: "renesas.com/en/document/dst/ pattern" },
+  { partNumber: "RTAX2000S", manufacturer: "Microchip", category: "radhard-specialist", expect: "hit", note: "Microchip doc-numbered PDF, found by search" },
 
   // --- mainstream analog: our strongest area ---------------------------------------------------
   { partNumber: "LM358", manufacturer: "Texas Instruments", category: "analog", expect: "hit" },
@@ -124,8 +146,8 @@ export const BENCH_CORPUS: BenchPart[] = [
   // No manufacturer hint: exercises prefix claiming and the speculative tier.
   { partNumber: "OPA2277", category: "analog", expect: "hit", note: "no hint, must be claimed by prefix" },
   { partNumber: "AD8232", category: "analog", expect: "hit", note: "no hint" },
-  { partNumber: "MAX232", manufacturer: "Analog Devices", category: "analog", expect: "miss", note: "Maxim legacy naming, ADI pattern may not cover it" },
-  { partNumber: "LTC3105", manufacturer: "Analog Devices", category: "analog", expect: "miss", note: "Linear legacy files often use a trailing f" },
+  { partNumber: "MAX232", manufacturer: "Analog Devices", category: "analog", expect: "hit", note: "second-sourced: resolves from TI, not ADI" },
+  { partNumber: "LTC3105", manufacturer: "Analog Devices", category: "analog", expect: "hit", note: "legacy Linear filename 3105fb.pdf, found by search" },
   // ADOPTED 2026-08-21, not promoted: it was never in the hold-out, it was in
   // NEITHER corpus. Its datasheet sat in .bench-cache scoring nothing while
   // reader rules were fitted to it - `sections.ts` carries its "RECOMMENDED
@@ -139,12 +161,12 @@ export const BENCH_CORPUS: BenchPart[] = [
   { partNumber: "STM32F103C8", manufacturer: "STMicroelectronics", category: "mcu", expect: "hit" },
   { partNumber: "STM32H743ZI", manufacturer: "STMicroelectronics", category: "mcu", expect: "hit" },
   { partNumber: "MSP430F5529", manufacturer: "Texas Instruments", category: "mcu", expect: "hit" },
-  { partNumber: "ATMEGA328P", manufacturer: "Microchip", category: "mcu", expect: "miss", note: "doc-numbered" },
-  { partNumber: "PIC16F877A", manufacturer: "Microchip", category: "mcu", expect: "miss" },
-  { partNumber: "LPC1768", manufacturer: "NXP", category: "mcu", expect: "miss", note: "NXP uses document names" },
-  { partNumber: "ESP32-WROOM-32", manufacturer: "Espressif", category: "mcu", expect: "miss", note: "no pattern" },
-  { partNumber: "NRF52840", manufacturer: "Nordic", category: "mcu", expect: "miss" },
-  { partNumber: "RP2040", manufacturer: "Raspberry Pi", category: "mcu", expect: "miss" },
+  { partNumber: "ATMEGA328P", manufacturer: "Microchip", category: "mcu", expect: "hit", note: "Microchip PRODUCT PAGE, harvested and ranked" },
+  { partNumber: "PIC16F877A", manufacturer: "Microchip", category: "mcu", expect: "hit", note: "Microchip product page; the file is 39582C.pdf" },
+  { partNumber: "LPC1768", manufacturer: "NXP", category: "mcu", expect: "hit", note: "combined family filename LPC1769_68_67_66_65_64_63.pdf, found by search" },
+  { partNumber: "ESP32-WROOM-32", manufacturer: "Espressif", category: "mcu", expect: "hit", note: "espressif pattern" },
+  { partNumber: "NRF52840", manufacturer: "Nordic", category: "mcu", expect: "hit", note: "distributor-hosted, found by search" },
+  { partNumber: "RP2040", manufacturer: "Raspberry Pi", category: "mcu", expect: "hit", note: "datasheets.raspberrypi.com pattern" },
 
   // --- power and discrete ----------------------------------------------------------------------
   { partNumber: "TPS7A4700", manufacturer: "Texas Instruments", category: "power-discrete", expect: "hit" },
@@ -160,37 +182,37 @@ export const BENCH_CORPUS: BenchPart[] = [
   // Was ALSO in the hold-out until 2026-08-17, so it had been tuned against and
   // counted as unseen at the same time. Removed there, not here.
   { partNumber: "L7805", manufacturer: "STMicroelectronics", category: "power-discrete", expect: "hit" },
-  { partNumber: "IRF540N", manufacturer: "Infineon", category: "power-discrete", expect: "miss" },
-  { partNumber: "BSS138", manufacturer: "Infineon", category: "power-discrete", expect: "miss" },
-  { partNumber: "NCP1200", manufacturer: "onsemi", category: "power-discrete", expect: "miss" },
-  { partNumber: "MC33063A", manufacturer: "onsemi", category: "power-discrete", expect: "miss" },
-  { partNumber: "SI2302", manufacturer: "Vishay", category: "power-discrete", expect: "miss", note: "Vishay is doc-numbered" },
-  { partNumber: "AP2112", manufacturer: "Diodes", category: "power-discrete", expect: "miss" },
+  { partNumber: "IRF540N", manufacturer: "Infineon", category: "power-discrete", expect: "hit", note: "Infineon versioned filename, found by search" },
+  { partNumber: "BSS138", manufacturer: "Infineon", category: "power-discrete", expect: "hit", note: "onsemi pattern" },
+  { partNumber: "NCP1200", manufacturer: "onsemi", category: "power-discrete", expect: "hit", note: "onsemi pattern" },
+  { partNumber: "MC33063A", manufacturer: "onsemi", category: "power-discrete", expect: "hit", note: "onsemi pattern" },
+  { partNumber: "SI2302", manufacturer: "Vishay", category: "power-discrete", expect: "hit", note: "distributor-hosted, found by search" },
+  { partNumber: "AP2112", manufacturer: "Diodes", category: "power-discrete", expect: "hit", note: "diodes pattern" },
 
   // --- logic and interface ---------------------------------------------------------------------
   { partNumber: "SN74LVC1G08", manufacturer: "Texas Instruments", category: "logic-interface", expect: "hit" },
   { partNumber: "SN65HVD230", manufacturer: "Texas Instruments", category: "logic-interface", expect: "hit" },
   { partNumber: "ISO7741", manufacturer: "Texas Instruments", category: "logic-interface", expect: "hit" },
   { partNumber: "TXB0104", manufacturer: "Texas Instruments", category: "logic-interface", expect: "hit" },
-  { partNumber: "74HC00", manufacturer: "Nexperia", category: "logic-interface", expect: "miss" },
-  { partNumber: "PCF8574", manufacturer: "NXP", category: "logic-interface", expect: "miss" },
-  { partNumber: "TJA1050", manufacturer: "NXP", category: "logic-interface", expect: "miss" },
-  { partNumber: "MCP2515", manufacturer: "Microchip", category: "logic-interface", expect: "miss" },
+  { partNumber: "74HC00", manufacturer: "Nexperia", category: "logic-interface", expect: "hit", note: "second-sourced: resolves from Diodes" },
+  { partNumber: "PCF8574", manufacturer: "NXP", category: "logic-interface", expect: "hit", note: "second-sourced: NXP 404s, TI hosts it. See MAX_SPECULATIVE in manufacturer.ts" },
+  { partNumber: "TJA1050", manufacturer: "NXP", category: "logic-interface", expect: "hit", note: "nxp pattern" },
+  { partNumber: "MCP2515", manufacturer: "Microchip", category: "logic-interface", expect: "hit", note: "Microchip product page" },
 
   // --- connectors: the worst gap, and where footprint generation matters most -------------------
-  { partNumber: "43045-0400", manufacturer: "Molex", category: "connector", expect: "miss" },
-  { partNumber: "282836-2", manufacturer: "TE Connectivity", category: "connector", expect: "miss" },
-  { partNumber: "S2B-PH-K-S", manufacturer: "JST", category: "connector", expect: "miss" },
-  { partNumber: "10118193-0001LF", manufacturer: "Amphenol", category: "connector", expect: "miss" },
-  { partNumber: "DF13-4P-1.25DSA", manufacturer: "Hirose", category: "connector", expect: "miss" },
-  { partNumber: "M39029/58-360", manufacturer: "Glenair", category: "connector", expect: "miss", note: "mil-spec, directly relevant to the ICP" },
+  { partNumber: "43045-0400", manufacturer: "Molex", category: "connector", expect: "hit", note: "molex pattern" },
+  { partNumber: "282836-2", manufacturer: "TE Connectivity", category: "connector", expect: "hit", note: "TE customer drawing pattern" },
+  { partNumber: "S2B-PH-K-S", manufacturer: "JST", category: "connector", expect: "miss", note: "SERIES datasheet: the JST pattern fetches the right ePH.pdf and namesThePart rejects it, because the document says PH and never the ordering number" },
+  { partNumber: "10118193-0001LF", manufacturer: "Amphenol", category: "connector", expect: "hit", note: "found by search" },
+  { partNumber: "DF13-4P-1.25DSA", manufacturer: "Hirose", category: "connector", expect: "hit", note: "distributor-hosted, found by search" },
+  { partNumber: "M39029/58-360", manufacturer: "Glenair", category: "connector", expect: "hit", note: "mil-spec, distributor-hosted, found by search" },
 
   // --- memory and FPGA -------------------------------------------------------------------------
-  { partNumber: "MT41K256M16", manufacturer: "Micron", category: "memory-fpga", expect: "miss" },
-  { partNumber: "W25Q128JV", manufacturer: "Winbond", category: "memory-fpga", expect: "miss" },
-  { partNumber: "XC7A35T", manufacturer: "AMD", category: "memory-fpga", expect: "miss" },
-  { partNumber: "10M08SAU169", manufacturer: "Intel", category: "memory-fpga", expect: "miss" },
-  { partNumber: "A3P250", manufacturer: "Microchip", category: "memory-fpga", expect: "miss" }
+  { partNumber: "MT41K256M16", manufacturer: "Micron", category: "memory-fpga", expect: "miss", note: "distributor-hosted and search-dependent; resolved in 1 of 3 clean runs" },
+  { partNumber: "W25Q128JV", manufacturer: "Winbond", category: "memory-fpga", expect: "hit", note: "distributor-hosted, found by search" },
+  { partNumber: "XC7A35T", manufacturer: "AMD", category: "memory-fpga", expect: "miss", note: "FAMILY datasheet: front matter says Artix-7, never XC7A35T, so namesThePart rejects it" },
+  { partNumber: "10M08SAU169", manufacturer: "Intel", category: "memory-fpga", expect: "miss", note: "FAMILY datasheet: front matter says MAX 10, never the ordering number" },
+  { partNumber: "A3P250", manufacturer: "Microchip", category: "memory-fpga", expect: "hit", note: "Microchip product page; lands on the Automotive family datasheet, which does name it" }
 ];
 
 export function corpusByCategory(): Map<BenchCategory, BenchPart[]> {

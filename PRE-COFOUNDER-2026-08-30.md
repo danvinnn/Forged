@@ -309,6 +309,76 @@ browser, live         14/14 stages, 0 problems, real KiCad and Altium exports
 Every other free bench is byte-identical to its pre-pass baseline, so none of
 today's product changes cost anything measurable.
 
+## The claim this pass actually supports
+
+Checked on 2026-09-01, directly, rather than inferred from the benches.
+
+`bench:dimensions` knows of **8 wrong readings out of 731** against hand-read
+drawings. The question that decides readiness is not how many are wrong, it is
+whether any of them ships without the user being told. Each was traced to what it
+reaches:
+
+| part | wrong value | state | reaches |
+|---|---|---|---|
+| AD590 | pitchMm | flagged | copper |
+| ADXL345 | landPadWidthMm | flagged | copper |
+| LTC3105 | leadWidthMm | flagged | copper |
+| VA10820 | leadSpanMm | flagged | copper |
+| RHFL4913 | bodyLengthMm | flagged | 3D solid |
+| RHF1201 | bodyHeightMm | does not ship at all | — |
+| TLV9061 | leadSpanMm | confirmed | **nothing** |
+| NCP1200 | bodyHeightMm | confirmed | 3D solid only |
+
+The two marked confirmed needed checking properly. **Neither reaches copper.**
+TLV9061 and NCP1200 both build their lands from the footprint the datasheet
+prints, corroborated against IPC-7351B computed independently from the leads:
+TLV9061 emits a 2.600 mm span from the printed pattern while the wrong
+`leadSpanMm` reading (2.75 to 3.05) is never used. The wrong value is a reading
+that would only matter on a document that printed no footprint.
+
+**So: no wrong value reaches copper silently.** That is the promise, and it holds.
+
+What it exposes is narrower and real: **`bodyHeightMm` is vouched for by nothing.**
+`confirmBody` pairs length and width against the lead span; height has no second
+source in the confirmation, and NCP1200 ships 1.55 mm where the drawing says 1.75.
+It reaches the 3D solid and nothing that reaches a board, so it is the same class
+as `electricalType`. Exposure measured: **2 of 66 heights wrong.** An engineer
+checking mechanical clearance in an enclosure would care; one checking the
+netlist or the copper would not.
+
+## Which product path each number describes
+
+Found on 2026-09-01 while checking for regressions, and it changes how precisely
+these figures should be quoted. There are two real reading paths and they ask the
+model a DIFFERENT question:
+
+    /api/parse   an upload. No part number is known, so none is sent.
+    /api/lookup  a part number the user typed, which the prompt states:
+                 "The requested part number is X."
+
+Both are legitimate. They cannot share an answer cache, because the prompt
+differs, and that is why `bench:holdout --offline` reads 0: the cache holds
+lookup-shaped answers and the hold-out asks the upload-shaped question.
+Verified pre-existing by running the same command in a worktree at the
+pre-session commit: identical 0%.
+
+So:
+
+| number | path | how |
+|---|---|---|
+| READ 95%, SHIPS 93% (hold-out) | **upload** | a paid run, previous session |
+| dimensions 713 correct / 8 wrong | lookup | replayed free from cache |
+| 0 false confirmations | lookup | replayed free from cache |
+| questions, discards, symbol, sweeps | lookup | replayed free from cache |
+
+The confirmation logic is identical on both paths; what differs is the reading it
+is handed. **The hold-out figure, which is the one that predicts a stranger's
+datasheet, is the upload path** - which is also what a person dragging a PDF onto
+the page will use.
+
+Worth knowing rather than worth fixing: making the two share a cache would mean
+asking one of them the wrong question.
+
 ## Open, with reasons
 
 - **`bench:confirm` average 1.73 against a stated target of 1.00.** The gate that
@@ -323,6 +393,15 @@ today's product changes cost anything measurable.
   wrong reading, in neither corpus, and the product flags it rather than shipping
   it silently.
 - **Rotating pin numbering by 1 is silent on 2 parts** (ADG1211, ADG5412).
+- **`bodyHeightMm` has no second source.** 2 of 66 wrong, 3D solid only.
+  MEASURED NEGATIVE, 2026-09-01, do not retry without new evidence. The document
+  does carry a second reading (`statedMaxHeightMm`, the drawing's own title
+  block), and it is already used to CORRECT the height at merge time. Surfacing
+  it as a confirmation was swept over 105 shipping parts: 27 could be confirmed,
+  49 have no stated max anywhere and would become a NEW flag, and the rest need
+  the cited page rather than a document-wide scan. Roughly 74 new flags to catch
+  2 wrong heights that reach the 3D solid and nothing that reaches a board. That
+  takes the friction figure from 1.73 to about 2.4 and makes the product worse.
 - **Two of the seven verdict screens have still never been opened**
   (`refused-pinout`, `needs-checking`). The bench now names them every run, so
   they cannot go back to being invisible.

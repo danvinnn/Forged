@@ -59,7 +59,13 @@ is the same failure ARCHITECTURE.md forbids when it says never let a model "find
 just relocated into code. An unverified pattern is worse than no pattern: it costs a round trip on
 every lookup and quietly erodes trust in the citation story.
 
-Verified 2026-07-22, each by fetching a real datasheet:
+**Verify with Node's `fetch`, never with curl.** Learned 2026-09-01 the expensive way. Vendor CDNs
+fingerprint curl's TLS handshake, and ST, ADI, onsemi and Microchip all refuse it while answering
+`fetch` normally. A first probing pass with curl reported four vendors blocked, two of them patterns
+already in this registry and working in production. Probe through the client the product uses or the
+measurement is fiction.
+
+Verified 2026-07-22:
 
 | Vendor | Pattern | Verified against |
 |---|---|---|
@@ -67,27 +73,81 @@ Verified 2026-07-22, each by fetching a real datasheet:
 | STMicroelectronics | `st.com/resource/en/datasheet/{part}.pdf` | RHF310A, DS6201 Rev 8 (RHA QML-V, 300krad) |
 | Analog Devices | `analog.com/media/en/technical-documentation/data-sheets/{part}.pdf` | AD590 Rev G |
 
+Verified 2026-09-01, each by fetching real PDFs. The hit counts are out of the parts probed:
+
+| Vendor | Pattern | Verified |
+|---|---|---|
+| onsemi | `onsemi.com/download/data-sheet/pdf/{part}-d.pdf` | 6/8: ncp1200, mc33063a, bss138, ncp1117, ncp3063, ncv7351 |
+| NXP | `nxp.com/docs/en/data-sheet/{PART}.pdf` | 4/5: TJA1050, TJA1051, PCA9685, PCF8574_PCF8574A |
+| Diodes | `diodes.com/assets/Datasheets/{PART}.pdf` | 3/4: AP2112, ZXCT1010, 74LVC1G14 |
+| Molex | `molex.com/pdm_docs/sd/{digits}_sd.pdf` | 4/4, with or without the leading zero |
+| TE Connectivity | `te.com/commerce/DocumentDelivery/DDEController?...DocNm={base}` | 2/2: 282836, 284392 |
+| Amphenol | `amphenol-cs.com/media/wysiwyg/files/drawing/{base}.pdf` | 10118193. Note `www.`, not `cdn.` |
+| Espressif | `espressif.com/sites/default/files/documentation/{part}_datasheet_en.pdf` | esp32, esp32-wroom-32 |
+| Raspberry Pi | `datasheets.raspberrypi.com/{part}/{part}-datasheet.pdf` | rp2040 |
+| Renesas | `renesas.com/en/document/dst/{part}-datasheet` | isl71001m. **No `.pdf` extension**, served as application/pdf |
+| Microchip | product page only, see below | ATMEGA328P, PIC16F877A, MCP2515, A3P250 |
+
+Two traps these vendors carry that a status-code check would miss:
+
+- **onsemi answers a part it does not have with HTTP 200 and an HTML body**, not a 404. The `%PDF`
+  magic-byte check in `finalizeRef` is the only thing that catches it. Status is not a miss signal.
+- **The onsemi path matters.** `onsemi.com/pdf/datasheet/{part}-d.pdf` is the older, widely-cited
+  form and answers 403 for some parts that `/download/data-sheet/pdf/` serves. Not interchangeable.
+
 Each vendor also claims parts by prefix, so an engineer who types `RHF310A` with no manufacturer
 hint still reaches ST. Vendors are isolated: a TI part never generates an ST or ADI request, so
 adding vendors does not slow down lookups for the others.
 
-#### Coverage reality, checked rather than assumed
-Two earlier claims in this document were wrong. Both are corrected here.
+A vendor whose URL shape cannot apply to a part returns NO candidate rather than a garbage one.
+That is what keeps the speculative tier affordable as the registry grows: Molex's paths are built
+from digits and have nothing to say about `LM358`. The tier is additionally capped at 24, because
+it is fetched in parallel and an unbounded fan-out from a public endpoint is how one user request
+becomes seventy outbound ones.
 
-**Derivable by pattern, including rad-hard lines.** TI, ST, and ADI all publish rad-hard parts at
-predictable URLs. ST's entire space line (RHF, RHR) is reachable this way, and ADI space-grade
-parts fall out of the same pattern (`ad590s.pdf` is the space variant of `ad590.pdf`).
+#### Product pages: the second kind of candidate
+Added 2026-09-01. Some vendors file datasheets under a **document number** rather than a part
+number, so no pattern can reach the file. Microchip publishes ATMEGA328P's as
+`Atmel-7810-Automotive-Microcontrollers-ATmega328P_Datasheet.pdf` and PIC16F877A's as `39582C.pdf`.
 
-**Not derivable, because the filename is a document number.** Microchip publishes datasheets as
-`00002117f.pdf` and `39637d.pdf`. Vishay and Infineon are the same shape. No part-number pattern
-can reach these, so they must not be added to the registry regardless of how much coverage they
-would represent.
+But the vendor's **product page** is derivable, and it carries the link. So a vendor entry may
+contribute `productUrls` instead of (or as well as) datasheet URLs, and the scrape resolver fetches
+the page, harvests its PDF links, ranks them and downloads the best.
 
-**Not published by the vendor at all.** This is the important one and it is worse than a URL
-problem. VORAGO's documentation index lists white papers, application notes, tech briefs, PCNs, and
-QML certificates, and **zero datasheets**; the VA10820 product page routes you to a sales contact.
-The datasheet is gated behind a support request. CAES/Cobham, Teledyne e2v, and Honeywell behave
-the same way.
+**This needed no new resolver.** `inspectCandidate` already fetched a URL, and already harvested PDF
+links when the answer was HTML rather than a PDF. Two defects were stopping it from working:
+
+1. **The harvester only read `href="..."` attributes.** A modern vendor page renders its document
+   list from embedded JSON. Microchip's ATMEGA328P page carries 92 PDF URLs and **zero** of them are
+   in an href, so the harvest returned nothing and the part was reported as having no datasheet.
+2. **The eight-link cap was applied in document order.** The code's own comment said "ranked highest
+   first so the cap drops the least likely link" and no sort existed. A product page lists app notes,
+   errata and white papers for the same part, so the first eight is close to a random eight.
+
+With both fixed, the correct datasheet ranks **first** out of 92, 53 and 11 links on the three
+Microchip pages tested.
+
+Not every vendor has a derivable product page, and the ones that do not stay uploads:
+
+| Vendor | Why not |
+|---|---|
+| Analog Devices | `analog.com/en/products/{part}` answers 403 to us. The media path is unaffected |
+| ST | the product page needs the family STEM (`l78`, not `l7805`), which `buildPartVariants` will not produce for a short name and should not be loosened to |
+| NXP | no derivable product page found; the datasheet pattern above covers most of it |
+| Infineon | the filename carries a version (`Infineon-IRF540N-DataSheet-v01_01-EN.pdf`) and the product page is category-pathed |
+| Vishay | same shape as Infineon |
+
+#### The claim that the rad-hard specialists are unreachable was WRONG
+This document said VORAGO, CAES/Cobham, Teledyne e2v and Honeywell gate their datasheets behind a
+sales contact, and the coverage corpus scored all six `radhard-specialist` parts as expected misses.
+
+The live bench resolves **all six**, via distributor and vendor-hosted copies the scrape resolver
+already finds: `mouser.com/pdfdocs/VA10820.pdf`, `frontgrade.com/sites/default/files/documents/
+Datasheet-UT32M0R500.pdf`, and Renesas' own site for ISL71001M. These are the parts that define the
+product, and the doc had been telling us they were out of reach.
+
+The advice to not add **guessed** patterns for them stands. The claim that they are unreachable does
+not, and the difference matters: one is a rule about evidence, the other was a false fact.
 
 **Correction to an earlier claim: distributors DO carry rad-hard datasheets.** This document
 previously asserted that no distributor stocks true rad-hard parts, and used that to justify

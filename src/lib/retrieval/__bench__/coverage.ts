@@ -21,7 +21,7 @@
 // make CI flaky for reasons that have nothing to do with the change under review.
 
 import { BENCH_CORPUS, corpusByCategory, type BenchCategory, type BenchPart } from "./corpus";
-import { buildCandidateUrls } from "../resolvers/manufacturer";
+import { buildCandidateUrls, buildProductPageUrls } from "../resolvers/manufacturer";
 
 const LIVE = process.argv.includes("--live");
 const categoryArg = (() => {
@@ -44,10 +44,21 @@ function pct(n: number, d: number): string {
 }
 
 // Static: does any vendor pattern produce a candidate for this part?
+//
+// Counts PRODUCT PAGES as well as datasheet URLs. A vendor that files its datasheets under document
+// numbers contributes only a product page, and scoring that as "no candidates" would report the
+// three Microchip parts as uncovered while the resolver reaches all three. The static number exists
+// to move when the registry gains reach, so it has to see every kind of reach the registry has.
 function staticRow(part: BenchPart): Row {
   const { claimed, speculative } = buildCandidateUrls(part.partNumber, part.manufacturer);
+  const productPages = buildProductPageUrls(part.partNumber, part.manufacturer);
+
   if (claimed.length > 0) {
-    return { part, resolved: true, detail: `claimed (${claimed.length} candidates)` };
+    const detail = productPages.length > 0 ? `claimed (${claimed.length} candidates, ${productPages.length} product pages)` : `claimed (${claimed.length} candidates)`;
+    return { part, resolved: true, detail };
+  }
+  if (productPages.length > 0) {
+    return { part, resolved: true, detail: `product page only (${productPages.length})` };
   }
   if (speculative.length > 0) {
     return { part, resolved: false, detail: `speculative only (${speculative.length})` };

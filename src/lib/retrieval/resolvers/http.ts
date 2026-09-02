@@ -36,7 +36,7 @@ export class ResponseTooLargeError extends Error {
 // Redirects are followed MANUALLY rather than by passing redirect:"follow", because the SSRF guard
 // has to run on every hop. A public URL redirecting to 169.254.169.254 is the obvious bypass, and
 // letting fetch follow redirects internally would check only the first URL.
-export async function fetchWithTimeout(
+async function fetchOnce(
   url: string,
   init: RequestInit,
   timeoutMs: number
@@ -88,6 +88,47 @@ export async function fetchWithTimeout(
     // body the caller has not read yet still completes.
     for (const agent of agents) void agent.close();
   }
+}
+
+/**
+ * How long to wait before the single retry below.
+ *
+ * Short on purpose. This is for a gateway hiccup, not for waiting out a rate limit, and it is paid
+ * inside a user-facing lookup.
+ */
+const RETRY_DELAY_MS = 400;
+
+/**
+ * One retry, on a SERVER error only.
+ *
+ * Found 2026-09-01 while measuring coverage. onsemi answered `ncp1200-d.pdf` with HTTP 504 while
+ * serving `bss138-d.pdf` from the same host seconds later. A 504 is not an answer about the part,
+ * but it reached the user as one: the resolver reported the candidate unusable, the chain fell
+ * through, and the lookup ended in "no datasheet found" for a part whose datasheet is right there.
+ * That is exactly the confusion this layer works hardest to avoid everywhere else.
+ *
+ * DELIBERATELY NARROW:
+ *
+ * - 5xx only. A 429 is the vendor telling us to stop, and retrying it consumes the quota we are
+ *   waiting for; a 403 or 404 is a real answer. Retrying either would make things worse.
+ * - Not on TIMEOUT. The per-call timeout is already 30s for a download, so retrying an abort would
+ *   double the worst case a user waits before being told to upload instead.
+ * - Once. A host that fails twice in half a second is having a real outage, and the honest move is
+ *   to fall through to the next candidate rather than keep knocking.
+ */
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const first = await fetchOnce(url, init, timeoutMs);
+  if (first.status < 500) return first;
+
+  // The body is unread and about to be discarded. Cancel it so the connection can be released
+  // rather than left hanging until GC.
+  void first.body?.cancel();
+  await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+  return fetchOnce(url, init, timeoutMs);
 }
 
 // Buffers a response body with a hard ceiling.

@@ -152,3 +152,25 @@ test("a generous budget does not interfere with a normal hit", async () => {
   const out = await composite.resolve("LMP7704-SP");
   assert.equal(out?.fileName, "hit.pdf");
 });
+
+test("hands each resolver the deadline, not just the fact that budget remains", async () => {
+  // The budget was previously checked only between resolvers, so a resolver that loops internally
+  // could run far past the ceiling on its own. Measured: a 12s budget produced 30s misses.
+  let seen: number | undefined;
+  const budgetMs = 5_000;
+  const before = Date.now();
+  const spy: DatasheetResolver = {
+    name: "spy",
+    isConfigured: () => true,
+    resolve: async (_part, opts) => {
+      seen = opts?.deadlineAt;
+      return null;
+    }
+  };
+  await new CompositeResolver([spy], { budgetMs }).resolve("LMP7704-SP");
+  assert.ok(seen !== undefined, "the deadline must be passed down");
+  assert.ok(
+    seen! >= before + budgetMs && seen! <= Date.now() + budgetMs,
+    `deadline should be about one budget away, got ${seen! - before}ms`
+  );
+});
