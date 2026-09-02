@@ -1,0 +1,1013 @@
+/*
+ * The suite shell.
+ *
+ * Scoped under `.suite` and `.onboard` so it cannot touch the workspace `/`
+ * still ships. Every colour is a token already declared in `globals.css`; the
+ * only new ones are the ember, which is what makes the heat read as heat, and
+ * they are declared here rather than there so this branch owns them.
+ *
+ * Same rules as the rest of the product: hairline rules, near-square corners,
+ * monospace for every value, one accent for the next thing to click, and no
+ * motion beyond the one thing that is actually running.
+ */
+
+.suite {
+  /* The ember. Blue survives as the cold note: hot means unfinished, cold means
+     signed off, so the accent for "in the fire" cannot be the same hue as the
+     accent for "locked". */
+  --ember: oklch(0.62 0.17 47);
+  --ember-hot: oklch(0.84 0.15 82);
+  --ember-soft: oklch(0.95 0.035 62);
+
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  .suite {
+    --ember-soft: oklch(0.3 0.07 45);
+  }
+}
+
+.suite-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.6rem 1.5rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.suite-bar .ghost {
+  margin-left: auto;
+}
+
+/* Who the libraries will be signed by, beside the gear that changes it. A gear
+   on its own makes the user open the panel to find out whether the first run
+   ever completed. */
+.suite-who {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-3);
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gear {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  align-self: center;
+  padding: 0;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.3s ease;
+}
+
+.suite-who + .gear {
+  margin-left: 0.6rem;
+}
+
+.gear:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .gear:hover svg {
+    transform: rotate(30deg);
+    transition: transform 0.3s ease;
+  }
+}
+
+.suite-main {
+  flex: 1;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+/* Centred only while there is nothing to show. The moment a file lands the
+   frame settles to the top and stays there for the rest of the session. */
+.suite-empty .suite-main {
+  justify-content: center;
+  padding-top: 3rem;
+}
+
+.suite-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.suite-hero h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  text-align: center;
+  text-wrap: pretty;
+}
+
+/* The heat rule, on the wordmark in the bar. It used to be here AND on a second
+   "Forge" sitting as an eyebrow over the hero heading, which is a label above a
+   heading that already carries its own weight. */
+.suite-bar .wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.suite-heat {
+  width: 22px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--rule-strong), var(--ember), var(--ember-hot));
+}
+
+/* --- the frame -------------------------------------------------------------
+   One element for the whole session. Everything after the composer is its body,
+   and each phase replaces the last inside it. */
+
+.frame {
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.suite-identified .frame,
+.suite-reading .frame,
+.suite-done .frame {
+  border-color: var(--rule);
+}
+
+.frame-top {
+  display: block;
+  height: 2px;
+  background: transparent;
+}
+
+/* Heating, then cooled. The only two states that earn a coloured edge. */
+.frame-top-reading {
+  background: linear-gradient(90deg, var(--ember), var(--ember-hot));
+}
+
+.frame-top-done {
+  background: linear-gradient(90deg, var(--ember-hot), var(--rule-strong) 60%, var(--rule));
+}
+
+.frame-composer {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.85rem 1.1rem 0.7rem;
+}
+
+.frame-input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  color: var(--ink);
+  padding: 0.15rem 0;
+}
+
+.frame-held {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.frame-name {
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+}
+
+.frame-sub,
+.frame-status {
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+.frame-intents {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  padding: 0.55rem 0.7rem 0.6rem;
+  border-top: 1px solid var(--sunken);
+}
+
+.frame-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.chip {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.chip-on {
+  background: var(--ember-soft);
+  border-color: var(--ember);
+  color: var(--ink);
+}
+
+.chip:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.frame-body {
+  border-top: 1px solid var(--rule);
+  padding: 0.9rem 1.1rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.frame-note {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  max-width: 66ch;
+}
+
+.frame-note-centred {
+  align-self: center;
+  text-align: center;
+}
+
+.frame-go {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+
+/* --- identify, which is free -----------------------------------------------
+   The five-row `dl` that lived here is gone. Three of its rows were already in
+   the composer line above it, one counted the list immediately below it, and
+   one printed eight characters of a hash that nothing on the screen used. */
+
+/* A section label, not a paragraph explaining why the section exists. */
+.frame-label {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+
+.pick-package {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* The package list comes from `globals.css`, so the selected card kept the blue
+   accent while the chip beside it and the button under it were ember. Two
+   accents for "this is the one you picked", on one screen. */
+.suite .pkg-active {
+  background: var(--ember-soft);
+  border-color: var(--ember);
+}
+
+/* --- the read --------------------------------------------------------------
+   Position, never a percentage. The work reports no progress it could be honest
+   about, and inventing one would be the only guess in the product. */
+
+.heat {
+  position: relative;
+  height: 6px;
+  background: var(--sunken);
+  overflow: hidden;
+  border-radius: 3px;
+  border: 1px solid var(--rule);
+}
+
+/* WIDTH IS SET FROM THE CLOCK, in `SuiteWorkspace`. It was pinned at a constant
+   58% for the life of the first draft, which is a bar that says the same thing
+   at one second and at two minutes.
+
+   The transition is one tick long and LINEAR, so the sampled positions join into
+   continuous motion instead of four steps a second. The gradient scales with the
+   fill, which puts the hottest end at the leading edge wherever that edge is. */
+.heat-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  overflow: hidden;
+  background: linear-gradient(90deg, oklch(0.42 0.12 40), var(--ember) 65%, var(--ember-hot));
+  transition: width 250ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heat-fill {
+    transition: none;
+  }
+}
+
+/* The travelling highlight, INSIDE the fill rather than over the whole track: a
+   sweep crossing the empty part of a bar reads as progress that is not there. */
+@media (prefers-reduced-motion: no-preference) {
+  .heat-sweep {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 30%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+    animation: heat-sweep 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes heat-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(400%); }
+}
+
+.stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.stage {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  transition: color 0.25s ease;
+}
+
+.stage-dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  transform: rotate(45deg);
+  border: 1px solid var(--rule-strong);
+  transition: background-color 0.25s ease, border-color 0.25s ease;
+}
+
+/* Three states, and they have to look like three. The first draft had two and
+   applied the lit one to a hardcoded index, so every read showed stage three
+   running from the first frame to the last. */
+.stage-todo {
+  color: var(--ink-3);
+}
+
+.stage-done .stage-dot {
+  background: var(--rule-strong);
+  border-color: var(--rule-strong);
+}
+
+.stage-on {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.stage-on .stage-dot {
+  background: var(--ember-hot);
+  border-color: var(--ember);
+}
+
+/* The lit dot marks the running stage. It also carried a pulsing zero-offset
+   halo, which is a second moving thing on a screen whose one moving thing is
+   the bar directly above it. */
+
+.stage-name {
+  min-width: 0;
+}
+
+.stage-at {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+/* --- the output ------------------------------------------------------------- */
+
+.outputs {
+  display: flex;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.output {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.output h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+
+
+/* --- the dialog -------------------------------------------------------------
+ * A DIALOG, NOT AN IMITATION APPLICATION WINDOW.
+ *
+ * The first version drew three grey traffic lights and a "FORGE - FIRST RUN"
+ * title bar above a body that was simply as tall as its content. Two things
+ * were wrong and only one of them was cosmetic. The chrome imitated an OS for
+ * no reason, and the body could grow past the bottom of the screen, which put
+ * the primary button of the FIRST SCREEN A NEW USER SEES below the fold with no
+ * visible scrollbar. It read as a tab that had popped out sideways.
+ *
+ * Three rows now: a header that states what this is, a body that scrolls, and a
+ * footer that does not. The footer stays reachable at any window height.
+ */
+
+.onboard-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgb(10 11 12 / 55%);
+  backdrop-filter: blur(2px);
+}
+
+.onboard {
+  width: 100%;
+  max-width: 620px;
+  max-height: min(88vh, 780px);
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%), 0 24px 48px -24px rgb(0 0 0 / 45%);
+}
+
+/* The settings step carries four fields and three presets; the account step
+   carries three inputs. Sizing them the same makes the second look empty. */
+.onboard-line {
+  max-width: 680px;
+}
+
+.onboard-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.4rem 1.5rem 1rem;
+}
+
+.onboard-heading {
+  min-width: 0;
+}
+
+.onboard-head h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+}
+
+.onboard-sub {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--ink-3);
+}
+
+.onboard-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: -0.25rem -0.4rem 0 auto;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.onboard-close:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+/* Where you are, in something with two parts. Not a control: nothing here is
+   clickable, because step 2 is reached by answering step 1. */
+.onboard-steps {
+  list-style: none;
+  display: flex;
+  gap: 1.25rem;
+  margin: 0;
+  padding: 0 1.5rem 0.9rem;
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+.onboard-steps li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.onboard-steps li.on {
+  color: var(--ink);
+  font-weight: 550;
+}
+
+.onboard-step-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1px solid var(--rule-strong);
+  font-family: var(--mono);
+  font-size: 0.5625rem;
+}
+
+.onboard-steps li.on .onboard-step-n {
+  background: var(--ember);
+  border-color: var(--ember);
+  color: #ffffff;
+}
+
+.onboard-steps li.done .onboard-step-n {
+  background: var(--ink-3);
+  border-color: var(--ink-3);
+  color: var(--surface);
+}
+
+/* THE ONLY PART THAT SCROLLS. */
+.onboard-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.25rem 1.5rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+  border-top: 1px solid var(--rule);
+}
+
+.onboard-lead {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--ink-3);
+}
+
+/* PINNED. A primary action that scrolls away is the defect this replaces. */
+.onboard-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.9rem 1.5rem;
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.onboard-actions-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* --- tabs ------------------------------------------------------------------ */
+
+.onboard-tabs {
+  display: flex;
+  gap: 0.2rem;
+  margin: 0 1.5rem 0.9rem;
+  padding: 0.2rem;
+  background: var(--sunken);
+  border-radius: 7px;
+}
+
+.onboard-tab {
+  flex: 1;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 0.35rem 0.7rem;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.onboard-tab:hover {
+  color: var(--ink-2);
+}
+
+.onboard-tab.on {
+  background: var(--surface);
+  border-color: var(--rule);
+  color: var(--ink);
+  font-weight: 550;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+}
+
+/* --- presets ---------------------------------------------------------------- */
+
+.assembly {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.onboard-presets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+}
+
+.preset {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  text-align: left;
+  padding: 0.65rem 0.7rem 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.preset:hover {
+  border-color: var(--rule-strong);
+}
+
+.preset-on {
+  background: var(--ember-soft);
+  border-color: var(--ember);
+}
+
+.preset-name {
+  font-weight: 550;
+  font-size: 0.8125rem;
+}
+
+.preset-note {
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+
+/* --- form fields -----------------------------------------------------------
+ * Label, control, then the reason under it at full width.
+ *
+ * This was a three-column table and the third column was a paragraph of prose
+ * in whatever space was left: four ragged lines per row, and a window taller
+ * than the screen. Same information, half the height.
+ */
+
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+  gap: 1rem 1.25rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.field-label {
+  font-size: 0.8125rem;
+  font-weight: 550;
+  color: var(--ink);
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.field-standard {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.set-input,
+.onboard input[type="email"],
+.onboard input[type="text"],
+.onboard input[type="number"] {
+  width: 100%;
+  height: 34px;
+  font-family: var(--sans);
+  font-size: 0.8125rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  padding: 0 0.55rem;
+  min-width: 0;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.onboard input:focus-visible,
+.onboard select:focus-visible {
+  outline: none;
+  border-color: var(--ember);
+  box-shadow: 0 0 0 3px var(--ember-soft);
+}
+
+.set-number {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.set-number input {
+  max-width: 8.5rem;
+}
+
+.set-unit {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+/* THE LIMIT, WHERE THE VALUE WAS TYPED. `parseSettings` drops an out-of-range
+   number and used to do it in silence: the box still showed 8 and nothing on
+   screen joined that to the field still being unanswered. */
+.set-bad {
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--bad);
+}
+
+.onboard input[aria-invalid="true"] {
+  border-color: var(--bad);
+}
+
+/* --- the account fields ---------------------------------------------------- */
+
+.acct-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.acct-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.acct-label {
+  font-size: 0.8125rem;
+  font-weight: 550;
+  color: var(--ink);
+}
+
+.acct-label em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--ink-3);
+  font-size: 0.75rem;
+}
+
+/* --- the export --------------------------------------------------------------
+   The button here had no handler at all: it rendered in the primary colour at
+   the end of the flow and ignored the click. */
+
+.fmt-set {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.fmt-legend {
+  padding: 0;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+
+.fmt-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.fmt {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.fmt:hover {
+  border-color: var(--rule-strong);
+}
+
+.fmt input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fmt-on {
+  background: var(--ember-soft);
+  border-color: var(--ember);
+}
+
+/* Offered and disabled rather than hidden. A format with no generator behind it
+   is a fact about the product; hiding it invites the assumption it is coming. */
+.fmt-off {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.fmt-name {
+  font-size: 0.8125rem;
+  font-weight: 550;
+}
+
+.fmt-note {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--ink-3);
+}
+
+.refusal {
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.refusal-head {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  color: var(--ink);
+}
+
+.refusal-fields {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-2);
+}
+
+/* --- buttons ----------------------------------------------------------------
+   The ember replaces the blue for the next thing to click, inside the suite
+   only. Sentence case rather than the uppercase the global primary uses: at
+   `btn-lg` on a dialog footer the tracked-out capitals read as a banner rather
+   than a control. */
+
+.suite .btn,
+.onboard .btn {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.85rem;
+  border-radius: var(--radius);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.suite .btn-primary,
+.onboard .btn-primary {
+  background: var(--ember);
+  border-color: var(--ember);
+  color: #ffffff;
+  font-weight: 550;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.suite .btn-primary:hover:not(:disabled),
+.onboard .btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.suite .btn-lg {
+  height: 38px;
+  padding: 0 1.1rem;
+  font-size: 0.875rem;
+}
+
+.btn-quiet {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 620px) {
+  .onboard-presets,
+  .fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* "Assembly line" wrapped to two lines against the heading beside it, which
+   made the step marker read as a paragraph rather than a label. */
+.onboard-steps li {
+  white-space: nowrap;
+}
+
+.onboard-steps {
+  flex: none;
+  align-self: flex-start;
+  padding: 0;
+  margin-left: auto;
+}
+
+.onboard-head {
+  flex-wrap: wrap;
+}
+
+/* The four settings rows want two columns; three inputs do not. Sizing on what
+   the dialog CONTAINS covers the gear panel's tabs as well as the first run's
+   steps, which the `.onboard-line` class alone did not. */
+.onboard:has(.assembly) {
+  max-width: 680px;
+}

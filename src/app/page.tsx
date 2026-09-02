@@ -1439,7 +1439,7 @@ export default function HomePage() {
       <header className="bar">
         <div className="bar-id">
           <span className="wordmark">Forge</span>
-          <span className="bar-sub">datasheet to CAD library</span>
+          <span className="bar-sub">Get a datasheet, receive a schematic symbol, a footprint and a 3D body. Zero hassle.</span>
         </div>
         {config && <span className={`mode mode-${config.mode}`}>{config.lookupEnabled ? "commercial" : "air-gapped"}</span>}
       </header>

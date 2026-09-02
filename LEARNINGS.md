@@ -5415,3 +5415,93 @@ no drill" reported 86 of 86 shipping wrong, because all 86 corpus footprints are
 surface mount and the mutation returned the footprint unchanged. **A mutation that
 changes nothing is not a finding.** It reports NO DATA now, which is the same rule
 as "a row of zeros is not a pass".
+
+## What survived two working notes on flat-pack forming (2026-09-01)
+
+`INSTALL-WIDE-SPAN.md` and `LPE.md` were working notes kept in the repo root and
+never committed. Their acted-on halves are already above - the span-is-not-
+install-wide finding, and `SPAN-INSIDE-BODY`, which shipped as
+`formedSpanReachesBody`. These four items were in neither this file nor the code,
+and are recorded here so the notes can be deleted.
+
+### The formed span should be DERIVED per part, not asked per installation
+
+Still open, and it is the unimplemented half of the finding above.
+
+A forming die holds constant the bend, the standoff and the foot - the
+**protrusion beyond the body**. The toe-to-toe span it produces is that
+protrusion plus the body width, and the body width is different for every
+package. So `span = bodyAcross + 2 * protrusion` would make one install-wide
+answer correct for every flat pack the shop builds, with the per-part half read
+off that part's own drawing. Body width across the lead axis is already read on
+**7 of 9** straight-lead drawings.
+
+**Not built, and RULES.md 2 is why.** Whether a shop sets a die to a fixed
+protrusion or to a fixed span is a fact about PRACTICE, and the arithmetic being
+natural is not a reason to assume the answer. The evidence that exists points at
+protrusion - the rad-hard engineer's *"my die gives a repeatable foot and bend;
+it does not give one toe-to-toe span across a CFP-8 and a CQFP-128"* - but that
+is one customer. The cheapest place to settle it is a document the datasheet
+names itself: LMP7704-SP page 24 cites TI's *Hermetic Package Reflow Profiles,
+Termination Finishes, and Lead Trim and Form* application report.
+
+Note the shape of what is already there: `askForLandPattern` re-asks the span
+with `scope: "part"` when an install-wide answer does not reach the body
+(`exporters.ts:2130`), while the UI still tells the user it is *"remembered for
+every part after this one"* (`page.tsx:2213`). The code has grown a per-part
+escape hatch around a setting whose copy says it never needs one.
+
+### No ceramic flat pack in the corpus prints a footprint
+
+Lead form against printed content, all 56 hand-read drawings in
+`dimension-oracle.ts`, counted 2026-08-27:
+
+| Lead form | Drawings | Prints seated foot L | Prints a recommended footprint |
+|---|---|---|---|
+| gullwing | 32 | 31 of 31 recordable | 23 |
+| nolead | 12 | 9 of 11 recordable | 8 |
+| **straight** | **9** | **0 of 8 recordable** | **0 of 9** |
+
+**This is why the flat-pack path has no fallback.** There is no vendor pattern to
+drop through to and no printed foot to compute from, so every one of these parts
+reaches the formed-span path; it is the only route they have. The eight parts
+behind those nine drawings are LMP7704-SP, REF5025, TPS7A4501-SP, RHF310A,
+RHFL4913A, RHF1201, UT54LVDS217 and AD590, which is a fair sample of who this is
+sold to. It is the market, not a corner.
+
+### JEDEC and IPC use the same letters for different quantities
+
+Normalize before any arithmetic. Mapping by letter alone silently produces a
+wrong footprint.
+
+| Quantity | IPC-7351 | JEDEC drawing |
+|---|---|---|
+| Overall span, toe to toe | `L` | `D` or `E` |
+| Terminal (foot) length | `T` | `L` |
+| Terminal width | `W` | `b` |
+| Body length / width | - | `D1` / `E1` |
+
+**JEDEC `L` is IPC `T`.** This is the trap behind RHF1201's misread lead form
+above: Table 14's `L` is the overall span, 12.28 to 12.88, and `L` is a foot
+length on most vendors' tables.
+
+The related open item is where a registered-outline library comes from, for
+drawings that say only "conforms to JEDEC MS-013" with no enumerated table. On
+the rad-hard side the answer is not a JEDEC table but the vendor's trim-and-form
+report and MIL-STD-1835 case outlines.
+
+### Density level defaults to B, and the market may want A
+
+`settings.ts:246` returns `"B"` when unset. That is defensible under RULES.md 3:
+IPC-7351B's own nominal is B, and a blank field meaning the published standard is
+exactly the shape that rule describes.
+
+`LPE.md` argued for **Level A on Class 3 / space hardware** - larger toe fillets,
+better solder joint fatigue life, better visual inspectability - on the grounds
+that this product's market is that hardware. That is a claim about practice and
+it has not been checked with a customer, so it is recorded as an open question
+rather than acted on. Density level is not extractable from any datasheet: it
+depends on board real estate, assembler process capability, inspection access and
+reliability class. A vendor's "recommended land pattern" bakes in something
+roughly equivalent to Level B, but that is a vendor suggestion, not an
+extractable density level.
