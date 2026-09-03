@@ -77,6 +77,7 @@ function exportablePart(
       leadForm: citedValue<"gullwing" | "nolead" | "straight">(leadForm),
       mounting: unknown<"smd" | "through-hole">(),
       leadDiameterMm: unknown<number>(),
+      holeDiameterMm: unknown<number>(),
       vacantLeadSlot: unknown<number>(),
       leadsPerSide: unknown<string>(),
       solderMaskExpansionMm: unknown<number>(),

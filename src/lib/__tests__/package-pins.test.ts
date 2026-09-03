@@ -87,6 +87,7 @@ function familyRecord(overrides: Partial<PartRecord> = {}): PartRecord {
       leadForm: cited<"gullwing" | "nolead" | "straight">("gullwing"),
       mounting: unknown(),
       leadDiameterMm: unknown<number>(),
+      holeDiameterMm: unknown<number>(),
       vacantLeadSlot: unknown<number>(),
       leadsPerSide: unknown<string>(),
       solderMaskExpansionMm: unknown<number>(),

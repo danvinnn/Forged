@@ -42,6 +42,7 @@ function record(over: Record<string, unknown> = {}): PartRecord {
       leadForm: field<"gullwing" | "nolead" | "straight">(),
       mounting: field<"smd" | "through-hole">(),
       leadDiameterMm: field<number>(),
+      holeDiameterMm: field<number>(),
       vacantLeadSlot: field<number>(),
       leadsPerSide: field<string>(),
       solderMaskExpansionMm: field<number>(),

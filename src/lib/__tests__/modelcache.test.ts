@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExtractionModelError } from "../extraction/contracts";
 import type { ExtractionModel, ExtractionRequest, ExtractionResult } from "../extraction/contracts";
-import {
+import { cacheModeFromArgv,
   cachingModel,
   requestKey,
   ModelCacheMiss,
@@ -745,4 +745,25 @@ test("a failure that never reached the provider is not billed for three", async 
 
   process.env.FORGE_MODEL_CACHE_DIR = TEMP_DIR;
   rmSync(own, { recursive: true, force: true });
+});
+
+test("two cache modes at once is refused, not resolved by precedence", () => {
+  // The command that cost $2.60 on 2026-09-02. `--estimate` exists to price a
+  // run WITHOUT paying for it, and a precedence chain silently outranked it with
+  // `--refresh`, which re-asks the whole corpus live.
+  assert.throws(
+    () => cacheModeFromArgv(["node", "bench", "--model", "--estimate", "--refresh"]),
+    /Conflicting cache modes/
+  );
+  assert.throws(() => cacheModeFromArgv(["--offline", "--refresh"]), /Conflicting cache modes/);
+  assert.throws(() => cacheModeFromArgv(["--offline", "--estimate"]), /Conflicting cache modes/);
+});
+
+test("each mode flag on its own still resolves, and no flag means the default", () => {
+  assert.equal(cacheModeFromArgv(["node", "bench", "--model", "--offline"]), "offline");
+  assert.equal(cacheModeFromArgv(["--estimate"]), "estimate");
+  assert.equal(cacheModeFromArgv(["--refresh"]), "refresh");
+  assert.equal(cacheModeFromArgv(["node", "bench", "--model"]), "use");
+  // Unrelated flags must not be read as modes.
+  assert.equal(cacheModeFromArgv(["--model", "--fetch", "--parts", "LM358"]), "use");
 });

@@ -29,6 +29,7 @@
  *     the copper        the vendor's printed footprint, against IPC-7351B arithmetic,
  *                       and the leads themselves laid onto the lands
  *     the pin count     the pin table, against the mechanical drawing's lead count
+ *                       and against the count the package NAME states
  *     the pitch         the pitch, against the body it has to fit inside
  *     the body          the body, against the lead span that has to reach past it
  *     the thermal pad   the outline's D2/E2, against the printed footprint's own pad
@@ -53,7 +54,7 @@
  */
 
 import { isGridAddressed, type FootprintGeometry } from "./geometry";
-import { declaredLeadCount, declaredLeadSides } from "./packagevariants";
+import { declaredLeadCount, declaredLeadSides, statedLeadCount } from "./packagevariants";
 import { pinoutEvidence, type PinoutEvidence } from "./pinevidence";
 import { solderJoint, type JointReport } from "./solderjoint";
 import type { DatasheetText } from "./pdftext";
@@ -256,10 +257,24 @@ function confirmPinCount(part: ResolvedPart): Confirmation {
     "Sets how many pads are generated and how many pins the symbol carries. A wrong count is a footprint that does not fit the part.";
   const drawing = part.dimensions.leadCount;
   const named = declaredLeadCount(part.packageType);
+  // THE COUNT THE NAME SPELLS OUT, which is a different reading from the
+  // designator `declaredLeadCount` parses and reaches names that one cannot.
+  //
+  // Added 2026-09-02 after measuring the corpus: of 104 parts, 20 had
+  // `pinCount` and `dimensions.leadCount` cited to THE SAME PAGE, and for 10 of
+  // those the designator yielded no count either. Every one of those 10 was
+  // reported CONFIRMED on the strength of one page read twice, which this
+  // file's own opening says is not a second source. `14-Terminal LGA`,
+  // `143-Pin CLGA` and `FCBGA (400)` all state their count plainly and none of
+  // them parses as a designator.
+  const stated = statedLeadCount(part.packageType);
   if (drawing !== null && drawing === part.pinCount) {
     return confirmed(id, label, `${part.pinCount} pins, and the package outline drawing counts ${drawing} leads.`);
   }
   if (named !== null && named === part.pinCount) {
+    return confirmed(id, label, `${part.pinCount} pins, and this document names the package ${part.packageType}.`);
+  }
+  if (stated !== null && stated === part.pinCount) {
     return confirmed(id, label, `${part.pinCount} pins, and this document names the package ${part.packageType}.`);
   }
   if (drawing !== null && drawing !== part.pinCount) {
@@ -272,6 +287,15 @@ function confirmPinCount(part: ResolvedPart): Confirmation {
     );
   }
   if (named !== null && named !== part.pinCount) {
+    return flagged(
+      id,
+      label,
+      "name-disagrees",
+      `The pin table lists ${part.pinCount} pins and this document names the package ${part.packageType}.`,
+      consequence
+    );
+  }
+  if (stated !== null && stated !== part.pinCount) {
     return flagged(
       id,
       label,

@@ -35,7 +35,7 @@ function soic8(): ResolvedPart {
       leadContactMm: { minMm: 0.4, maxMm: 0.625 },
       thermalPadLengthMm: null, thermalPadWidthMm: null,
       landPadLengthMm: null, landPadWidthMm: null, landSpanMm: null, landSpanCrossMm: null,
-      leadSides: 2, leadForm: "gullwing", mounting: null, leadDiameterMm: null,
+      leadSides: 2, leadForm: "gullwing", mounting: null, leadDiameterMm: null, holeDiameterMm: null,
       vacantLeadSlot: null, leadsPerSide: null, solderMaskExpansionMm: null,
       solderMaskDefined: null, thermalViaDiameterMm: null, thermalViaPitchMm: null
     },

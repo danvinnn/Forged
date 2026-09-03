@@ -79,6 +79,7 @@ function flatpack(): PartRecord {
       leadForm: cited<"gullwing" | "nolead" | "straight">("straight"),
       mounting: nothing<"smd" | "through-hole">(),
       leadDiameterMm: nothing<number>(),
+      holeDiameterMm: nothing<number>(),
       vacantLeadSlot: nothing(),
       leadsPerSide: nothing(),
       solderMaskExpansionMm: nothing(),

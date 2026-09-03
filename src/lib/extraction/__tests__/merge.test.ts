@@ -952,6 +952,7 @@ test("and the FOOTPRINT asks for the one number a grid needs, rather than refusi
       leadForm: null,
       mounting: "smd" as const,
       leadDiameterMm: null,
+      holeDiameterMm: null,
       vacantLeadSlot: null,
       leadsPerSide: null,
       solderMaskExpansionMm: null,

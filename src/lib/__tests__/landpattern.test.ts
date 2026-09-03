@@ -70,6 +70,7 @@ function bare(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       leadForm: null,
       mounting: null,
       leadDiameterMm: null,
+      holeDiameterMm: null,
       vacantLeadSlot: null,
       leadsPerSide: null,
       solderMaskExpansionMm: null,
@@ -371,6 +372,7 @@ function dip8(): ResolvedPart {
     leadSides: 2,
     mounting: "through-hole",
     leadDiameterMm: 0.5,
+    holeDiameterMm: null,
     landSpanMm: 7.62,
     landSpanCrossMm: null,
     bodyLengthMm: 9.27,
@@ -436,6 +438,7 @@ test("a through-hole part whose row count was not read asks, rather than assumin
       leadSides: null,
       mounting: "through-hole",
       leadDiameterMm: 0.7,
+      holeDiameterMm: null,
       landSpanMm: 5.0,
       landSpanCrossMm: null,
     }, { partNumber: "ACMEREG", packageType: "TO-220", pinCount: 3 })
@@ -471,6 +474,7 @@ test("the through-hole question asks which row count it is, now that BOTH are bu
       leadSides: null,
       mounting: "through-hole",
       leadDiameterMm: 0.7,
+      holeDiameterMm: null,
       landSpanMm: 5.0,
       landSpanCrossMm: null,
     }, { partNumber: "ACMEREG", packageType: "TO-220", pinCount: 3 })

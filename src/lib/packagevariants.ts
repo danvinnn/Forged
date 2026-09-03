@@ -797,10 +797,31 @@ function soleFamily(name: string): string | null {
  * join asks of it.
  */
 export function statedLeadCount(name: string): number | null {
-  const match = /(\d{1,3})\s*[-\s]?\s*(?:lead|pin|ld)s?\b/i.exec(name);
-  if (!match) return null;
-  const count = Number(match[1]);
-  return Number.isInteger(count) && count >= 2 ? count : null;
+  const found = new Set<number>();
+  // The unit word is what makes a number a COUNT rather than an outline number:
+  // `SOT23` is a three-lead package and `DO15` is a diode body, and reading
+  // either as a lead count would invent a second source that then confirms a
+  // wrong pin count. Widened past `lead|pin|ld` on 2026-09-02: `14-Terminal
+  // LGA`, `4-position Terminal Block` and `400-ball` state their count as
+  // plainly as `24-Lead` does, and the parts that word it this way were exactly
+  // the ones with nothing else to check against.
+  for (const match of name.matchAll(
+    /(\d{1,3})\s*[-\s]?\s*(?:lead|pin|ld|terminal|position|contact|circuit|ball|bump|way|pole)s?\b/gi
+  )) {
+    const count = Number(match[1]);
+    if (count >= 2) found.add(count);
+  }
+  // `FCBGA (400)`, `VQFN (24)`, `SOIC (8)`: the family outside the bracket, its
+  // size inside. Bare digits ONLY, so `QFN (3mm x 5mm)` and `RGT (VQFN, 16)`
+  // are not read as counts.
+  for (const match of name.matchAll(/\((\d{1,3})\)/g)) {
+    const count = Number(match[1]);
+    if (count >= 2) found.add(count);
+  }
+  // Two different counts in one name is `16-lead PDIP/SOIC_N/TSSOP` territory:
+  // a statement about a shared pinout rather than the name of one package. This
+  // module's standing answer to "cannot tell" is to say nothing.
+  return found.size === 1 ? [...found][0]! : null;
 }
 
 export function sameDesignatorName(left: string, right: string): boolean {

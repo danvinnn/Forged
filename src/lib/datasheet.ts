@@ -187,6 +187,7 @@ export function buildPartRecord(
       leadForm: unknown<"gullwing" | "nolead" | "straight">(),
       mounting: unknown<"smd" | "through-hole">(),
       leadDiameterMm: unknown<number>(),
+      holeDiameterMm: unknown<number>(),
       vacantLeadSlot: unknown<number>(),
       leadsPerSide: unknown<string>(),
       solderMaskExpansionMm: unknown<number>(),

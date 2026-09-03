@@ -60,6 +60,7 @@ function part(over: Partial<ResolvedPart> = {}): ResolvedPart {
       leadForm: "gullwing",
       mounting: "smd",
       leadDiameterMm: null,
+      holeDiameterMm: null,
       vacantLeadSlot: null,
       leadsPerSide: null,
       solderMaskExpansionMm: null,
@@ -137,6 +138,43 @@ test("a pin table the mechanical drawing contradicts is flagged", () => {
   const pinCount = confirmations(mismatched, geometry(AGREES), null).items.find((item) => item.id === "pin-count")!;
   assert.equal(pinCount.state, "flagged");
   assert.match(pinCount.detail, /14/);
+});
+
+test("a count the package NAME spells out is a second source for the pin count", () => {
+  // Measured 2026-09-02: 10 of 104 parts had `pinCount` and `leadCount` cited
+  // to the SAME PAGE with no designator count either, and were reported
+  // confirmed on one page read twice. `14-Terminal LGA` states its count as
+  // plainly as `LQFP48` does and the designator parser cannot read it.
+  const named = part({
+    packageType: "14-Terminal LGA",
+    pinCount: 14,
+    dimensions: { ...part().dimensions, leadCount: null }
+  });
+  const item = confirmations(named, geometry(AGREES), null).items.find((entry) => entry.id === "pin-count")!;
+  assert.equal(item.state, "confirmed");
+});
+
+test("a count the package name contradicts is flagged", () => {
+  const wrong = part({
+    packageType: "14-Terminal LGA",
+    pinCount: 8,
+    dimensions: { ...part().dimensions, leadCount: null }
+  });
+  const item = confirmations(wrong, geometry(AGREES), null).items.find((entry) => entry.id === "pin-count")!;
+  assert.equal(item.state, "flagged");
+});
+
+test("a package name that states no count is still no second source", () => {
+  // The check must be able to come back empty, or it is not a check. A
+  // connector's name carries no count and nothing else here does either.
+  const bare = part({
+    packageType: "Dual Row Right Angle Thru Hole Header",
+    pinCount: 4,
+    dimensions: { ...part().dimensions, leadCount: null }
+  });
+  const item = confirmations(bare, geometry(AGREES), null).items.find((entry) => entry.id === "pin-count")!;
+  assert.equal(item.state, "flagged");
+  assert.match(item.detail, /from the pin table alone/);
 });
 
 test("the pitch is confirmed by the printed footprint and by nothing else", () => {

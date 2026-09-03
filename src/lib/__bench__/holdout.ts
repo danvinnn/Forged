@@ -40,6 +40,7 @@ import { makeExtractionModel, runExtraction } from "../extraction";
 import { type PartRecord } from "../types";
 import type { DatasheetText } from "../pdftext";
 import {
+  cacheModeFromArgv,
   cachingModel,
   cacheSize,
   formatCacheStats,
@@ -84,13 +85,7 @@ const CACHE_DIR = HOLDOUT_CACHE_DIR;
 const FETCH_DELAY_MS = 1200;
 
 /** Model response cache. Same flags and same reasoning as the tuned bench. */
-const CACHE_MODE: CacheMode = process.argv.includes("--refresh")
-  ? "refresh"
-  : process.argv.includes("--estimate")
-    ? "estimate"
-    : process.argv.includes("--offline")
-      ? "offline"
-      : "use";
+const CACHE_MODE: CacheMode = cacheModeFromArgv(process.argv);
 
 /**
  * There is deliberately no `--parts` here, though the tuned bench has one.

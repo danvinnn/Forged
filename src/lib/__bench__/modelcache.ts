@@ -55,6 +55,54 @@ export type CacheMode =
   /** Call nothing at all. Report what a run WOULD cost, then stop. */
   | "estimate";
 
+/**
+ * The cache mode a command line asks for, or a refusal.
+ *
+ * ## The failure this exists for
+ *
+ * On 2026-09-02 a run was launched as `--model --estimate --refresh` to find out
+ * what a full re-read WOULD cost. Every bench picked its mode with the same
+ * chain, and `--refresh` sits at the top of it:
+ *
+ *     argv.includes("--refresh") ? "refresh" : argv.includes("--estimate") ? ...
+ *
+ * So the flag whose entire job is "tell me the price without paying it" was
+ * silently outranked, and the command re-asked the whole corpus live. It ran for
+ * 54 minutes in the background and spent about $2.60 before anyone noticed.
+ *
+ * The damage was not only the money. It rewrote cached answers underneath other
+ * runs that were reading them, so a corpus measured at 80% read 75% and then
+ * 73% with no code change between, and that drift was investigated at length as
+ * a suspected regression in the product.
+ *
+ * ## The rule
+ *
+ * PRECEDENCE IS THE WRONG ANSWER when the flags disagree about spending money.
+ * A user who names two modes has said something contradictory, and the only
+ * reading that cannot cost them anything is to refuse. Same principle the spend
+ * ceiling follows: where the intent is unknown, land on the side that does not
+ * spend.
+ *
+ * Shared by all three benches that take these flags, because three copies of a
+ * precedence chain is three chances to order it wrongly, and this one already
+ * was.
+ */
+export function cacheModeFromArgv(argv: readonly string[]): CacheMode {
+  const named = (["--refresh", "--estimate", "--offline"] as const).filter((flag) => argv.includes(flag));
+  if (named.length > 1) {
+    throw new Error(
+      `Conflicting cache modes: ${named.join(" and ")}. These ask for different things and one of them ` +
+        `spends money, so this refuses rather than picking. Use exactly one: --offline replays and never ` +
+        `calls, --estimate reports what a live run would cost and calls nothing, --refresh re-asks ` +
+        `everything and DOES spend.`
+    );
+  }
+  if (named[0] === "--refresh") return "refresh";
+  if (named[0] === "--estimate") return "estimate";
+  if (named[0] === "--offline") return "offline";
+  return "use";
+}
+
 export interface CacheStats {
   hits: number;
   /** Live calls ATTEMPTED, whether or not they came back. */

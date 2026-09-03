@@ -105,6 +105,7 @@ const defaultPart: PartRecord = {
     leadForm: nothing<"gullwing" | "nolead" | "straight">(),
     mounting: nothing<"smd" | "through-hole">(),
     leadDiameterMm: nothing<number>(),
+    holeDiameterMm: nothing<number>(),
     vacantLeadSlot: nothing<number>(),
     leadsPerSide: nothing<string>(),
     solderMaskExpansionMm: nothing<number>(),

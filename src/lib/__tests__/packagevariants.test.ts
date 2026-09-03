@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   declaredLeadCount,
+  statedLeadCount,
   pinTableFor,
   findOrderablePackages,
   findPackageVariants,
@@ -380,4 +381,38 @@ test("two packages the ordering table calls the same thing are not guessed betwe
     { packageType: "DFN6 (2x2 mm)", pins: new Array(6).fill(0) }
   ];
   assert.equal(pinTableFor(tables, "DFN6"), null);
+});
+
+test("a package name states its count in words, in the forms vendors print", () => {
+  // Every one of these was measured on the corpus as a name whose count the
+  // designator parser could not read, on a part with nothing else to check
+  // its pin count against.
+  assert.equal(statedLeadCount("14-Terminal LGA"), 14);
+  assert.equal(statedLeadCount("143-Pin CLGA"), 143);
+  assert.equal(statedLeadCount("4-position Terminal Block"), 4);
+  assert.equal(statedLeadCount("24-Lead Plastic Side Solderable QFN (3mm x 5mm)"), 24);
+  // The family outside the bracket, its size inside.
+  assert.equal(statedLeadCount("FCBGA (400)"), 400);
+  assert.equal(statedLeadCount("VQFN (24)"), 24);
+});
+
+test("a bare number glued to a family is an outline number and not a count", () => {
+  // The whole risk of this reader: `SOT23` is a THREE-lead package, so reading
+  // 23 as its lead count would invent a second source that then confirms a
+  // wrong pin count. Same reason `findPackageVariants` guards its glued form.
+  assert.equal(statedLeadCount("SOT23"), null);
+  assert.equal(statedLeadCount("SOT25"), null);
+  assert.equal(statedLeadCount("DO15"), null);
+  assert.equal(statedLeadCount("LQFP48"), null);
+  // A bracket holding anything but bare digits is not a count either.
+  assert.equal(statedLeadCount("QFN (3mm x 5mm)"), null);
+  assert.equal(statedLeadCount("RGT (VQFN, 16)"), null);
+});
+
+test("a name stating two different counts states none", () => {
+  // `16-lead PDIP/SOIC_N/TSSOP` is a statement about a shared PINOUT rather
+  // than the name of one package, and a caption listing two sizes cannot
+  // settle which one this part is.
+  assert.equal(statedLeadCount("8-Lead SOIC / 14-Lead TSSOP"), null);
+  assert.equal(statedLeadCount("SOIC (8) and TSSOP (14)"), null);
 });

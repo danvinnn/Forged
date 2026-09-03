@@ -51,6 +51,7 @@ import {
   type NameMismatch
 } from "./pinout-oracle";
 import {
+  cacheModeFromArgv,
   cachingModel,
   cacheSize,
   formatCacheStats,
@@ -94,13 +95,7 @@ const ONLY_CATEGORY = categoryFlag !== -1 ? (process.argv[categoryFlag + 1] as B
  * spend, so a change to merging or the package table can be measured against
  * the full corpus for nothing.
  */
-const CACHE_MODE: CacheMode = process.argv.includes("--refresh")
-  ? "refresh"
-  : process.argv.includes("--estimate")
-    ? "estimate"
-    : process.argv.includes("--offline")
-      ? "offline"
-      : "use";
+const CACHE_MODE: CacheMode = cacheModeFromArgv(process.argv);
 
 /**
  * Run a named subset, e.g. `--parts LM358,INA240`.

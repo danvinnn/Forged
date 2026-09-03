@@ -120,6 +120,7 @@ function soicPart(overrides: Partial<ResolvedPart> = {}): ResolvedPart {
       leadForm: "gullwing",
       mounting: null,
       leadDiameterMm: null,
+      holeDiameterMm: null,
       vacantLeadSlot: null,
       leadsPerSide: null,
       solderMaskExpansionMm: null,

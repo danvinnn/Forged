@@ -262,6 +262,7 @@ function partFrom(label: string, values: Record<string, CachedValue>): ResolvedP
         leadForm === "gullwing" || leadForm === "nolead" || leadForm === "straight" ? leadForm : null,
       mounting: at("dimensions.mounting") === "through-hole" ? "through-hole" : at("dimensions.mounting") === "smd" ? "smd" : null,
       leadDiameterMm: asNumber(at("dimensions.leadDiameterMm")),
+      holeDiameterMm: asNumber(at("dimensions.holeDiameterMm")),
       vacantLeadSlot: asNumber(at("dimensions.vacantLeadSlot")),
       leadsPerSide: typeof at("dimensions.leadsPerSide") === "string" ? (at("dimensions.leadsPerSide") as string) : null,
       solderMaskExpansionMm: asNumber(at("dimensions.solderMaskExpansionMm")),

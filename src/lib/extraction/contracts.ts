@@ -109,6 +109,7 @@ export const extractionFields = [
   // family table used.
   "dimensions.mounting",
   "dimensions.leadDiameterMm",
+  "dimensions.holeDiameterMm",
   "dimensions.vacantLeadSlot",
   "dimensions.leadsPerSide",
   "dimensions.solderMaskExpansionMm",

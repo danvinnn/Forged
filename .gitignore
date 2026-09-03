@@ -50,6 +50,9 @@ yarn-error.log*
 # committed for the same reason as the other two - these are other people's
 # documents. `bench:blind` reports what is missing rather than fetching silently.
 .blind-cache
+# Connector datasheets pulled for the Phase 0 evidence pass, 2026-09-02. Same
+# rule as every other cache: never commit somebody else's document.
+.phase0-cache
 
 # KiCad's official footprint library, cached by `bench:published` so a rerun is
 # offline. Public reference data, but it is somebody else's repository and it

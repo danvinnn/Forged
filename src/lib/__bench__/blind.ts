@@ -39,7 +39,8 @@ import { extractPartRecord } from "../datasheet";
 import { makeExtractionModel, runExtraction } from "../extraction";
 import { modelBudgetMs, withDeadline } from "../extraction/budget";
 import { getDeploymentMode } from "../retrieval/deployment";
-import { cachingModel, ModelCacheMiss, preRunProjection, type CacheMode, type CachingModel } from "./modelcache";
+import { cacheModeFromArgv,
+  cachingModel, ModelCacheMiss, preRunProjection, type CacheMode, type CachingModel } from "./modelcache";
 import { classify } from "./readclassify";
 import { withPrintedFootprint } from "../readout";
 import { BENCH_SETTINGS, shipOutcome } from "./shipcheck";
@@ -54,13 +55,7 @@ import type { PartRecord } from "../types";
 loadBenchEnv();
 
 const CORPUS = join(process.cwd(), ".blind-cache");
-const CACHE_MODE: CacheMode = process.argv.includes("--offline")
-  ? "offline"
-  : process.argv.includes("--estimate")
-    ? "estimate"
-    : process.argv.includes("--refresh")
-      ? "refresh"
-      : "use";
+const CACHE_MODE: CacheMode = cacheModeFromArgv(process.argv);
 
 /** The same route budget the product works to, so a pass here is a pass there. */
 const ROUTE_BUDGET_MS = 300_000;

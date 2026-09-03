@@ -33,7 +33,35 @@ exceeded. A tool that saves time, or one that nags?
 
 ---
 
-## Prompt changes — BATCH THESE
+## Prompt changes — BATCH THESE — SPENT AND CLOSED 2026-09-02
+
+**This list was closed on 2026-09-02.** All four edits went in together and one
+paid re-read of the tuned corpus measured them: $3.06, 120 live calls.
+
+    fields complete   47%  ->  53%
+    ships unaided     68%  ->  73%
+    ships a bundle    73%  ->  78%
+    connector fields  25%  ->  75%
+    connector ships   25%  ->  50%
+
+No category regressed. `bench:copper` still reports only the pre-existing
+`tps7a8300` finding and `bench:outputs` refused every corrupted value.
+
+STILL UNMEASURED: the hold-out and blind corpora. Their caches were stranded by
+the same prompt change, so the number that predicts unseen datasheets is
+currently unknown. Extraction has a recorded 20-point tuned-vs-holdout gap, so
+the figures above are the optimistic end until `bench:holdout` is re-run.
+
+What went in, beyond item 1 below: `pins` can now report numbered contacts that
+carry no names (a connector, header or socket), guarded so it can never be used
+for a pin table that was merely not found; `leadSpanMm` now asks for through-hole
+ROW SPACING, which `exporters.ts` had always read out of that field without the
+prompt ever asking for it; and a new `dimensions.holeDiameterMm` takes the drill
+from the datasheet's own recommended hole instead of computing it.
+
+---
+
+## Prompt changes (historical list)
 
 **The prompt is the answer cache's key.** Changing it invalidates roughly 2,500
 cached answers and forces a paid re-read of the whole corpus to re-establish
@@ -42,9 +70,14 @@ at a time.
 
 Nothing in this section ships until the list is closed.
 
-### 1. Ask for the overall seated height, not the body thickness
+### 1. Ask for the overall seated height, not the body thickness — DONE 2026-09-02
 
 *Already known, 2026-09-01. Not from him.*
+
+**Shipped.** The prompt already said to prefer the overall height over the body
+thickness; the half that was missing was which end of a min/max pair to take, and
+it now says the maximum, because a clearance check has to hold for the tallest
+part in the band.
 
 - **What's wrong:** 2 of 22 hand-checked heights are wrong, both low by about
   0.2 mm. `NCP1200` reads 1.55 where its drawing states 1.75; `RHF1201` reads

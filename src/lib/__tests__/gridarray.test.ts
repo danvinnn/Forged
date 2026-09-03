@@ -40,6 +40,7 @@ const dims = (over: Record<string, unknown> = {}) =>
     leadForm: null,
     mounting: "smd",
     leadDiameterMm: null,
+    holeDiameterMm: null,
     vacantLeadSlot: null,
     leadsPerSide: null,
     solderMaskExpansionMm: null,

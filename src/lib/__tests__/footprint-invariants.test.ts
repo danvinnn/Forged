@@ -205,6 +205,7 @@ function partFor(shape: Shape): ResolvedPart {
       leadForm: shape.throughHole ? "straight" : null,
       mounting: shape.throughHole ? "through-hole" : null,
       leadDiameterMm: shape.throughHole?.leadDiameterMm ?? null,
+      holeDiameterMm: null,
       vacantLeadSlot: shape.vacantLeadSlot ?? null,
       leadsPerSide: shape.leadsPerSide ?? null,
       solderMaskExpansionMm: null,

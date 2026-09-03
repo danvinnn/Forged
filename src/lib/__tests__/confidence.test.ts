@@ -55,6 +55,7 @@ function sound(overrides: Partial<ResolvedPart["dimensions"]> = {}, part: Partia
       leadForm: "gullwing",
       mounting: null,
       leadDiameterMm: null,
+      holeDiameterMm: null,
       vacantLeadSlot: null,
       leadsPerSide: null,
       solderMaskExpansionMm: null,

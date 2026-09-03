@@ -380,6 +380,94 @@ function to220() {
   } as never as import("../types").ResolvedPart;
 }
 
+test("the hole the datasheet prints beats the one IPC-7251 computes", async () => {
+  // The surface-mount path already prefers the vendor's own land pattern over a
+  // computed one. Through-hole had no equivalent, so a datasheet that PRINTS its
+  // recommended hole was ignored: Hirose states 0.60 mm for DF13 and the
+  // computation gives 0.35 + 0.20 = 0.55. It also settles what a square post
+  // needs, which a lead "diameter" cannot express.
+  const { buildFootprintGeometry } = await import("../exporters");
+  const part = to220();
+
+  const computed = buildFootprintGeometry(part, "B");
+  assert.equal(computed.pads[0].drillMm, 1.1, "0.9 mm lead plus the level B allowance");
+
+  const printed = buildFootprintGeometry(
+    { ...part, dimensions: { ...part.dimensions, holeDiameterMm: 1.3 } } as typeof part,
+    "B"
+  );
+  assert.equal(printed.pads[0].drillMm, 1.3, "the datasheet's own hole is drilled");
+  assert.equal(
+    printed.pads[0].widthMm - printed.pads[0].drillMm,
+    computed.pads[0].widthMm - computed.pads[0].drillMm,
+    "the annular ring is a property of the board and does not change with the drill"
+  );
+  assert.match(printed.provenance.source, /recommends/, "provenance must not claim IPC for a printed hole");
+});
+
+test("a pitch too fine for the density says so, instead of blaming a misread", async () => {
+  // DF13 is a 1.25 mm pitch header. Its 0.6 mm hole becomes a 1.40 mm pad at
+  // density B and 1.10 mm at density C, so it is unbuildable at one level and
+  // clean at another. The invariants already refused it, but with "either a
+  // dimension was misread or this is a defect in Forge", which is neither.
+  const { buildFootprintGeometry, FootprintUnavailableError } = await import("../exporters");
+  const fine = {
+    ...to220(),
+    dimensions: { ...to220().dimensions, pitchMm: 1.25, leadDiameterMm: 0.35, holeDiameterMm: 0.6 }
+  } as ReturnType<typeof to220>;
+
+  assert.throws(
+    () => buildFootprintGeometry(fine, "B"),
+    (error: unknown) => {
+      assert.ok(error instanceof FootprintUnavailableError);
+      assert.match(error.message, /1\.25 mm pitch/);
+      assert.match(error.message, /Nothing here was misread/);
+      assert.match(error.message, /Density C fits/, "it must name the level that works");
+      return true;
+    }
+  );
+
+  // And that level really does work, or the message is a lie.
+  const built = buildFootprintGeometry(fine, "C");
+  assert.equal(built.pads[0].drillMm, 0.6);
+  assert.ok(built.pads[0].widthMm < 1.25, "the pad has to fit inside the pitch");
+});
+
+test("a printed hole makes the lead diameter unnecessary, not still required", async () => {
+  // The lead diameter exists in this path for ONE purpose: to size the hole.
+  // TE's 282836-2 prints a 1.1 mm recommended hole and states no lead diameter
+  // anywhere in the document, and was refused outright for the single input it
+  // did not need.
+  const { buildFootprintGeometry, FootprintUnavailableError } = await import("../exporters");
+  const part = to220();
+  const noLead = { ...part, dimensions: { ...part.dimensions, leadDiameterMm: null } } as typeof part;
+
+  assert.throws(() => buildFootprintGeometry(noLead, "B"), FootprintUnavailableError);
+
+  const printed = buildFootprintGeometry(
+    { ...noLead, dimensions: { ...noLead.dimensions, holeDiameterMm: 1.1 } } as typeof part,
+    "B"
+  );
+  assert.equal(printed.pads[0].drillMm, 1.1);
+  assert.ok(Number.isFinite(printed.pads[0].widthMm));
+});
+
+test("a hole that is not a real measurement falls back to the computation", async () => {
+  // `!== null` also admits undefined, and a record built before this field
+  // existed carries exactly that. The first version of this drilled a NaN hole
+  // on every through-hole part.
+  const { buildFootprintGeometry } = await import("../exporters");
+  const part = to220();
+  for (const bad of [undefined, null, 0]) {
+    const geo = buildFootprintGeometry(
+      { ...part, dimensions: { ...part.dimensions, holeDiameterMm: bad } } as typeof part,
+      "B"
+    );
+    assert.equal(geo.pads[0].drillMm, 1.1, `${String(bad)} is not a hole`);
+    assert.ok(Number.isFinite(geo.pads[0].widthMm));
+  }
+});
+
 test("a single-row through-hole package builds one line of pins", async () => {
   // TO-220, TO-92 and SIP were permanently unbuildable until 2026-08-17, and not
   // because they were hard to read. `leadSides` was typed `2 | 4`, so a single

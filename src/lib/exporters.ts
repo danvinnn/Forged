@@ -9,6 +9,7 @@ import {
 } from "./types";
 import {
   computeLandPattern,
+  ANNULAR_RING,
   COURTYARD_EXCESS,
   LandPatternError,
   thermalPadLand,
@@ -1351,6 +1352,13 @@ function throughHoleFootprint(part: ResolvedPart, densityLevel: DensityLevel): F
   const pitchMm = part.dimensions.pitchMm;
   const rowSpacingMm = part.dimensions.landSpanMm ?? part.dimensions.leadSpanMm?.minMm ?? null;
 
+  // A POSITIVE NUMBER, not merely "not null". `!== null` also admits undefined,
+  // and a record built before this field existed carries exactly that: the first
+  // version of this drilled a NaN hole on every through-hole part, and the
+  // output invariants caught it.
+  const printedRaw = part.dimensions.holeDiameterMm;
+  const printedHoleMm = typeof printedRaw === "number" && printedRaw > 0 ? printedRaw : null;
+
   const needs: RequiredInput[] = [];
   const why =
     `${part.partNumber} mounts through the board, so its footprint is holes rather than lands. ` +
@@ -1365,7 +1373,12 @@ function throughHoleFootprint(part: ResolvedPart, densityLevel: DensityLevel): F
   // come back forever. That is the identical defect the surface-mount asks had
   // until 2026-08-14, reintroduced within a day, and the rule-3 sweep is what
   // found it.
-  if (lead === null) {
+  // THE LEAD DIAMETER IS ONLY EVER USED TO SIZE THE HOLE. Where the datasheet
+  // prints the hole itself, asking for the lead is asking for a number the
+  // document has already made unnecessary, and it was blocking parts outright:
+  // TE's 282836-2 prints a 1.1 mm hole, states no lead diameter anywhere, and
+  // was refused for the one input it did not need.
+  if (lead === null && printedHoleMm === null) {
     needs.push({ field: "leadDiameterMm", label: "Lead diameter", why, unit: "mm", scope: "part" });
   }
   // A SINGLE ROW HAS NO ROW SPACING. Asking for it would be a question the
@@ -1379,11 +1392,68 @@ function throughHoleFootprint(part: ResolvedPart, densityLevel: DensityLevel): F
   if (pitchMm === null) {
     needs.push({ field: "pitchMm", label: "Pin pitch along the row", why, unit: "mm", scope: "part" });
   }
-  if (needs.length > 0 || lead === null || (rows === 2 && rowSpacingMm === null) || pitchMm === null) {
+  if (
+    needs.length > 0 ||
+    (lead === null && printedHoleMm === null) ||
+    (rows === 2 && rowSpacingMm === null) ||
+    pitchMm === null
+  ) {
     throw new FootprintUnavailableError(why, needs);
   }
 
-  const hole = throughHolePad(lead, densityLevel);
+  // THE DATASHEET'S OWN HOLE WINS, exactly as its own land pattern does.
+  //
+  // `throughHolePad` computes lead diameter plus an IPC-7251 allowance, which is
+  // the right answer where the document says nothing. Where it DOES print a
+  // recommended hole, computing one instead is the mistake the surface-mount
+  // path already deleted: Hirose prints 0.60 for DF13 and the computation gives
+  // 0.55, and a 0.35 mm SQUARE post wants a hole on its 0.495 mm diagonal that
+  // `leadDiameterMm` cannot express.
+  //
+  // The land around it still comes from IPC-7251's annular ring, because that is
+  // a property of the BOARD rather than of the part and the datasheet is not
+  // stating it. Only the drill is taken from the page.
+  const hole =
+    printedHoleMm !== null
+      ? { drillMm: printedHoleMm, padMm: printedHoleMm + 2 * ANNULAR_RING[densityLevel] }
+      : throughHolePad(lead as number, densityLevel);
+
+  // A PAD WIDER THAN THE PITCH SHORTS ITS NEIGHBOURS, and the density level is
+  // what decides it.
+  //
+  // The output invariants already refuse this footprint, correctly, but the
+  // message they refuse it with is "either a dimension was misread or this is a
+  // defect in Forge". For this case it is NEITHER: every dimension is right, the
+  // generator is right, and the annular ring the customer's density level adds
+  // is simply too big for the pitch. Hirose's DF13 is a 1.25 mm pitch header
+  // whose 0.6 mm hole becomes a 1.4 mm pad at density B and a 1.1 mm pad at
+  // density C, so it is unbuildable at one level and clean at another.
+  //
+  // Sending someone to hunt for a misread that does not exist, when the fix is a
+  // setting they already own, is the friction this product exists to remove. The
+  // rule is general: it names no vendor, no family and no part, and it is the
+  // same arithmetic the overlap invariant does, so it changes no outcome. Only
+  // the explanation changes.
+  //
+  // It REFUSES rather than quietly dropping to a level that fits. Density is the
+  // assembler's call about their own fabricator, and choosing it for them is
+  // exactly the silent decision RULES.md forbids.
+  if (hole.padMm >= pitchMm) {
+    const fits = (["C", "B", "A"] as const).find(
+      (level) => hole.drillMm + 2 * ANNULAR_RING[level] < pitchMm
+    );
+    throw new FootprintUnavailableError(
+      `${part.partNumber} has a ${pitchMm} mm pitch, and at density ${densityLevel} IPC-7251 puts a ` +
+        `${ANNULAR_RING[densityLevel]} mm ring around each ${hole.drillMm} mm hole, making a ` +
+        `${hole.padMm.toFixed(2)} mm pad that would touch its neighbours. Nothing here was misread: the ` +
+        `hole and the pitch are both as this datasheet states them. ` +
+        (fits
+          ? `Density ${fits} fits this pitch. Change the density level in settings and it builds.`
+          : `No IPC-7251 density level fits this pitch, so this footprint needs the vendor's own ` +
+            `recommended pad rather than a computed one.`),
+      []
+    );
+  }
 
   // On a single row the pads sit ON the centre line, so there is no span between
   // opposing rows: the centre is zero and the extent across the row is one pad.
@@ -1408,9 +1478,18 @@ function throughHoleFootprint(part: ResolvedPart, densityLevel: DensityLevel): F
       arrangement: singleRow ? "single" : "dual",
       pitchMm,
       family: part.packageType,
-      source: singleRow
-        ? `IPC-7251 density ${densityLevel}, from a ${lead} mm lead on a single row at ${pitchMm} mm pitch read off this datasheet`
-        : `IPC-7251 density ${densityLevel}, from a ${lead} mm lead on a ${spanMm} mm row spacing read off this datasheet`
+      source: (() => {
+        // NAME THE DRILL'S REAL SOURCE. Saying "IPC-7251 from a 0.35 mm lead"
+        // over a 0.60 mm hole this datasheet printed is a false provenance
+        // claim, and traceability is the one thing this product cannot fudge.
+        const drill =
+          printedHoleMm !== null
+            ? `a ${printedHoleMm} mm hole this datasheet recommends`
+            : `a ${lead} mm lead`;
+        return singleRow
+          ? `IPC-7251 density ${densityLevel}, from ${drill} on a single row at ${pitchMm} mm pitch read off this datasheet`
+          : `IPC-7251 density ${densityLevel}, from ${drill} on a ${spanMm} mm row spacing read off this datasheet`;
+      })()
     },
     {
       from: "ipc7251",

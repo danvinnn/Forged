@@ -370,6 +370,27 @@ export const packageDimensionsSchema = z.object({
     method: null,
     citation: null
   }),
+  /**
+   * The PLATED HOLE the datasheet recommends, where it prints one.
+   *
+   * Added 2026-09-02. IPC-7251 sizes a hole as lead diameter plus an allowance,
+   * and that is the right answer where the document says nothing. But these
+   * documents DO say something: Hirose's DF13 prints `Board Through-hole
+   * Diameter 0.6 +/-0.03` and Molex's 43045 prints `1.02 +/-0.05 TYP`, and
+   * computing 0.35 + 0.2 = 0.55 against a printed 0.60 is the same mistake the
+   * surface-mount path already fixed by preferring the vendor's own land
+   * pattern over a computed one.
+   *
+   * It also settles a question the computed path gets wrong on principle: a
+   * 0.35 mm SQUARE post needs a hole sized on its 0.495 mm diagonal, and
+   * `leadDiameterMm` carries the edge.
+   */
+  holeDiameterMm: extracted(z.number().positive()).default({
+    value: null,
+    confidence: null,
+    method: null,
+    citation: null
+  }),
   leadForm: extracted(z.enum(["gullwing", "nolead", "straight"])).default({
     value: null,
     confidence: null,
@@ -776,6 +797,8 @@ export type PackageDimensions = {
   mounting: Extracted<"smd" | "through-hole">;
   /** Lead diameter for a through-hole part, mm. IPC-7251 sizes the hole from it. */
   leadDiameterMm: Extracted<number>;
+  /** The plated hole this datasheet recommends, mm. Preferred over the IPC computation. */
+  holeDiameterMm: Extracted<number>;
   /** Grid position on the shorter row that carries no lead, 1-based from pin 1. */
   vacantLeadSlot: Extracted<number>;
   /** Leads on each side in order from pin 1, e.g. `6,6,6,5`. Only where sides are unequal. */
@@ -995,6 +1018,7 @@ export interface ResolvedPart {
     leadForm: "gullwing" | "nolead" | "straight" | null;
     mounting: "smd" | "through-hole" | null;
     leadDiameterMm: number | null;
+    holeDiameterMm: number | null;
     vacantLeadSlot: number | null;
     leadsPerSide: string | null;
     solderMaskExpansionMm: number | null;
@@ -1152,6 +1176,7 @@ export function resolveForExport(part: PartRecord, options: ResolveOptions = {})
         leadForm: part.dimensions.leadForm.value,
         mounting: part.dimensions.mounting.value,
         leadDiameterMm: part.dimensions.leadDiameterMm.value,
+        holeDiameterMm: part.dimensions.holeDiameterMm.value,
         vacantLeadSlot: part.dimensions.vacantLeadSlot.value,
         leadsPerSide: part.dimensions.leadsPerSide.value,
         solderMaskExpansionMm: part.dimensions.solderMaskExpansionMm.value,
